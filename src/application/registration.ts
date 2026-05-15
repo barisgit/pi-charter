@@ -264,9 +264,54 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     parameters: CharterStatusParams,
     async execute(_toolCallId, params: CharterStatusInput, _signal, _onUpdate, ctx) {
       const result = await getCharterStatus(ctx.cwd, { charterId: params.charterId });
-      return toolResult(`Charter ${result.charterId} [${result.status}]: ${result.objective}`, result);
+      return toolResult(formatCharterStatusText(result), result);
     },
   });
+}
+
+/**
+ * Render a charter_status result as a compact text block for the LLM tool
+ * channel. The full structured `result` still rides along in `toolResult`'s
+ * details arg — this string is what the agent actually reads when reasoning.
+ */
+function formatCharterStatusText(result: {
+  charterId: string;
+  status: string;
+  phase: string;
+  objective: string;
+  drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[] }[] };
+  nextActions: { tool: string; action?: string; hint: string }[];
+  guidelines: string[];
+}): string {
+  const lines: string[] = [];
+  const firstObjectiveLine = result.objective.split("\n", 1)[0] ?? "";
+  const trimmedObjective = firstObjectiveLine.length > 120
+    ? `${firstObjectiveLine.slice(0, 117)}...`
+    : firstObjectiveLine;
+  lines.push(`Charter ${result.charterId} [${result.status} · phase=${result.phase}]`);
+  lines.push(`  objective: ${trimmedObjective}`);
+  lines.push(
+    `  drift: uncovered=${result.drift.uncovered.length} stuck=${result.drift.stuck.length} stale=${result.drift.stale.length} readyNext=${result.drift.readyNext.length}`,
+  );
+  if (result.drift.readyNext.length > 0) {
+    const preview = result.drift.readyNext
+      .slice(0, 3)
+      .map((entry) => `${entry.featureId} (→ ${entry.fulfills.join(", ") || "-"})`)
+      .join("; ");
+    lines.push(`  ready features: ${preview}${result.drift.readyNext.length > 3 ? ", ..." : ""}`);
+  }
+  lines.push("  nextActions:");
+  for (const action of result.nextActions) {
+    const head = action.action ? `${action.tool} action=${action.action}` : action.tool;
+    lines.push(`    - ${head} — ${action.hint}`);
+  }
+  if (result.guidelines.length > 0) {
+    lines.push("  guidelines:");
+    for (const guideline of result.guidelines) {
+      lines.push(`    - ${guideline}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 export function registerCharterCommands(pi: ExtensionAPI): void {
@@ -280,7 +325,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           ctx.ui.notify("No active charter found.", "info");
           return;
         }
-        ctx.ui.notify(`Charter ${status.charterId} [${status.status}]: ${status.objective}`, "info");
+        ctx.ui.notify(formatCharterStatusText(status), "info");
         return;
       }
       if (text === "pause") {
