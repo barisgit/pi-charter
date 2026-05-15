@@ -1,0 +1,1257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Goal Tracking Across Coding Agents — pi-goals · Codex · Claude Code · Factory Droid</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.6/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg-0: #07080c;
+    --bg-1: #0d1018;
+    --bg-2: #131826;
+    --bg-3: #1a2032;
+    --border: #232a3d;
+    --border-2: #2c3450;
+    --text-0: #f2f4fa;
+    --text-1: #c9cee0;
+    --text-2: #8a92ad;
+    --text-3: #5a6285;
+    --pi: #f59e0b;
+    --pi-soft: rgba(245, 158, 11, .12);
+    --codex: #10b981;
+    --codex-soft: rgba(16, 185, 129, .12);
+    --claude: #c084fc;
+    --claude-soft: rgba(192, 132, 252, .12);
+    --factory: #38bdf8;
+    --factory-soft: rgba(56, 189, 248, .12);
+    --good: #34d399;
+    --bad: #f87171;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1100px 600px at 80% -10%, rgba(192, 132, 252, .07), transparent 60%),
+      radial-gradient(1000px 500px at -10% 30%, rgba(56, 189, 248, .06), transparent 60%),
+      radial-gradient(800px 600px at 50% 100%, rgba(245, 158, 11, .05), transparent 60%),
+      var(--bg-0);
+    color: var(--text-1);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1680px; margin: 0 auto; padding: 64px 40px 120px; }
+  header.hero { margin-bottom: 56px; }
+  header.hero .eyebrow {
+    color: var(--text-3); text-transform: uppercase; letter-spacing: .22em; font-size: 11px; font-weight: 600;
+  }
+  header.hero h1 {
+    font-size: clamp(34px, 4.5vw, 56px);
+    line-height: 1.05;
+    margin: 14px 0 18px;
+    color: var(--text-0);
+    font-weight: 800;
+    letter-spacing: -0.025em;
+  }
+  header.hero h1 .grad {
+    background: linear-gradient(90deg, var(--pi) 0%, var(--codex) 30%, var(--claude) 65%, var(--factory) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  header.hero p.lede { color: var(--text-2); font-size: 17px; max-width: 880px; margin: 0 0 28px; }
+  header.hero .meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--text-3); font-size: 13px; }
+  header.hero .meta .pill {
+    background: var(--bg-2); border: 1px solid var(--border);
+    padding: 4px 12px; border-radius: 999px; color: var(--text-2);
+  }
+
+  /* nav */
+  nav.toc {
+    display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 56px;
+    padding: 12px; background: var(--bg-1); border: 1px solid var(--border); border-radius: 14px;
+    position: sticky; top: 12px; z-index: 50; backdrop-filter: blur(10px);
+    background: rgba(13, 16, 24, .85);
+  }
+  nav.toc a {
+    color: var(--text-2); text-decoration: none; font-size: 13px; font-weight: 500;
+    padding: 6px 12px; border-radius: 8px; transition: background .15s, color .15s;
+  }
+  nav.toc a:hover { color: var(--text-0); background: var(--bg-3); }
+
+  section { margin-bottom: 72px; }
+  section > h2 {
+    font-size: 26px; color: var(--text-0); margin: 0 0 8px;
+    letter-spacing: -0.015em; font-weight: 700;
+  }
+  section > h2 .num {
+    display: inline-block; color: var(--text-3); font-size: 14px;
+    font-family: 'JetBrains Mono', monospace; margin-right: 14px; font-weight: 500;
+  }
+  section > p.section-lede { color: var(--text-2); margin: 0 0 32px; max-width: 880px; font-size: 16px; }
+
+  /* TLDR */
+  .tldr {
+    background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 100%);
+    border: 1px solid var(--border-2); border-radius: 18px; padding: 28px 32px;
+    margin-bottom: 56px;
+  }
+  .tldr h3 { margin: 0 0 14px; color: var(--text-0); font-size: 13px; letter-spacing: .2em; text-transform: uppercase; }
+  .tldr p { margin: 0 0 10px; color: var(--text-1); font-size: 16px; }
+  .tldr .verdict { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; align-items: center; }
+  .rank {
+    font-family: 'JetBrains Mono', monospace; font-size: 15px;
+    color: var(--text-0); background: var(--bg-3); padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--border-2);
+  }
+
+  /* system cards */
+  .grid-4 {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px;
+  }
+  @media (max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .grid-4 { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--bg-1); border: 1px solid var(--border); border-radius: 16px;
+    padding: 22px 22px 18px; position: relative; overflow: hidden;
+  }
+  .card::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    background: var(--accent, var(--border));
+  }
+  .card.pi { --accent: var(--pi); background: linear-gradient(180deg, var(--pi-soft), transparent 60%), var(--bg-1); }
+  .card.codex { --accent: var(--codex); background: linear-gradient(180deg, var(--codex-soft), transparent 60%), var(--bg-1); }
+  .card.claude { --accent: var(--claude); background: linear-gradient(180deg, var(--claude-soft), transparent 60%), var(--bg-1); }
+  .card.factory { --accent: var(--factory); background: linear-gradient(180deg, var(--factory-soft), transparent 60%), var(--bg-1); }
+  .card h3 { margin: 0 0 4px; color: var(--text-0); font-size: 18px; }
+  .card .tag { font-size: 11px; color: var(--accent); letter-spacing: .18em; text-transform: uppercase; font-weight: 600; }
+  .card ul { margin: 14px 0 0; padding-left: 18px; color: var(--text-2); font-size: 14px; }
+  .card ul li { margin-bottom: 6px; }
+  .card .stat {
+    display: flex; gap: 14px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-3);
+  }
+  .card .stat b { color: var(--text-1); font-weight: 600; }
+
+  /* mermaid wrapper — force diagrams to scale to container width */
+  .diagram {
+    background: var(--bg-1); border: 1px solid var(--border); border-radius: 16px;
+    padding: 28px; margin: 18px 0; overflow-x: auto;
+  }
+  .diagram .mermaid {
+    display: flex; justify-content: center; align-items: center;
+    min-height: 460px;
+  }
+  .diagram .mermaid svg {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    min-height: 460px;
+    font-size: 16px !important;
+  }
+  .diagram .mermaid svg .nodeLabel,
+  .diagram .mermaid svg .edgeLabel,
+  .diagram .mermaid svg .label,
+  .diagram .mermaid svg .cluster-label {
+    font-size: 15px !important;
+  }
+  .diagram .caption { margin-top: 18px; color: var(--text-3); font-size: 13.5px; font-style: italic; line-height: 1.6; }
+
+  /* tables */
+  table.cmp { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 14px; }
+  table.cmp th, table.cmp td {
+    border-bottom: 1px solid var(--border); padding: 10px 14px; text-align: left; vertical-align: top;
+  }
+  table.cmp th { color: var(--text-2); font-weight: 600; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; background: var(--bg-1); }
+  table.cmp tr:hover td { background: rgba(255, 255, 255, .015); }
+  table.cmp td.row-axis { font-weight: 600; color: var(--text-0); }
+  .yes { color: var(--good); font-weight: 600; }
+  .no { color: var(--bad); font-weight: 600; }
+  .partial { color: var(--warn); font-weight: 600; }
+  td .src { color: var(--text-3); font-size: 11px; font-family: 'JetBrains Mono', monospace; margin-left: 4px; }
+
+  /* radar / bar charts */
+  .chart-wrap { background: var(--bg-1); border: 1px solid var(--border); border-radius: 16px; padding: 24px; }
+  .chart-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: stretch; }
+  @media (max-width: 900px) { .chart-grid { grid-template-columns: 1fr; } }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 13px; color: var(--text-2); }
+  .legend .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; margin-right: 6px; }
+
+  /* gap tiers */
+  .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 900px) { .tiers { grid-template-columns: 1fr; } }
+  .tier {
+    background: var(--bg-1); border: 1px solid var(--border); border-radius: 16px; padding: 22px;
+  }
+  .tier h4 { margin: 0 0 10px; font-size: 16px; color: var(--text-0); display: flex; align-items: center; gap: 10px; }
+  .tier .badge {
+    font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px;
+    padding: 2px 8px; border-radius: 6px;
+  }
+  .tier.s { border-color: rgba(248, 113, 113, 0.3); }
+  .tier.s .badge { background: rgba(248, 113, 113, .15); color: #fca5a5; }
+  .tier.a { border-color: rgba(251, 191, 36, 0.3); }
+  .tier.a .badge { background: rgba(251, 191, 36, .15); color: #fcd34d; }
+  .tier.b { border-color: rgba(52, 211, 153, 0.25); }
+  .tier.b .badge { background: rgba(52, 211, 153, .15); color: #6ee7b7; }
+  .tier ul { margin: 0; padding-left: 18px; }
+  .tier li { margin-bottom: 12px; color: var(--text-2); font-size: 14px; }
+  .tier li b { color: var(--text-0); display: block; margin-bottom: 2px; }
+  .tier li .source { color: var(--text-3); font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+
+  /* code block */
+  pre.code {
+    background: #04060a; border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 22px; overflow-x: auto; font-family: 'JetBrains Mono', monospace;
+    font-size: 13px; color: var(--text-1); line-height: 1.55;
+  }
+  pre.code .k { color: #94a3b8; }
+  pre.code .s { color: #6ee7b7; }
+  pre.code .n { color: #fcd34d; }
+  pre.code .c { color: var(--text-3); font-style: italic; }
+
+  /* footnotes */
+  footer {
+    margin-top: 80px; padding-top: 28px; border-top: 1px solid var(--border);
+    color: var(--text-3); font-size: 13px;
+  }
+  footer a { color: var(--text-2); text-decoration: underline; text-decoration-color: var(--border-2); text-underline-offset: 3px; }
+  footer a:hover { color: var(--text-0); }
+  details.sources summary { cursor: pointer; color: var(--text-2); margin-bottom: 12px; }
+  details.sources ul { margin: 0; padding-left: 20px; }
+  details.sources li { margin-bottom: 8px; }
+
+  /* helpers */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
+  .callout {
+    border-left: 3px solid var(--pi); padding: 14px 18px; background: var(--pi-soft);
+    border-radius: 0 10px 10px 0; color: var(--text-1); font-size: 14px; margin: 18px 0;
+  }
+  .callout b { color: var(--text-0); }
+  .accent-pi { color: var(--pi); } .accent-codex { color: var(--codex); }
+  .accent-claude { color: var(--claude); } .accent-factory { color: var(--factory); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">Research Brief · 2026-05-14</div>
+  <h1>How four coding agents track <span class="grad">goals, plans, and missions</span></h1>
+  <p class="lede">
+    pi-goals today is one durable text reminder. Codex, Claude Code, and Factory Droid have all moved past that shape — toward typed step DAGs, post-turn evaluators, validation contracts, and orchestrated missions. This report compares them, scores them, and lands the successor concept: <span class="accent-pi">pi-charter</span>. It is not just pi-goals renamed; it is a binding <code>charter.md</code> (Objective / Criteria / Scope) connected to a macro DAG, evidence, verifier personas, and a smart-Ralph loop.
+  </p>
+  <div class="meta">
+    <span class="pill">12 primary sources</span>
+    <span class="pill">21 Factory citations</span>
+    <span class="pill">All URLs fetched</span>
+    <span class="pill">Diagrams: Mermaid · Charts: Chart.js</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#tldr">TL;DR</a>
+  <a href="#systems">Systems</a>
+  <a href="#pi">pi-goals</a>
+  <a href="#codex">Codex</a>
+  <a href="#claude">Claude Code</a>
+  <a href="#factory">Factory Droid</a>
+  <a href="#compare">Comparison</a>
+  <a href="#scores">Scorecard</a>
+  <a href="#gaps">Gaps</a>
+  <a href="#v2">v2 design</a>
+  <a href="#sources">Sources</a>
+</nav>
+
+<!-- TL;DR -->
+<section id="tldr">
+  <div class="tldr">
+    <h3>The verdict</h3>
+    <p><b style="color: var(--text-0)">pi-goals is structurally the weakest of the four.</b> It persists state to disk (good), but the rest of the goal kernel — adaptive reminders, decomposition, verification gates, autonomy coupling, sub-agent handoff — is either missing or static text.</p>
+    <p>Highest-leverage direction: replace v1 goals with <span class="accent-pi"><b>pi-charter</b></span> — a charter-scoped post-turn evaluator plus a criteria-backed completion gate and macro DAG. The evaluator is the first slice; the charter is the durable concept.</p>
+    <div class="verdict">
+      <span style="color: var(--text-3); font-size: 13px;">Capability ranking:</span>
+      <span class="rank"><span class="accent-factory">Factory Droid</span> ≥ <span class="accent-claude">Claude Code</span> ≳ <span class="accent-codex">Codex</span> ≫ <span class="accent-pi">pi-goals</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- Systems overview -->
+<section id="systems">
+  <h2><span class="num">01</span>Four systems at a glance</h2>
+  <p class="section-lede">Each card summarizes how that system represents the active objective and where its state lives. Color-coded throughout the document.</p>
+
+  <div class="grid-4">
+    <div class="card pi">
+      <div class="tag">Local · TypeScript</div>
+      <h3>pi-goals</h3>
+      <ul>
+        <li>One <code>GoalState</code> JSON, atomically persisted under <code>.pi/goals/</code></li>
+        <li>Flat <code>criteria[]</code> + <code>constraints[]</code> + optional <code>evidence[]</code></li>
+        <li>Static reminder text re-emitted every 8 turns</li>
+        <li>No decomposition, no verification, no autonomy coupling</li>
+      </ul>
+      <div class="stat"><span>Status: <b>active / paused / completed</b></span><span>Active: <b>1 goal</b></span></div>
+    </div>
+
+    <div class="card codex">
+      <div class="tag">OpenAI · Rust</div>
+      <h3>Codex</h3>
+      <ul>
+        <li><code>/goal</code> (experimental, FACT): 5-layer SQLite-backed durable objective per thread</li>
+        <li>4 statuses: <code>active / paused / budget_limited / complete</code> — budget transitions atomic via SQL CASE</li>
+        <li>Asymmetric tools: model can <code>create_goal</code> + <code>update_goal(complete)</code>; pause/resume/budget are system-only</li>
+        <li>Auto-continuation loop with no-tool suppression; <code>goal_id</code> UUID stale-write protection</li>
+        <li><code>todo_write</code> / <code>update_plan</code> still transcript-resident (gap <a href="https://github.com/openai/codex/issues/19749" target="_blank">#19749</a>); <code>AGENTS.md</code> hierarchy encodes "what done means"</li>
+      </ul>
+      <div class="stat"><span>One goal per thread</span><span>Tokens + wall-clock budget</span></div>
+    </div>
+
+    <div class="card claude">
+      <div class="tag">Anthropic · Closed</div>
+      <h3>Claude Code</h3>
+      <ul>
+        <li><code>/goal &lt;condition&gt;</code>: 4 KB condition + Haiku evaluator after every turn</li>
+        <li><code>EnterPlanMode</code> / <code>ExitPlanMode</code> with user approval</li>
+        <li><code>Task*</code> DAG with dependencies (replaces <code>TodoWrite</code>)</li>
+        <li>Hook bus: <code>TaskCreated</code>, <code>TaskCompleted</code>, <code>Stop</code>, <code>PreCompact</code>… all gateable</li>
+      </ul>
+      <div class="stat"><span>Restored on <code>--resume</code></span><span>Headless via <code>-p</code></span></div>
+    </div>
+
+    <div class="card factory">
+      <div class="tag">Factory · Multi-session</div>
+      <h3>Droid Missions</h3>
+      <ul>
+        <li><code>validation-contract.md</code> = ~427 VAL-* assertions, evidenced</li>
+        <li><code>features.json</code> → <code>fulfills[]</code> joins to assertions (DAG)</li>
+        <li>Handoffs bind <code>{command, exitCode, observation}</code> triples</li>
+        <li>Per-role model selection: worker vs. validator independently</li>
+        <li>Typed <code>progress_log.jsonl</code> with orchestrator decisions</li>
+      </ul>
+      <div class="stat"><span>Median: <b>~2h</b></span><span>Tail: <b>16+ days</b></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- pi-goals -->
+<section id="pi">
+  <h2><span class="num">02</span><span class="accent-pi">pi-goals</span> — the baseline</h2>
+  <p class="section-lede">A faithful summary of the live source at <code>agent/extensions/pi-goals/index.ts</code>. Everything here is FACT — we own the code.</p>
+
+  <div class="two-col">
+    <div>
+      <h3 style="color: var(--text-0); font-size: 17px; margin: 0 0 12px;">GoalState</h3>
+      <pre class="code"><span class="k">type</span> <span class="n">GoalState</span> = {
+  id: <span class="k">string</span>,
+  objective: <span class="k">string</span>,
+  status: <span class="s">"active" | "paused" | "completed"</span>,
+  criteria: <span class="k">string</span>[],
+  constraints: <span class="k">string</span>[],
+  nextAction?: <span class="k">string</span>,
+  evidence: <span class="k">string</span>[],
+  risks: <span class="k">string</span>[],
+  createdAt: <span class="k">string</span>,
+  updatedAt: <span class="k">string</span>,
+  completedAt?: <span class="k">string</span>,
+  completionNote?: <span class="k">string</span>,
+  turnsActive: <span class="k">number</span>,
+};
+
+<span class="c">// Persisted atomically as JSON at:</span>
+<span class="c">// &lt;cwd&gt;/.pi/goals/goal-&lt;sessionId&gt;.json</span></pre>
+    </div>
+    <div>
+      <h3 style="color: var(--text-0); font-size: 17px; margin: 0 0 12px;">Reminder shape</h3>
+      <pre class="code"><span class="k">const</span> intent = {
+  source: <span class="s">"pi-goals"</span>,
+  id: <span class="s">"active-goal"</span>,
+  ttl: <span class="s">"persistent"</span>,
+  repeatEveryTurns: <span class="n">8</span>,
+  display: <span class="k">false</span>,
+  priority: <span class="n">30</span>,
+  text: <span class="s">"Active goal: ..."</span>
+        + <span class="s">" Done when: ..."</span>
+        + <span class="s">" Constraints: ..."</span>
+        + <span class="s">" Next: ..."</span>
+        + <span class="s">" Before finalizing, verify ..."</span>,
+};
+
+<span class="c">// Same text every emission. No drift detection.</span>
+<span class="c">// No completion check. No evidence binding.</span></pre>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+stateDiagram-v2
+    [*] --> active: goal_manage create
+    active --> paused: pause
+    paused --> active: resume
+    active --> completed: complete -- self-asserted
+    active --> [*]: clear
+    paused --> [*]: clear
+    completed --> [*]
+    note right of active
+      Reminder re-emitted every 8 turns
+      Same static text every time
+      Increments turnsActive on turn_start
+    end note
+    </div>
+    <div class="caption">pi-goals lifecycle. No verification gate; <code>complete</code> is whatever the agent decides.</div>
+  </div>
+</section>
+
+<!-- Codex -->
+<section id="codex">
+  <h2><span class="num">03</span><span class="accent-codex">Codex</span> — <code>/goal</code> (SQLite + budget loop) and <code>update_plan</code></h2>
+  <p class="section-lede">Codex ships <i>two</i> primitives. <code>/goal</code> is a 5-layer system behind <code>Feature::Goals</code> (default-off): SQLite persistence per thread, app-server JSON-RPC, asymmetric model tools, a runtime event bus with auto-continuation and atomic budget enforcement, and a TUI status-bar connector. <code>update_plan</code> / <code>todo_write</code> remains the structured-step primitive but is still transcript-resident.</p>
+
+  <div class="two-col">
+    <div>
+      <pre class="code"><span class="c">// migration 0029_thread_goals.sql
+// (one row per thread; FK ON DELETE CASCADE)</span>
+CREATE TABLE thread_goals (
+  thread_id         TEXT PRIMARY KEY,
+  goal_id           TEXT NOT NULL,       <span class="c">// regen on every replace</span>
+  objective         TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK(status IN
+                      ('active','paused','budget_limited','complete')),
+  token_budget      INTEGER,             <span class="c">// null = unlimited</span>
+  tokens_used       INTEGER NOT NULL DEFAULT 0,
+  time_used_seconds INTEGER NOT NULL DEFAULT 0,
+  created_at_ms     INTEGER NOT NULL,
+  updated_at_ms     INTEGER NOT NULL
+);
+
+<span class="c">// 3 model tools (asymmetric by design)</span>
+create_goal({ objective, token_budget? })
+update_goal({ status: "complete" })       <span class="c">// only model-allowed terminal</span>
+get_goal()                                <span class="c">// pause/resume = system-only</span>
+
+<span class="c">// fallback primitive — still transcript-resident:
+// codex-rs/protocol/src/plan_tool.rs</span>
+<span class="k">struct</span> <span class="n">UpdatePlanArgs</span> {
+  explanation: <span class="n">Option</span>&lt;<span class="k">String</span>&gt;,
+  plan: <span class="n">Vec</span>&lt;<span class="n">PlanItemArg</span>&gt;,
+}
+
+<span class="k">struct</span> <span class="n">PlanItemArg</span> {
+  step:   <span class="k">String</span>,
+  status: <span class="n">StepStatus</span>, <span class="c">// pending|in_progress|completed</span>
+}
+
+<span class="c">// Tool aliases: update_plan ≡ todo_write</span>
+<span class="c">// Emits: PlanUpdate (wire: turn/plan/updated)</span>
+<span class="c">// Tool itself is a no-op; value is the structured input.</span></pre>
+    </div>
+    <div>
+      <div class="callout">
+        <b>FACT-level walkthrough:</b> 5-PR stack <a href="https://github.com/openai/codex/pull/18073" target="_blank">#18073</a> (persistence) → <a href="https://github.com/openai/codex/pull/18074" target="_blank">#18074</a> (app-server) → <a href="https://github.com/openai/codex/pull/18075" target="_blank">#18075</a> (model tools) → <a href="https://github.com/openai/codex/pull/18076" target="_blank">#18076</a> (runtime) → <a href="https://github.com/openai/codex/pull/18077" target="_blank">#18077</a> (TUI). Runtime engine lives in <code>core/src/goals.rs</code>; <code>GoalRuntimeEvent</code> enum drives auto-pause on interrupt, auto-resume on thread re-entry, and one-shot continuation with no-tool suppression. Budget steering injects a <code>budget_limiting</code> item directly into the response stream when the threshold is crossed. <a href="https://gist.github.com/patleeman/b1b5768393f9bf2f60865b1defeeb819" target="_blank">[g1]</a>
+      </div>
+      <div class="callout" style="border-color: var(--codex); background: var(--codex-soft);">
+        <b>Companion: AGENTS.md hierarchy</b> — global (<code>~/.codex/AGENTS.override.md</code> → <code>AGENTS.md</code>) → from git root down to CWD (per-dir override files allowed) → concatenated root-down. 32 KiB cap. The canonical place to encode acceptance criteria and validation commands. Plus the <code>update_plan</code> gap (<a href="https://github.com/openai/codex/issues/19749" target="_blank">#19749</a>) for transcript-resident plans.
+      </div>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+stateDiagram-v2
+    direction LR
+    [*] --> Idle
+    Idle --> PlanMode: Shift+Tab or slash plan
+    [*] --> active: create_goal
+    active --> active: ToolCompleted -- delta accounting
+    active --> active: MaybeContinueIfIdle -- continuation.md (one-shot)
+    active --> paused: TaskAborted(Interrupted) or /goal pause
+    paused --> active: ThreadResumed or /goal resume
+    active --> budget_limited: tokens_used >= token_budget (atomic SQL CASE)
+    active --> complete: update_goal complete (model-only terminal)
+    paused --> [*]: /goal clear
+    budget_limited --> [*]: /goal clear or replace
+    complete --> [*]
+    note right of active
+      Plan mode bypasses goal events entirely
+      goal_id UUID stale-write protection
+      Semaphore(1) serializes accounting
+    end note
+    </div>
+    <div class="caption">Codex <code>/goal</code> FSM. Asymmetric authorities: model can only enter <code>active</code> (<code>create_goal</code>) and <code>complete</code> (<code>update_goal</code>); pause/resume/budget transitions are system-controlled. Auto-continuation is one-shot per trigger (not a self-firing loop).</div>
+  </div>
+</section>
+
+<!-- Claude Code -->
+<section id="claude">
+  <h2><span class="num">04</span><span class="accent-claude">Claude Code</span> — <code>/goal</code>, Plan mode, Task DAG, Hooks</h2>
+  <p class="section-lede">The most complete single-session goal stack: durable conditions, separate-model evaluator, gateable hooks, DAG-shaped tasks, plan-mode permission, all composable.</p>
+
+  <div class="grid-4" style="grid-template-columns: 1fr 1fr;">
+    <div class="card claude">
+      <div class="tag">/goal</div>
+      <h3>Durable condition + evaluator</h3>
+      <ul>
+        <li>4 KB condition; auto-starts next turn until satisfied</li>
+        <li><b>Separate small model (Haiku)</b> reads condition + transcript after every turn → yes/no + reason</li>
+        <li>"No" reasons injected as <b>fresh next-turn guidance</b> (adaptive reminder)</li>
+        <li>Restored on <code>--resume</code> (counters reset)</li>
+        <li>Built on a prompt-based <code>Stop</code> hook — replicable by users</li>
+      </ul>
+    </div>
+    <div class="card claude">
+      <div class="tag">Task tools (TodoWrite deprecated)</div>
+      <h3>DAG with dependencies</h3>
+      <ul>
+        <li><code>TaskCreate / TaskGet / TaskList / TaskUpdate / TaskStop</code></li>
+        <li>Dependencies in <code>TaskUpdate</code> → blocked vs ready computed</li>
+        <li>Hook events fire on <code>TaskCreated</code>, <code>TaskCompleted</code></li>
+        <li><b>Both events have decision-control</b> → a hook can refuse completion</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart LR
+    A[Idle] -->|"/goal cond"| G["◎ /goal active"]
+    G -->|"Shift+Tab"| P["Plan mode (read-only)"]
+    P -->|"ExitPlanMode + user approval"| X[Execution]
+    X -->|"TaskCreate / TaskUpdate"| T[Task DAG]
+    T -->|"TaskCompleted hook"| V{"verify gate"}
+    V -->|deny| T
+    V -->|accept| X
+    X -->|"Stop hook"| E{"Haiku evaluator"}
+    E -->|"no — inject reason"| X
+    E -->|yes| Done
+    Done -->|"/clear or goal achieved"| A
+    style E fill:#1a2032,stroke:#c084fc,color:#f2f4fa
+    style V fill:#1a2032,stroke:#c084fc,color:#f2f4fa
+    </div>
+    <div class="caption">Composite lifecycle: <code>/goal</code> keeps the loop running, plan mode forces deliberation before edits, <code>Task*</code> tracks decomposition, hooks gate every transition.</div>
+  </div>
+</section>
+
+<!-- Factory Droid -->
+<section id="factory">
+  <h2><span class="num">05</span><span class="accent-factory">Factory Droid Missions</span> — multi-session orchestrated workflows</h2>
+  <p class="section-lede">Missions externalize state to git + shared files, run TDD per feature, validate per milestone with scrutiny + black-box agents, and loop fix-features until validation contract is green. Median 2 h, tail to 16 days. Requires High autonomy.</p>
+
+  <div class="callout" style="border-color: var(--factory); background: var(--factory-soft);">
+    <b>Live evidence (mission <code>mis_622b326b</code> on disk):</b> 13 features across 6 milestones, ~427 <code>VAL-*</code> assertions in <code>validation-contract.md</code>, decoupled <code>validation-state.json</code> bitmap, typed <code>progress_log.jsonl</code> event stream, per-handoff <code>{command, exitCode, observation}</code> verification envelope, per-role models in <code>model-settings.json</code>, mission-local <code>skills/</code> + <code>library/</code>. Full inventory in <code>factory-mission-fact.md</code> [F-LIVE].
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart TD
+    MA["mission_accepted<br/>mission.md authored"] --> MRS["mission_run_started<br/>orchestrator turn 1"]
+    MRS --> WSF["worker_selected_feature<br/>pick next from features.json"]
+    WSF --> WS["worker_started<br/>spawn loads skills/role/SKILL.md"]
+    WS --> WC{"worker outcome"}
+    WC -->|success| WCD["worker_completed<br/>writes handoffs/ts__featureId__sessionId.json<br/>commandsRun: command, exitCode, observation"]
+    WC -->|failure| WF["worker_failed<br/>reason recorded"]
+    WCD --> HD["orchestrator triage<br/>handoff_items_dismissed (with justifications)"]
+    WF --> RT["retry feature<br/>append workerSessionIds"]
+    RT --> WS
+    HD --> MR{"more features?"}
+    MR -->|yes| WSF
+    MR -->|milestone gate| MV["milestone validation<br/>scrutiny + user-testing<br/>writes validation-state.json"]
+    MV --> MG{"all VAL-* green?"}
+    MG -->|no| FX["fix features<br/>(new entries in features.json)"]
+    FX --> WSF
+    MG -->|yes, more milestones| WSF
+    MG -->|yes, done| MC["charter_complete"]
+    WCD -.budget/error.-> MP["charter_paused<br/>pauseReason: unrecoverable_usage_402, ..."]
+    MP -.resume.-> MRS
+
+    style MA fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    style MC fill:#1a2032,stroke:#34d399,color:#f2f4fa
+    style MP fill:#1a2032,stroke:#f59e0b,color:#f2f4fa
+    style WC fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    style MG fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    style MR fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    </div>
+    <div class="caption">Mission FSM rendered from <code>progress_log.jsonl</code> event types observed in mission <code>mis_622b326b</code>. <code>total runs ≈ #features + 2 × #milestones</code> (floor; fix loops add more). [F-LIVE]</div>
+  </div>
+</section>
+
+<!-- Comparison table -->
+<section id="compare">
+  <h2><span class="num">06</span>Side-by-side comparison</h2>
+  <p class="section-lede">Rows are capability axes; cells use ✔ / partial / ✘ with a one-line clarifier. Color codes match the system cards.</p>
+
+  <table class="cmp">
+    <thead><tr>
+      <th style="width: 22%">Axis</th>
+      <th class="accent-pi">pi-goals</th>
+      <th class="accent-codex">Codex</th>
+      <th class="accent-claude">Claude Code</th>
+      <th class="accent-factory">Factory Droid</th>
+    </tr></thead>
+    <tbody>
+      <tr><td class="row-axis">Goal representation</td>
+        <td>1 objective + flat string lists</td>
+        <td><code>/goal</code> objective (durable) + <code>update_plan</code> typed steps</td>
+        <td><code>/goal</code> condition + Task DAG with deps</td>
+        <td>mission spec → features → milestones → assertions</td></tr>
+      <tr><td class="row-axis">Decomposition</td>
+        <td class="no">✘</td>
+        <td class="partial">flat step array (no <code>/goal</code> subtasks)</td>
+        <td class="yes">✔ DAG (TaskUpdate deps)</td>
+        <td class="yes">✔ milestones → features → <code>fulfills[]</code> → VAL-* assertions</td></tr>
+      <tr><td class="row-axis">Durable on-disk state</td>
+        <td class="yes">✔ JSON</td>
+        <td class="yes">✔ SQLite per thread (<code>/goal</code>) <span class="src">plans still #19749</span></td>
+        <td class="yes">✔ session-restored</td>
+        <td class="yes">✔ git + state files</td></tr>
+      <tr><td class="row-axis">Survives <code>/compact</code></td>
+        <td class="yes">✔ (file)</td>
+        <td class="yes">✔ <code>/goal</code> persists; plan summarized</td>
+        <td class="yes">✔ PreCompact / PostCompact hooks</td>
+        <td class="yes">✔ externalized</td></tr>
+      <tr><td class="row-axis">Reminder content adapts to drift</td>
+        <td class="no">static text, every 8 turns</td>
+        <td class="partial">templated continuation prompt + budget steering</td>
+        <td class="yes">✔ fresh evaluator reason each turn</td>
+        <td class="yes">✔ validators check per milestone</td></tr>
+      <tr><td class="row-axis">Completion verified by separate judge</td>
+        <td class="no">✘ self-report</td>
+        <td class="partial">model self-reports complete; budget enforced by runtime</td>
+        <td class="yes">✔ Haiku evaluator + TaskCompleted hook</td>
+        <td class="yes">✔ scrutiny + black-box validators</td></tr>
+      <tr><td class="row-axis">Evidence binding</td>
+        <td class="partial">optional strings</td>
+        <td class="no">✘</td>
+        <td class="partial">via hook handlers</td>
+        <td class="yes">✔ handoff envelope: <code>{command, exitCode, observation}</code> triples per worker</td></tr>
+      <tr><td class="row-axis">Read-only deliberation mode</td>
+        <td class="no">✘</td>
+        <td class="yes">✔ Plan Mode (Shift+Tab)</td>
+        <td class="yes">✔ Plan mode + ExitPlanMode</td>
+        <td class="yes">✔ Planning phase</td></tr>
+      <tr><td class="row-axis">Plan-aware autonomy</td>
+        <td class="no">✘</td>
+        <td class="yes">✔ <code>/goal</code> auto-continuation; plan mode bypasses goal</td>
+        <td class="partial">plan mode = read-only</td>
+        <td class="yes">✔ missions require High</td></tr>
+      <tr><td class="row-axis">Gateable hook events</td>
+        <td class="partial">log only, no veto</td>
+        <td class="no">✘</td>
+        <td class="yes">✔ Task*/Stop/Permission, decision-control</td>
+        <td class="yes">✔ <code>handoff_items_dismissed</code> with per-item justification</td></tr>
+      <tr><td class="row-axis">Sub-agent handoff with goal context</td>
+        <td class="no">✘</td>
+        <td class="partial">n/a</td>
+        <td class="yes">✔ Task tool + subagents + SubagentStop</td>
+        <td class="yes">✔ worker + validator droids, shared state</td></tr>
+      <tr><td class="row-axis">Auto-continue toward goal</td>
+        <td class="no">✘</td>
+        <td class="partial">/goal experimental</td>
+        <td class="yes">✔ <code>/goal</code> keeps loop running</td>
+        <td class="yes">✔ orchestrator runs missions autonomously</td></tr>
+      <tr><td class="row-axis">Hierarchical "done when" contract</td>
+        <td class="no">✘</td>
+        <td class="yes">✔ AGENTS.md hierarchy</td>
+        <td class="partial">CLAUDE.md, no override layer</td>
+        <td class="yes">✔ AGENTS.md + validation-contract.md</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- Scores -->
+<section id="scores">
+  <h2><span class="num">07</span>Capability scorecard</h2>
+  <p class="section-lede">Subjective 0–4 scores per axis, synthesized from the comparison above. The radar makes the shape of each system obvious. <b>pi-charter v2 (proposed)</b> is included as a target shape; v2 scores are theoretical — nothing in the v2 column is shipped yet.</p>
+
+  <div class="chart-grid">
+    <div class="chart-wrap">
+      <canvas id="radar" height="380"></canvas>
+      <div class="legend">
+        <span><span class="swatch" style="background: var(--pi)"></span>pi-goals (v1)</span>
+        <span><span class="swatch" style="background: var(--codex)"></span>Codex</span>
+        <span><span class="swatch" style="background: var(--claude)"></span>Claude Code</span>
+        <span><span class="swatch" style="background: var(--factory)"></span>Factory Droid</span>
+        <span><span class="swatch" style="background: #fbbf24; outline: 2px dashed #fbbf24; outline-offset: -2px; background-image: linear-gradient(135deg, #fbbf24 25%, transparent 25%, transparent 50%, #fbbf24 50%, #fbbf24 75%, transparent 75%); background-size: 6px 6px;"></span>pi-charter v2 <i style="color: var(--text-3);">(proposed)</i></span>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="bar" height="380"></canvas>
+      <div class="legend"><span style="color: var(--text-3);">Total = sum across all 7 axes (max 28)</span></div>
+    </div>
+  </div>
+
+  <div class="callout" style="border-color: var(--pi); background: var(--pi-soft); margin-top: 20px;">
+    <b>Naming note:</b> the v1 extension is <code>pi-goals</code> — a single objective + static reminder. The v2 design owns Goal + Contract + Macro DAG + Evaluator + Verifier + Handoff envelope; that's mission-shaped, not goal-shaped. Renaming to <code>pi-charter</code> matches Factory vocabulary and signals scope correctly. Internally the kernel object stays a <code>Goal</code>; the user-facing slash command becomes <code>/charter</code>.
+  </div>
+</section>
+
+<!-- Gaps -->
+<section id="gaps">
+  <h2><span class="num">08</span>pi-goals gap ladder</h2>
+  <p class="section-lede">Three tiers by leverage. Tier&nbsp;S = biggest single-shot wins; Tier&nbsp;A = high leverage, moderate complexity; Tier&nbsp;B = useful, lower urgency.</p>
+
+  <div class="tiers">
+    <div class="tier s">
+      <h4>Tier S <span class="badge">biggest wins</span></h4>
+      <ul>
+        <li>
+          <b>S1 · Post-turn evaluator</b>
+          A cheap model judges <i>are we done? what's next?</i> after every assistant turn; result is the next-turn reminder. Solves static-text drift, no completion gate, no auto-continue, all at once.
+          <span class="source">model: Claude Code /goal</span>
+        </li>
+        <li>
+          <b>S2 · Verification gates with evidence binding</b>
+          Add <code>verifyCommand?</code> / <code>verifyPrompt?</code> per criterion. Block <code>charter_manage({action: 'complete'})</code> unless each criterion has a recorded pass. Land results in the existing <code>evidence[]</code>.
+          <span class="source">model: Factory validation-contract.md + Claude TaskCompleted</span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="tier a">
+      <h4>Tier A <span class="badge">high leverage</span></h4>
+      <ul>
+        <li>
+          <b>A1 · Sub-task DAG</b>
+          Optional <code>tasks[]</code> with <code>id/title/status/dependsOn[]/verifyCommand?</code>. Unlocks dependency-aware "what next" for S1.
+          <span class="source">model: Claude TaskCreate / TaskUpdate</span>
+        </li>
+        <li>
+          <b>A2 · Gateable goal events</b>
+          Emit <code>pi-goal:before-complete</code> and <code>pi-goal:criterion-ready</code> with decision control; let other extensions veto completion.
+          <span class="source">model: Claude hooks</span>
+        </li>
+        <li>
+          <b>A3 · Compaction-aware reinjection</b>
+          On <code>PreCompact</code>/<code>PostCompact</code>, write a condensed goal block back into context so criteria survive summarization.
+          <span class="source">model: Claude PreCompact / PostCompact</span>
+        </li>
+      </ul>
+    </div>
+
+    <div class="tier b">
+      <h4>Tier B <span class="badge">nice to have</span></h4>
+      <ul>
+        <li><b>B1 · Plan-mode coupling</b> Refuse completion in read-only host modes; permit criterion proposals only.</li>
+        <li><b>B2 · Sub-agent handoff envelope</b> When a subagent spawns, auto-include <code>objective + relevant criteria + nextAction</code> in its prompt.</li>
+        <li><b>B3 · charter.md / AGENTS.md hierarchy</b> Mirror Codex's load order for project instructions; per-charter "done when" lives in <code>charter.md §Criteria</code>. <span class="source">model: Codex AGENTS.md</span></li>
+        <li><b>B4 · Resume reset semantics</b> Like Claude <code>/goal</code>: keep condition; reset turn / time / token counters. <span class="source">model: Claude /goal</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- v2 design -->
+<section id="v2">
+  <h2><span class="num">09</span>Proposed pi-charter v2 — three-tier architecture</h2>
+  <p class="section-lede">Most-powerful v2, not minimal. <b>Renamed pi-goals → pi-charter</b>; kernel object is <code>Mission</code>; tools are <code>mission_*</code>; slash command is <code>/charter</code>. Three durable primitives in pi-charter (<b>Mission</b>, <b>Contract</b>, <b>Macro DAG</b>) plus one ephemeral primitive in pi-dag-tasks (<b>Tactical tasks</b>). Bridges go one direction only. Full design in <code>v2-brainstorm.md</code> + <code>orchestration-layering.md</code>.</p>
+
+  <div class="callout" style="border-color: var(--pi); background: var(--pi-soft);">
+    <b>Disambiguation rule:</b> mission = <i>why + done</i>; contract = <i>done means what</i>; feature = <i>durable work unit that produces evidence</i>; tactical task = <i>next step (turn-to-turn)</i>. Features carry <code>fulfills[]</code> into the contract. pi-dag-tasks stays a fully separate extension — <b>no</b> pointer field of any kind into pi-charter; coupling is via hook bus only. Arrows always point up.
+  </div>
+
+  <div class="diagram">
+    <div class="mermaid">
+flowchart TD
+    subgraph P0["Planning sources · markdown is source of truth (declarative-only)"]
+      CM["charter.md — single binding document<br/>## Objective &nbsp;·&nbsp; ## Criteria (VAL- assertions)<br/>## Scope and constraints<br/>verifier kind · requireFreshEvidence? · requireReviewSubagent?"]
+      PD["plan/&lt;featureId&gt;.md — one file per feature<br/>frontmatter: id · milestone · order · fulfills[] · preconditions[] (advisory)<br/>body: description + expectedBehavior prose"]
+      CM --> PD
+    end
+
+    subgraph PC["Planning phase (charter-planner-critic adversarial pass)"]
+      PCT["uncovered scope · orphan features<br/>cyclic preconditions · budget sanity"]
+      LK["charter:before_lock_plan event<br/>headless by default · TUI approver subscriber when on<br/>then plan_locked (digest)"]
+      PCT --> LK
+    end
+    PD --> PCT
+
+    subgraph S0["Tier 1 — Charter kernel (pi-charter)"]
+      G["Charter<br/>objective · CharterStatus FSM · budget (tokens / wallclock / turns)<br/>digests · turnsActive"]
+      ST["state.json<br/>kernel + sessionId binding (§22)"]
+      EVN["charter-evaluator<br/>cheap model · dual-mode (mission-scoped / free-form)<br/>cites criterionId or featureId or dropped<br/>steers · never gates completion"]
+      G --- ST
+      G --- EVN
+    end
+    LK --> G
+
+    subgraph S1["Tier 2a — Macro DAG runtime (computed sidecars)"]
+      PJ["plan.json<br/>computed from plan/*.md frontmatter"]
+      F["Feature (in-memory)<br/>id · milestone · order · fulfills[]<br/>preconditions[] (advisory, not gates)"]
+      FS["feature-state.json (mutable)<br/>per-feature status bitmap<br/>lastWorkerSessionId? — set only if agent delegated"]
+      PJ --> F
+      F --- FS
+    end
+    PD -.->|frontmatter generates| PJ
+
+    subgraph S2["Tier 2b — Contract runtime (computed sidecar)"]
+      CR["Criterion (in-memory)<br/>id · description · verifier kind"]
+      VS["criterion-state.json (mutable)<br/>per-criterion status bitmap"]
+      CM --> CR
+      CR --- VS
+    end
+
+    subgraph S3["Tier 3 — Tactical tasks (pi-dag-tasks, ephemeral — separate extension)"]
+      T["DagTask<br/>turn-to-turn todos<br/>blockedBy[] · status<br/><i>no pointer field into missions</i>"]
+    end
+
+    subgraph S4["Per-feature work — work/&lt;featureId&gt;/ (lazy)"]
+      NM["notes.md<br/>agent narrative scratch (optional, append-friendly)"]
+      ER["evidence/VAL-*__&lt;ts&gt;.json<br/>(command, exitCode, observation) triples<br/>per-criterion records"]
+      HO["handoffs/&lt;ts&gt;__&lt;featureId&gt;__&lt;sid&gt;.json<br/>salientSummary · whatWasImplemented<br/>whatWasLeftUndone · evidence[]"]
+      HO --> ER
+    end
+
+    subgraph S5["Hooks (gateable, decision-control)"]
+      H1["charter:before_lock_plan · charter:before_complete<br/>charter:before_amend_contract · charter:before_force_complete"]
+    end
+
+    subgraph S6["Surfacing (smart-Ralph guidance)"]
+      R["charter_status drift views<br/>uncovered · stuck · stale evidence · ready-next advisory"]
+      W["Status widget<br/>coverage · budget · last verdict"]
+    end
+
+    %% Join (durable, one direction)
+    F -.|fulfills[]|.-> CR
+
+    %% Tactical task coupling — hook events only, on the pi-charter side
+    T -. tasks:* hook events .-> R
+
+    %% Evidence + handoff flows
+    ER --> VS
+    HO --> FS
+
+    %% Surfacing wiring
+    G --> R
+    G --> W
+    EVN --> R
+    G --> H1
+
+    style MM fill:#1a2032,stroke:#fbbf24,color:#f2f4fa
+    style CM fill:#1a2032,stroke:#34d399,color:#f2f4fa
+    style PD fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    style PCT fill:#1a2032,stroke:#c084fc,color:#f2f4fa
+    style LK fill:#1a2032,stroke:#f87171,color:#f2f4fa
+    style G fill:#1a2032,stroke:#f59e0b,color:#f2f4fa
+    style ST fill:#1a2032,stroke:#f59e0b,color:#f2f4fa
+    style EVN fill:#1a2032,stroke:#c084fc,color:#f2f4fa
+    style F fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    style PJ fill:#1a2032,stroke:#38bdf8,color:#f2f4fa
+    style CR fill:#1a2032,stroke:#34d399,color:#f2f4fa
+    style HO fill:#1a2032,stroke:#34d399,color:#f2f4fa
+    style ER fill:#1a2032,stroke:#34d399,color:#f2f4fa
+    style H1 fill:#1a2032,stroke:#f87171,color:#f2f4fa
+    style T fill:#1a2032,stroke:#f59e0b,color:#f2f4fa
+    </div>
+    <div class="caption">pi-charter architecture, full deconstruction flow. <b>Markdown is the source of truth</b> (one <code>charter.md</code> with three sections — Objective / Criteria / Scope — plus per-feature <code>plan/&lt;featureId&gt;.md</code> — declarative only, no runtime fields). <b>JSON sidecars are computed</b> (plan.json from frontmatter, feature-state.json + criterion-state.json as mutable bitmaps, state.json as kernel + session binding). Planning authors the charter's Criteria section first, then a per-feature markdown DAG, then a <code>charter-planner-critic</code> adversarial pass, then <code>charter:before_lock_plan</code> (TUI approver subscribes if on); only then does the charter go <code>active</code>. Runtime artifacts land in <code>work/&lt;featureId&gt;/</code> (notes.md, evidence/, handoffs/) created lazily. pi-dag-tasks stays a fully separate extension with no pointer field into charters; coupling is hook-events-only on the pi-charter side.</div>
+  </div>
+
+  <h3 style="color: var(--text-0); font-size: 19px; margin: 36px 0 14px; letter-spacing: -0.01em;">Mission lifecycle — from spawn to terminal state</h3>
+  <div class="diagram">
+    <div class="mermaid">
+flowchart TD
+    U["Upstream spawn<br/>Symphony or direct prompt or pi --charter-objective"]
+
+    subgraph SP["1. Spawn and invoke"]
+      direction TB
+      S1["Agent spawned with English instruction<br/>example: use design/oauth.md as the spec"]
+      S2["charter_manage action=create<br/>objective + budget? + idempotencyKey?<br/>auto-binds session via state.json"]
+      S1 --> S2
+    end
+
+    subgraph PL["2. Planning phase"]
+      direction TB
+      P1["Charter authoring<br/>reuse charter.md if present<br/>else agent drafts Criteria section (VAL- assertions)"]
+      P2["Macro DAG authoring<br/>milestones then features then fulfills"]
+      P3["Adversarial pass by charter-planner-critic<br/>uncovered scope, orphan features, cyclic preconditions"]
+      P1 --> P2 --> P3
+    end
+
+    GATE["Plan approval gate<br/>mission before_lock_plan event<br/>headless by default, TUI approver when enabled"]
+
+    subgraph EX["3. Execution loop (smart-Ralph)"]
+      direction TB
+      E0["plan_approved event<br/>contract and plan digests lock"]
+      E1["Read charter_status<br/>drift views: uncovered, stuck, stale, ready-next<br/>plus last charter-evaluator reason"]
+      E2["Agent picks ONE this turn<br/>implement, verify, review-delegate,<br/>parallel-delegate, amend, complete, pause"]
+      EV["charter-evaluator every turn<br/>cites criterionId or featureId or dropped<br/>steers, never gates completion"]
+      E0 --> E1 --> E2
+      E2 -. loop .-> E1
+      EV -. steer reminder .-> E1
+    end
+
+    subgraph RV["4. Review phase"]
+      direction TB
+      R1["charter_verify over ALL criteria<br/>command, prompt, hook, manual"]
+      R2["before_complete hooks<br/>shell, HTTP, prompt, agent"]
+      R3["Fresh-evidence invariant<br/>evidence post-dates verifier change"]
+      R1 --> R2 --> R3
+    end
+
+    T1["completed verdict full"]
+    T2["budget limited"]
+    T3["abandoned"]
+
+    PB["charter_pause or charter_resume"]
+    AM["charter_amend<br/>bumps digest, re-verifies affected criteria"]
+    FC["charter_complete force=true<br/>records forced_complete event<br/>verdict partial"]
+
+    U --> S1
+    S2 --> P1
+    P3 --> GATE
+    GATE -->|approve| E0
+    GATE -. reject or amend .-> P1
+    E2 -. agent picks complete .-> R1
+    R3 -->|all pass| T1
+    R3 -. verifier fails .-> E1
+    E2 -. agent picks amend .-> AM
+    AM -. re-enter planning .-> P1
+    E2 -. pause .-> PB
+    PB -. resume .-> E1
+    R3 -. force-complete escape .-> FC
+    FC --> T1
+    E2 -. budget exhausted .-> T2
+    E2 -. user abandon .-> T3
+
+    style GATE fill:#2a1a1a,stroke:#f87171,color:#f2f4fa
+    style EV fill:#1a2032,stroke:#c084fc,color:#f2f4fa
+    style P3 fill:#1a2032,stroke:#c084fc,color:#f2f4fa
+    style T1 fill:#1a2a1a,stroke:#34d399,color:#f2f4fa
+    style T2 fill:#2a1a1a,stroke:#f87171,color:#f2f4fa
+    style T3 fill:#2a1a1a,stroke:#f87171,color:#f2f4fa
+    style FC fill:#2a2a1a,stroke:#fbbf24,color:#f2f4fa
+    style U fill:#0f1320,stroke:#888,color:#f2f4fa
+    </div>
+    <div class="caption">Mission lifecycle. <b>Solid arrows = canonical happy path</b>; <b>dotted = optional / branch / loop</b>. The four phases (Spawn → Planning → Execution → Review) are status transitions on <code>Mission.status</code>; everything between dotted arrows is a side branch (pause/resume, amend, force-complete) that can fire from any active state.</div>
+  </div>
+
+  <div class="callout" style="border-color: var(--pi); background: var(--pi-soft);">
+    <b>“Do we want all the steps?”</b> — the diagram shows the <b>canonical happy path + four real branches</b> (pause/resume, amend_contract, force_complete, budget exhaustion). Deliberately <b>not</b> in the diagram: every individual event type, evaluator cooldown/cache behavior, per-criterion verifier sub-steps, subagent inner loops, hook handler kinds. Those live in <code>v2-brainstorm.md</code> §4–6 and the event-types section of <code>orchestration-layering.md</code>. The rule of thumb: <i>if a transition flips <code>Mission.status</code> or is something the user / orchestrator triggers explicitly, it’s in the diagram; otherwise it’s implementation detail.</i>
+  </div>
+
+  <h3 style="color: var(--text-0); font-size: 19px; margin: 36px 0 14px; letter-spacing: -0.01em;">v2 strengths — what makes it the most-powerful version</h3>
+  <div class="grid-4" style="margin-bottom: 8px;">
+    <div class="card" style="border-color: var(--pi);">
+      <div class="tag" style="color: var(--pi);">1 · Contract layer</div>
+      <h3 style="font-size: 16px;">Done means what, in writing</h3>
+      <ul>
+        <li>VAL-* assertions authored <b>before</b> features (Factory)</li>
+        <li>Per-criterion verifier: command · prompt · hook · manual</li>
+        <li>Fresh-evidence invariant: complete blocked until evidence post-dates verifier change</li>
+        <li>Side-car bitmap (<code>state-charterId.json</code>) so contract markdown stays clean</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--factory);">
+      <div class="tag" style="color: var(--factory);">2 · Macro DAG</div>
+      <h3 style="font-size: 16px;">Durable work-breakdown</h3>
+      <ul>
+        <li>Features grouped into milestones, survive compression + resume</li>
+        <li><code>fulfills[]</code> join into contract → coverage computable</li>
+        <li>Three drift views: uncovered · unverified · wasted work</li>
+        <li>Two new drift views: stuck features · milestone debt</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--claude);">
+      <div class="tag" style="color: var(--claude);">3 · Adaptive evaluator (folds intent-sentinel)</div>
+      <h3 style="font-size: 16px;">Drift signal every turn, two modes</h3>
+      <ul>
+        <li>Separate cheap model + reasoning effort (Factory split)</li>
+        <li><b>mission-scoped</b> when active — cites <code>criterionId</code> / <code>featureId</code> or steer is dropped</li>
+        <li><b>free-form</b> when no mission — verbatim intent-sentinel behavior</li>
+        <li>Returns <code>verdict</code> + <code>reason</code> + <code>proposedNextAction</code>; never gates completion</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--codex);">
+      <div class="tag" style="color: var(--codex);">4 · Asymmetric authority</div>
+      <h3 style="font-size: 16px;">Safe completion</h3>
+      <ul>
+        <li>Model can <code>create</code>, <code>propose-complete</code>, <code>record-evidence</code></li>
+        <li>System reserves <code>pause</code>, <code>resume</code>, <code>budget</code>, <code>force-complete</code></li>
+        <li>Token + wall-clock + turn budget enforced atomically</li>
+        <li>charterId UUID stale-write protection (Codex pattern verbatim)</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--factory);">
+      <div class="tag" style="color: var(--factory);">5 · Handoff envelope</div>
+      <h3 style="font-size: 16px;">Subagent results, structured</h3>
+      <ul>
+        <li>Per-handoff <code>{command, exitCode, observation}</code> triples</li>
+        <li><code>discoveredIssues</code> with explicit accept / dismiss + justification</li>
+        <li>Subagent inherits active charterId via opaque metadata; emits envelope on return</li>
+        <li>Parent applies envelope: evidence + criterion updates + event log</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--claude);">
+      <div class="tag" style="color: var(--claude);">6 · Gateable hooks</div>
+      <h3 style="font-size: 16px;">Independent vetoes</h3>
+      <ul>
+        <li>Mission-level: <code>charter:before_complete</code> · <code>charter:before_amend_contract</code> · <code>charter:before_force_complete</code></li>
+        <li>Plan-level: <code>feature:before_complete</code> · <code>milestone:before_gate</code></li>
+        <li>Handlers: shell · HTTP · prompt-based · agent-based</li>
+        <li><code>review</code> phase + hook = two vetoes before completion</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--pi);">
+      <div class="tag" style="color: var(--pi);">7 · Planning phase</div>
+      <h3 style="font-size: 16px;">Plan stress-tested before activation</h3>
+      <ul>
+        <li>Distinct <code>planning</code> status; contract + plan co-authored</li>
+        <li>Adversarial pass: uncovered scope · orphan features · cyclic preconditions</li>
+        <li>User approves → <code>plan_approved</code> event → digests lock</li>
+        <li><code>amend_contract</code> requires re-verification of affected criteria</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--codex);">
+      <div class="tag" style="color: var(--codex);">8 · Compaction-aware</div>
+      <h3 style="font-size: 16px;">Survives /compact + --resume</h3>
+      <ul>
+        <li>All durable state in <code>&lt;project&gt;/.pi/charters/&lt;charterId&gt;/</code>, never transcript-only — per-project, not per-machine</li>
+        <li>PreCompact reinjects <i>current</i> evaluator reason</li>
+        <li>Resume re-runs evaluator before next turn fires</li>
+        <li>Auto-pause on interrupt, auto-resume on session re-entry</li>
+      </ul>
+    </div>
+    <div class="card" style="border-color: var(--claude); grid-column: 1 / -1;">
+      <div class="tag" style="color: var(--claude);">9 · Bundled personas + spawn substrate</div>
+      <h3 style="font-size: 16px;">Contract-aware verifiers ship with the extension</h3>
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;">
+        <ul style="margin: 0;">
+          <li>pi-charter ships <code>charter-verifier</code> + <code>charter-planner-critic</code> + <code>charter-evaluator</code> as <b>internal-scope</b> personas — invocable only by extension code, never advertised to root LLM</li>
+          <li>Resolver search path: <code>&lt;context-dir&gt;/agents/</code> → <code>~/.pi/agent/agents/</code> → extension-registered. <b>Users override by file-shadowing</b></li>
+          <li>Bundled persona frontmatter declares its tool allowlist explicitly (incl. <code>charter_record_evidence</code> + <code>charter_handoff_apply</code>)</li>
+        </ul>
+        <ul style="margin: 0;">
+          <li>Two pi-subagents TS surfaces: <code>spawn({agent, task})</code> for named/stable + <code>spawnRaw({systemPrompt, prompt})</code> for dynamic state (the <code>charter-evaluator</code> embeds live criteria status + last 3 verdicts)</li>
+          <li>Opaque <code>metadata</code> passthrough on hook events — pi-charter tags spawns with <code>"pi-charter.charterId"</code>; pi-subagents never reads it. No mission vocabulary leaks downstack</li>
+          <li><b>Substrate payoff:</b> same mechanism works for any future pi-extension (pi-qa, pi-docs, pi-deep-research) — ship bundled personas, use <code>spawnRaw</code> for live prompts, tag with namespaced metadata</li>
+        </ul>
+      </div>
+    </div>
+    <div class="card" style="border-color: var(--factory); grid-column: 1 / -1;">
+      <div class="tag" style="color: var(--factory);">10 · Autonomous-first + upstream spec acceptance</div>
+      <h3 style="font-size: 16px;">Mission is the alignment rail, not the approval gate</h3>
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;">
+        <ul style="margin: 0;">
+          <li>Upstream orchestrator (Symphony / external planner / direct prompt) drafts the spec; spawned agent calls <code>charter_manage({action: 'create'})</code> itself and fills in the charter + plan — agent-initiated, no substrate magic</li>
+          <li><code>charter_manage({action: 'create', objective, budget?, idempotencyKey?})</code> — three optional fields, minimal surface. Spec handling is plain English in the spawn prompt; the agent reads files with its own tools. Symphony writes <code>&lt;charterDir&gt;/charter.md</code> directly when it has a pre-baked charter; planning notices the file and skips authoring. No <code>contractPath</code>/<code>charterPath</code>, no <code>contractDraft</code>, no <code>planDraft</code>, no <code>autoApprovePlan</code>, no <code>completionMode</code> — do not re-add</li>
+          <li>Three nested grains: <i>Symphony (inter-mission) → pi-charter (intra-spawn) → pi-dag-tasks (per turn)</i>. Each layer owns its decomposition</li>
+        </ul>
+        <ul style="margin: 0;">
+          <li>Plan approval is headless by default: <code>charter:before_lock_plan</code> hook fires; if no subscriber gates, plan auto-locks. Bundled <b>TUI approver</b> subscribes when on (<code>charter.config.json: tuiApprover: on</code>, default on; <code>PI_CHARTER_TUI=off</code> overrides). CI / agent loops set <code>off</code> and run unattended</li>
+          <li>Evaluator never gates completion — only the verifier + <code>charter:before_complete</code> hooks do (Codex asymmetric-authority pattern). HITL is entirely out of pi-charter scope; lives in subscriber extensions</li>
+          <li>Three first-class entry points, all explicit: <code>charter_manage({action: 'create'})</code> tool (agent), <code>/charter &lt;objective&gt;</code> or <code>/charter new</code> slash (user), or <code>pi --charter-objective "&lt;text&gt;"</code> / <code>pi --charter-resume &lt;id&gt;</code> CLI flags via <code>pi.registerFlag()</code>. pi-charter never silently wraps a session based on inferred intent</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="border-color: var(--claude); grid-column: 1 / -1; margin-top: 18px;">
+    <div class="tag" style="color: var(--claude);">11 · Session ↔ mission binding (filesystem, not transcript)</div>
+    <h3 style="font-size: 16px;">Multi-mission per project; agent never picks up someone else's mission</h3>
+    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;">
+      <ul style="margin: 0;">
+        <li><b>Per-project scope:</b> <code>&lt;project&gt;/.pi/charters/&lt;charterId&gt;/</code> (mirrors v1 <code>.pi/goals/</code>). Multiple missions can coexist; <code>index.json</code> registry lists them. Worktrees inherit naturally</li>
+        <li><b>Two-file binding</b> with no custom transcript message: forward <code>state.json.sessionId</code> on the mission, reverse <code>~/.pi/agent/sessions/&lt;sid&gt;/charter.json</code> on the session. Compression-safe; forward wins on disagreement</li>
+        <li><b>Resolution order</b> for any <code>mission_*</code> tool with no charterId arg: explicit arg → reverse session file → error if multiple active (explicit beats clever)</li>
+      </ul>
+      <ul style="margin: 0;">
+        <li><b>Agent surface:</b> <code>charter_manage({action: 'create'})</code> auto-binds the calling session. No <code>charter_claim</code> tool — agent never adopts a charter it didn't create</li>
+        <li><b>User surface:</b> <code>/charter resume &lt;id&gt;</code> slash + <code>pi mission resume &lt;id&gt;</code> CLI rebind; <code>/charter clear</code> unbinds. Switching ownership between sessions is human-only</li>
+        <li><b>/fork</b> gets a new sessionId with empty <code>sessions/&lt;newSid&gt;/</code>; can read but not write mission state until user runs <code>/charter resume</code>. One owner at a time. Subagent children never bind — charterId reaches them via <code>metadata</code> passthrough only</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout" style="border-color: var(--text-3); background: var(--bg-2); margin-top: 24px;">
+    <b>Boundary with pi-dag-tasks:</b> pi-dag-tasks keeps owning the tactical layer (turn-to-turn todos, ready/blocked, persistent widget, reminders) as a fully separate extension. <b>No new fields, no pointer back into missions.</b> Coupling lives entirely on the missions side: pi-charter optionally subscribes to <code>tasks:after_complete</code> hook events for context. Neither extension imports the other; communication is via the hook bus and shared file directories only. The user-visible rule: <i>features are durable work units that produce evidence; tactical tasks are this-hour's todos — useful with or without an active mission.</i>
+  </div>
+
+  <div class="callout" style="border-color: var(--claude); background: var(--bg-2); margin-top: 16px;">
+    <b>Boundary with pi-subagents:</b> pi-subagents stays mission-unaware. pi-charter consumes only its public surface — <code>spawn</code> / <code>spawnRaw</code> / <code>registerPersonaDir</code> — and hook events with passthrough <code>metadata</code>. CI grep guard forbids the tokens <i>mission · charterId · criterion · criterionId · feature · goal_</i> inside pi-subagents source. The substrate stays a universal spawn mechanism for every future pi-extension; coupling lives entirely in the upper layer.
+  </div>
+
+  <div class="callout" style="border-color: var(--codex); background: var(--bg-2); margin-top: 16px;">
+    <b>intent-sentinel → folded.</b> The existing <code>intent-sentinel</code> extension (cheap separate-model trajectory supervisor with memories, mute, cooldown, subagent-skip guard) is the same primitive as the proposed <code>charter-evaluator</code>. v2 folds it: same machinery runs in <i>mission-scoped</i> mode when a mission is active and <i>free-form</i> mode otherwise (verbatim intent-sentinel behavior). 2-week soft deprecation window then uninstall.
+  </div>
+</section>
+
+<!-- Sources -->
+<section id="sources">
+  <h2><span class="num">10</span>Sources</h2>
+  <p class="section-lede">All URLs were actually fetched. Citation numbers match <code>sources.md</code>.</p>
+
+  <details class="sources" open>
+    <summary><b>Codex</b> · 10 sources</summary>
+    <ul>
+      <li>[1] <a href="https://github.com/openai/codex/blob/main/codex-rs/protocol/src/plan_tool.rs" target="_blank">plan_tool.rs</a> + <a href="https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/plan.rs" target="_blank">plan handler</a> + <a href="https://github.com/openai/codex/pull/10124" target="_blank">PR #10124</a></li>
+      <li>[2] <a href="https://github.com/openai/codex/pull/4769" target="_blank">PR #4769 — Plan Mode</a> + <a href="https://github.com/openai/codex/blob/main/docs/agents_md.md" target="_blank">docs/agents_md.md</a></li>
+      <li>[3] <a href="https://github.com/openai/codex/issues/19749" target="_blank">Issue #19749 — active_todo_list (open)</a></li>
+      <li>[4] <a href="https://github.com/openai/codex/pull/1497" target="_blank">PR #1497 — /compact</a>; auto-compact issues #4924, #11325</li>
+      <li>[5] <a href="https://github.com/openai/codex/issues/18920" target="_blank">Issue #18920 — TUI plan render gap (open)</a></li>
+      <li>[6] <a href="https://developers.openai.com/codex/agent-approvals-security" target="_blank">Agent approvals &amp; security</a></li>
+      <li>[7] <a href="https://developers.openai.com/codex/guides/agents-md" target="_blank">Custom instructions with AGENTS.md</a></li>
+      <li>[8] <a href="https://developers.openai.com/codex/use-cases/follow-goals" target="_blank">Follow a goal use case</a></li>
+      <li>[9] <a href="https://github.com/openai/codex/blob/main/AGENTS.md" target="_blank">openai/codex AGENTS.md (repo-internal)</a></li>
+      <li>[10] chatgpt.com/codex — <i>gated, 403</i></li>
+      <li>[g1] <a href="https://gist.github.com/patleeman/b1b5768393f9bf2f60865b1defeeb819" target="_blank">patleeman gist — How OpenAI Codex implements <code>/goal</code></a> (5-PR walkthrough, FACT)</li>
+      <li>[g2] <a href="https://developers.openai.com/codex/guides/slash-commands/" target="_blank">Codex CLI slash commands</a></li>
+      <li>[g3] <a href="https://mehmetbaykar.com/posts/enable-goal-mode-in-codex-cli/" target="_blank">Codex CLI /goal: Enable the Ralph Loop</a></li>
+      <li>[g4] <a href="https://github.com/openai/codex/issues/20536" target="_blank">Issue #20536 — Document /goal lifecycle</a></li>
+      <li>[g5] <a href="https://github.com/openai/codex/issues/22049" target="_blank">Issue #22049 — macOS app should support /goal</a></li>
+      <li>[g6] <a href="https://github.com/openai/codex/issues/20591" target="_blank">Issue #20591 — /goal does not work in 0.128.0 (feature flag default-off)</a></li>
+    </ul>
+  </details>
+
+  <details class="sources">
+    <summary><b>Claude Code</b> · 7 sources</summary>
+    <ul>
+      <li>[11] <a href="https://docs.claude.com/en/docs/claude-code/goal" target="_blank">/goal command</a></li>
+      <li>[12] <a href="https://docs.claude.com/en/docs/claude-code/tools" target="_blank">Tools reference</a> (Task*, ExitPlanMode, TodoWrite-deprecated)</li>
+      <li>[13] <a href="https://docs.claude.com/en/docs/claude-code/hooks" target="_blank">Hooks reference</a></li>
+      <li>[14] <a href="https://docs.claude.com/en/docs/claude-code/permission-modes" target="_blank">Permission modes</a></li>
+      <li>[15] <a href="https://docs.claude.com/en/docs/claude-code/scheduled-tasks" target="_blank">Scheduled tasks (/loop)</a></li>
+      <li>[16] <a href="https://docs.claude.com/en/docs/claude-code/sub-agents" target="_blank">Sub-agents</a></li>
+      <li>[17] <a href="https://docs.claude.com/en/docs/claude-code/commands" target="_blank">Commands</a></li>
+    </ul>
+  </details>
+
+  <details class="sources">
+    <summary><b>Factory Droid Missions</b> · 22 sources (incl. live mission)</summary>
+    <ul>
+      <li><a href="https://docs.factory.ai/cli/features/charters" target="_blank">docs.factory.ai — missions</a> (primary)</li>
+      <li><a href="https://factory.ai/news/charters-architecture" target="_blank">factory.ai/news — missions-architecture</a></li>
+      <li><a href="https://factory.ai/news/charters" target="_blank">factory.ai/news — Introducing Missions</a></li>
+      <li><a href="https://docs.factory.ai/cli/user-guides/auto-run" target="_blank">Autonomy levels</a></li>
+      <li><a href="https://docs.factory.ai/cli/user-guides/specification-mode" target="_blank">Spec Mode</a></li>
+      <li><a href="https://docs.factory.ai/changelog/release-notes" target="_blank">Changelog / release notes</a></li>
+      <li><a href="https://factory.ai/news/code-droid-technical-report" target="_blank">Code Droid technical report</a></li>
+      <li><a href="https://docs.factory.ai/cli/features/droid-control" target="_blank">Droid Control (/verify, /qa-test)</a></li>
+      <li><a href="https://docs.factory.ai/cli/configuration/agents-md" target="_blank">AGENTS.md (Factory)</a></li>
+      <li><a href="https://docs.factory.ai/cli/configuration/skills" target="_blank">Skills</a></li>
+      <li>+ 11 more (see <code>factory-digest.md</code>)</li>
+      <li><b>[F-LIVE]</b> Live local mission directory observed 2026-05-14: <code>~/.factory/charters/4f9502f7-16ae-4156-8e8a-1cdab6d873d2</code> — mission <code>mis_622b326b</code>, 13 features, 6 milestones, ~427 VAL-* assertions, 1 handoff. Full inventory in <code>factory-mission-fact.md</code>.</li>
+    </ul>
+  </details>
+
+  <details class="sources">
+    <summary><b>pi-goals</b> · local source</summary>
+    <ul>
+      <li>[P1] <code>agent/extensions/pi-goals/index.ts</code> — FACT, we own the code</li>
+    </ul>
+  </details>
+</section>
+
+<footer>
+  Generated 2026-05-14 — pi-goals comparison research.
+  Artifacts: <code>brief.md</code> · <code>report.md</code> · <code>codex-digest.md</code> · <code>claude-code-digest.md</code> · <code>factory-digest.md</code> · <code>sources.md</code> · this showcase.
+  Reproduce with the fetched URLs above; every claim is auditable.
+</footer>
+
+</div>
+
+<script>
+  // Mermaid init with a dark theme matching the page
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    themeVariables: {
+      darkMode: true,
+      background: '#0d1018',
+      primaryColor: '#1a2032',
+      primaryTextColor: '#f2f4fa',
+      primaryBorderColor: '#2c3450',
+      secondaryColor: '#131826',
+      tertiaryColor: '#131826',
+      lineColor: '#5a6285',
+      textColor: '#c9cee0',
+      mainBkg: '#1a2032',
+      nodeBorder: '#2c3450',
+      clusterBkg: '#0d1018',
+      clusterBorder: '#232a3d',
+      titleColor: '#f2f4fa',
+      edgeLabelBackground: '#0d1018',
+      fontSize: '16px',
+      fontFamily: 'Inter, system-ui, sans-serif'
+    },
+    flowchart: { curve: 'basis', padding: 22, nodeSpacing: 60, rankSpacing: 70, useMaxWidth: true, diagramPadding: 16 },
+    stateDiagram: { curve: 'basis', useMaxWidth: true }
+  });
+
+  // Scores
+  const axes = ['Representation', 'Persistence', 'Surfacing', 'Verification', 'Autonomy', 'Sub-agents', 'Hooks'];
+  const scores = {
+    pi:      [1, 3, 1, 0, 0, 0, 1],
+    codex:   [3, 4, 3, 1, 4, 2, 1],
+    claude:  [4, 4, 4, 3, 3, 4, 4],
+    factory: [4, 4, 4, 4, 4, 4, 4],
+    v2:      [4, 4, 4, 4, 4, 4, 4],   // proposed pi-charter v2 — unbuilt; theoretical capability
+  };
+  const color = { pi: '#f59e0b', codex: '#10b981', claude: '#c084fc', factory: '#38bdf8', v2: '#fbbf24' };
+
+  Chart.defaults.color = '#c9cee0';
+  Chart.defaults.font.family = 'Inter, system-ui, sans-serif';
+  Chart.defaults.borderColor = '#232a3d';
+
+  // Radar
+  new Chart(document.getElementById('radar'), {
+    type: 'radar',
+    data: {
+      labels: axes,
+      datasets: [
+        { label: 'pi-goals (v1)',          data: scores.pi,      borderColor: color.pi,      backgroundColor: 'rgba(245, 158, 11, .14)',  pointBackgroundColor: color.pi,      borderWidth: 2 },
+        { label: 'Codex',                  data: scores.codex,   borderColor: color.codex,   backgroundColor: 'rgba(16, 185, 129, .12)',  pointBackgroundColor: color.codex,   borderWidth: 2 },
+        { label: 'Claude Code',            data: scores.claude,  borderColor: color.claude,  backgroundColor: 'rgba(192, 132, 252, .14)', pointBackgroundColor: color.claude,  borderWidth: 2 },
+        { label: 'Factory Droid',          data: scores.factory, borderColor: color.factory, backgroundColor: 'rgba(56, 189, 248, .12)',  pointBackgroundColor: color.factory, borderWidth: 2 },
+        { label: 'pi-charter v2 (proposed)', data: scores.v2,      borderColor: color.v2,      backgroundColor: 'rgba(251, 191, 36, .08)',  pointBackgroundColor: color.v2,      borderWidth: 2, borderDash: [6, 4] },
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        r: {
+          beginAtZero: true, min: 0, max: 4,
+          ticks: { stepSize: 1, color: '#5a6285', backdropColor: 'transparent', font: { size: 11 } },
+          grid:  { color: '#232a3d' },
+          angleLines: { color: '#232a3d' },
+          pointLabels: { color: '#c9cee0', font: { size: 12, weight: '500' } }
+        }
+      }
+    }
+  });
+
+  // Bar (totals)
+  const totals = Object.fromEntries(Object.entries(scores).map(([k, v]) => [k, v.reduce((a, b) => a + b, 0)]));
+  new Chart(document.getElementById('bar'), {
+    type: 'bar',
+    data: {
+      labels: ['pi-goals (v1)', 'Codex', 'Claude Code', 'Factory Droid', 'pi-charter v2'],
+      datasets: [{
+        label: 'Total score (max 28)',
+        data: [totals.pi, totals.codex, totals.claude, totals.factory, totals.v2],
+        backgroundColor: [color.pi, color.codex, color.claude, color.factory, color.v2],
+        borderRadius: 8,
+        borderSkipped: false,
+        barThickness: 44,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: (c) => `${c.formattedValue} / 28` } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#c9cee0', font: { size: 13, weight: '500' } } },
+        y: { beginAtZero: true, max: 28, grid: { color: '#232a3d' }, ticks: { color: '#5a6285', stepSize: 4 } }
+      }
+    }
+  });
+</script>
+</body>
+</html>
