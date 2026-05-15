@@ -41,12 +41,12 @@ Four LLM-callable tools:
 Single slash tree:
 
 - `/charter` opens the widget/TUI/status surface.
-- `/charter <objective>` creates a new charter shortcut.
-- `/charter status|ls|resume|pause|force-complete|untrust-evaluator` are subcommands.
+- `/charter <objective>` hands the objective to the agent and tells it to run the planning workflow end-to-end. **Users describe intent; agents own charter creation** (id, criteria shape, plan).
+- `/charter status|pause|resume` are subcommands.
 
 CLI flags:
 
-- `pi --charter-objective "<text>"` creates and binds before turn 1.
+- `pi --charter-objective "<text>"` hands the objective to the agent on turn 1 (same rule as the slash command; the agent calls `charter_manage create`).
 - `pi --charter-resume <id>` rebinds before turn 1.
 
 No spec auto-detect, no `--charter-spec`, and no path parameter on creation. If a prompt says "use `docs/spec.md`", the agent reads it with normal file tools and authors `charter.md` during planning.

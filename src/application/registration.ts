@@ -271,7 +271,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
 
 export function registerCharterCommands(pi: ExtensionAPI): void {
   pi.registerCommand("charter", {
-    description: "Open or manage pi-charter. Bare shows status; text creates a charter objective.",
+    description: "Open or manage pi-charter. Bare shows status; text hands an objective to the agent (the agent creates the charter).",
     handler: async (args, ctx) => {
       const text = args.trim();
       if (!text || text === "status") {
@@ -293,24 +293,25 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
         ctx.ui.notify(result.message, "info");
         return;
       }
-      const result = await createCharter(ctx.cwd, {
-        objective: text,
-        sessionId: ctx.sessionManager.getSessionId?.(),
-      });
-      ctx.ui.notify(result.message, "info");
-      // Kick the agent into planning immediately so /charter is one-shot.
-      // Without this the user has to follow up with a second prompt to start
-      // work — see dogfood feedback in docs/NEXT.md.
+      // pi-charter rule: users describe intent, agents own charter creation.
+      // The slash command never calls createCharter directly — it hands the
+      // objective to the agent, which picks the charterId and shapes the
+      // criteria/plan during the planning phase. This prevents long objective
+      // text from leaking into ids and keeps charter authorship inside the
+      // tool surface where the verifier/critic personas can see it.
       pi.sendUserMessage(
         [
-          `A new pi-charter has been created. Charter ID: ${result.charterId}.`,
-          `Objective: ${text}`,
+          "The user has handed you a new pi-charter objective:",
           "",
-          "Start the planning workflow now:",
-          "1. Run charter_status to see the current state and legal nextActions.",
-          "2. Draft the contract (criteria) and macro plan (features). Use charter_plan add_feature to seed features and charter_manage amend_charter to refine the contract if needed.",
-          "3. Once the plan is complete, call charter_plan lock_plan to transition into the active phase.",
-          "4. Then execute the work feature by feature, recording evidence via charter_record evidence (or charter_record verify when a verifier command is defined).",
+          text,
+          "",
+          "Create and execute the charter end-to-end:",
+          "1. Call charter_manage action=create with this objective. Use a concise generated id; do not embed the objective text in the id.",
+          "2. Run charter_status to confirm the planning state and legal nextActions.",
+          "3. Author the contract (criteria, verifier kinds, scope/constraints) by editing charter.md, then seed the macro plan via charter_plan action=add_feature for each feature.",
+          "4. Call charter_plan action=lock_plan when planning is complete to transition to active.",
+          "5. Execute the work feature by feature. Record evidence via charter_record action=evidence (manual) or action=verify (command verifier).",
+          "6. Call charter_manage action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
           "",
           "Follow charter_status nextActions instead of guessing transitions.",
         ].join("\n"),
@@ -356,15 +357,21 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
 
     const objective = String(pi.getFlag("charter-objective") ?? "").trim();
     if (!objective) return;
-    const result = await createCharter(ctx.cwd, {
-      objective,
-      sessionId,
-      idempotencyKey: `flag:${objective}`,
-    });
-    if (sessionId) {
-      await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId });
-    }
-    ctx.ui.notify(result.message, "info");
+    // Same authorship rule as the /charter slash command: hand the objective
+    // to the agent rather than creating the charter directly. The agent will
+    // call charter_manage action=create with a concise id during turn 1.
+    pi.sendUserMessage(
+      [
+        "The user launched pi with --charter-objective. Start a new charter end-to-end:",
+        "",
+        objective,
+        "",
+        "1. Call charter_manage action=create with this objective. Pick a concise id; do not embed objective text.",
+        "2. Run charter_status, author charter.md criteria, seed features via charter_plan add_feature.",
+        "3. Lock the plan with charter_plan lock_plan, then execute feature by feature, recording evidence as you go.",
+        "4. Follow charter_status nextActions; never guess transitions.",
+      ].join("\n"),
+    );
   });
 }
 
