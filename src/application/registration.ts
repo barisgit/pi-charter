@@ -3,7 +3,7 @@ import { complete, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { lockPlan, viewPlan } from "./plan-service";
+import { addFeature, lockPlan, updateFeature, viewPlan } from "./plan-service";
 import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { bindCharterToSession, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
@@ -44,6 +44,12 @@ type CharterStatusInput = {
 type CharterPlanInput = {
   action: "view" | "add_feature" | "update_feature" | "lock_plan";
   charterId?: string;
+  id?: string;
+  milestone?: string;
+  order?: number;
+  fulfills?: string[];
+  preconditions?: string[];
+  body?: string;
 };
 
 type CharterRecordInput = {
@@ -84,6 +90,12 @@ const CharterStatusParams = Type.Object({
 const CharterPlanParams = Type.Object({
   action: StringEnum(["view", "add_feature", "update_feature", "lock_plan"] as const),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional when exactly one active charter exists." })),
+  id: Type.Optional(Type.String({ description: "Feature id slug, e.g. m1-bootstrap. Required for add_feature/update_feature." })),
+  milestone: Type.Optional(Type.String({ description: "Milestone id this feature belongs to, e.g. m1-bootstrap. Required for add_feature." })),
+  order: Type.Optional(Type.Number({ description: "Sort order within the milestone (lower runs first). Required for add_feature." })),
+  fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill. Must be non-empty for add_feature." })),
+  preconditions: Type.Optional(Type.Array(Type.String(), { description: "Other feature ids that should land before this one. Advisory only." })),
+  body: Type.Optional(Type.String({ description: "Feature markdown body (prose under the YAML frontmatter). Required for add_feature." })),
 });
 
 const CharterRecordParams = Type.Object({
@@ -175,11 +187,11 @@ export function registerCharterTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "charter_plan",
     label: "Charter Plan",
-    description: "View and manage the charter macro-DAG. M2 scaffold implements view; edit/lock actions are reserved.",
+    description: "View and edit the charter macro-DAG (features under .pi/charters/<id>/plan/). Read the pi-charter skill for end-to-end workflow.",
     promptSnippet: "Inspect charter feature coverage and planning drift before locking or executing a charter.",
     promptGuidelines: [
-      "Use charter_plan action=view during planning to inspect uncovered criteria and orphan features.",
-      "Do not use pi-dag-tasks for durable charter features; use plan/<featureId>.md and charter_plan views.",
+      "Use charter_plan action=view to inspect coverage; action=add_feature/update_feature to write managed plan/<featureId>.md files; action=lock_plan to transition to active.",
+      "Never write plan/<featureId>.md or charter.md at the repo root — charter files live under .pi/charters/<id>/ and the tools manage them.",
     ],
     parameters: CharterPlanParams,
     async execute(_toolCallId, params: CharterPlanInput, _signal, _onUpdate, ctx) {
@@ -192,7 +204,37 @@ export function registerCharterTools(pi: ExtensionAPI): void {
         const result = await lockPlan(ctx.cwd, { charterId: status.charterId });
         return toolResult(result.message, result);
       }
-      throw new Error(`charter_plan action=${params.action} is reserved but not implemented in the M2 scaffold`);
+      if (params.action === "add_feature") {
+        if (!params.id?.trim()) throw new Error("id is required for charter_plan action=add_feature");
+        if (!params.milestone?.trim()) throw new Error("milestone is required for charter_plan action=add_feature");
+        if (params.order === undefined) throw new Error("order is required for charter_plan action=add_feature");
+        if (!params.fulfills || params.fulfills.length === 0) throw new Error("fulfills must list at least one VAL-* criterion id for charter_plan action=add_feature");
+        if (!params.body?.trim()) throw new Error("body is required for charter_plan action=add_feature");
+        const result = await addFeature(ctx.cwd, {
+          charterId: status.charterId,
+          id: params.id,
+          milestone: params.milestone,
+          order: params.order,
+          fulfills: params.fulfills,
+          preconditions: params.preconditions,
+          body: params.body,
+        });
+        return toolResult(result.message, result);
+      }
+      if (params.action === "update_feature") {
+        if (!params.id?.trim()) throw new Error("id is required for charter_plan action=update_feature");
+        const result = await updateFeature(ctx.cwd, {
+          charterId: status.charterId,
+          id: params.id,
+          milestone: params.milestone,
+          order: params.order,
+          fulfills: params.fulfills,
+          preconditions: params.preconditions,
+          body: params.body,
+        });
+        return toolResult(result.message, result);
+      }
+      throw new Error(`charter_plan action=${params.action} is not implemented`);
     },
   });
 
@@ -353,12 +395,15 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "Create and execute the charter end-to-end:",
           "1. Call charter_manage action=create with this objective. Use a concise generated id; do not embed the objective text in the id.",
           "2. Run charter_status to confirm the planning state and legal nextActions.",
-          "3. Author the contract (criteria, verifier kinds, scope/constraints) by editing charter.md, then seed the macro plan via charter_plan action=add_feature for each feature.",
-          "4. Call charter_plan action=lock_plan when planning is complete to transition to active.",
-          "5. Execute the work feature by feature. Record evidence via charter_record action=evidence (manual) or action=verify (command verifier).",
-          "6. Call charter_manage action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
+          "3. Author the contract by editing .pi/charters/<id>/charter.md to add VAL-* criteria, scope, and constraints. Do NOT create a charter.md at the repo root.",
+          "4. Seed the macro plan by calling charter_plan action=add_feature for each feature (id, milestone, order, fulfills[], body). Do NOT write plan/<featureId>.md files yourself — the tool writes them under .pi/charters/<id>/plan/.",
+          "5. Before locking, delegate to subagent({agent:'charter-planner-critic'}) to stress-test coverage; resolve every BLOCK finding.",
+          "6. Call charter_plan action=lock_plan to transition to active.",
+          "7. Execute feature by feature. Prefer delegating to subagent({agent:'charter-verifier', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.projectDir':<cwd>}}) for evidence rather than running verifier commands inline. Record results with charter_record action=evidence (manual) or charter_record action=verify (command verifier).",
+          "8. Call charter_manage action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
           "",
-          "Follow charter_status nextActions instead of guessing transitions.",
+          "Follow charter_status nextActions instead of guessing transitions. Read the pi-charter skill for the full workflow if you are unsure.",
+          "You SHOULD use subagents (charter-planner-critic, charter-verifier) rather than doing planning or verification inline whenever the task fits the persona's scope.",
         ].join("\n"),
       );
     },
@@ -412,9 +457,11 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
         objective,
         "",
         "1. Call charter_manage action=create with this objective. Pick a concise id; do not embed objective text.",
-        "2. Run charter_status, author charter.md criteria, seed features via charter_plan add_feature.",
-        "3. Lock the plan with charter_plan lock_plan, then execute feature by feature, recording evidence as you go.",
-        "4. Follow charter_status nextActions; never guess transitions.",
+        "2. Run charter_status; then edit .pi/charters/<id>/charter.md to add VAL-* criteria (do NOT create a repo-root charter.md).",
+        "3. Seed features via charter_plan action=add_feature (id, milestone, order, fulfills[], body); do NOT write plan/*.md files yourself.",
+        "4. Delegate plan critique to subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan.",
+        "5. Execute feature by feature. Prefer subagent({agent:'charter-verifier'}) for evidence over inline verifier runs; record results with charter_record action=evidence or action=verify.",
+        "6. Follow charter_status nextActions; never guess transitions. Read the pi-charter skill for the full workflow if you are unsure.",
       ].join("\n"),
     );
   });

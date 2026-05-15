@@ -332,8 +332,15 @@ function phaseForStatus(status: CharterStatus): CharterStatusResult["phase"] {
 }
 
 function guidelinesForStatus(status: CharterStatus): string[] {
-  if (status === "planning") return ["Author charter.md and plan/<featureId>.md before locking the plan."];
-  if (status === "active") return ["Choose one next move based on drift views and evidence gaps."];
+  if (status === "planning") return [
+    "Edit charter.md inside .pi/charters/<id>/ to add VAL-* criteria and scope/constraints; do NOT create a repo-root charter.md.",
+    "Use charter_plan action=add_feature for each feature; do NOT write plan/<featureId>.md at the repo root — the tool writes to .pi/charters/<id>/plan/.",
+    "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns.",
+  ];
+  if (status === "active") return [
+    "Choose one next move from charter_status nextActions; do not guess transitions.",
+    "Delegate verification with subagent({agent:'charter-verifier', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.projectDir':<cwd>}}) instead of running verifier commands inline.",
+  ];
   if (status === "review") return ["Inspect evidence before completing; evaluator done is not a gate."];
   if (status === "paused") return ["Resume before recording new evidence or changing plan state."];
   return ["Terminal charters are read-only except explicit follow-up/new charter actions."];

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import type { CharterCriterion, CharterStatus } from "../domain/types";
@@ -7,6 +7,8 @@ import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-
 import { appendEvent, charterDir, loadCharterState, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
 import { nextActionsForStatus, type NextAction } from "./service";
 import { dispatchHook } from "./hooks";
+
+const FEATURE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
 
 export interface PlanView {
   charterId: string;
@@ -137,6 +139,163 @@ export async function lockPlan(
     message: `Locked plan for ${state.charterId} with ${plan.features.length} feature(s); status -> active.`,
     nextActions: nextActionsForStatus(state.status),
   };
+}
+
+export interface AddFeatureInput {
+  charterId: string;
+  id: string;
+  milestone: string;
+  order: number;
+  fulfills: string[];
+  preconditions?: string[];
+  body: string;
+  now?: string;
+}
+
+export interface FeatureWriteResult {
+  charterId: string;
+  featureId: string;
+  path: string;
+  message: string;
+  nextActions: NextAction[];
+}
+
+export async function addFeature(projectDir: string, input: AddFeatureInput): Promise<FeatureWriteResult> {
+  validateFeatureInput(input);
+  const state = await loadCharterState(projectDir, input.charterId);
+  if (state.status !== "planning") {
+    throw new Error(`Cannot add_feature from status ${state.status}; only planning is eligible.`);
+  }
+  const dir = charterDir(projectDir, input.charterId);
+  const planDir = join(dir, "plan");
+  await mkdir(planDir, { recursive: true });
+  const filePath = join(planDir, `${input.id}.md`);
+  if (await fileExists(filePath)) {
+    throw new Error(`Feature ${input.id} already exists; use charter_plan action=update_feature instead.`);
+  }
+  const markdown = renderFeatureMarkdown(input);
+  await writeFile(filePath, markdown, "utf8");
+  const now = input.now ?? new Date().toISOString();
+  await appendEvent(dir, {
+    type: "feature_added",
+    ts: now,
+    charterId: input.charterId,
+    featureId: input.id,
+    milestone: input.milestone,
+    fulfills: input.fulfills,
+  });
+  return {
+    charterId: input.charterId,
+    featureId: input.id,
+    path: filePath,
+    message: `Added feature ${input.id} (milestone=${input.milestone}, fulfills=[${input.fulfills.join(", ")}]).`,
+    nextActions: [
+      { tool: "charter_plan", action: "view", hint: "Re-read plan coverage after adding the feature." },
+      { tool: "charter_plan", action: "add_feature", hint: "Add the next feature, or move to lock_plan when coverage is complete." },
+      { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan once every criterion has a fulfilling feature." },
+    ],
+  };
+}
+
+export interface UpdateFeatureInput {
+  charterId: string;
+  id: string;
+  milestone?: string;
+  order?: number;
+  fulfills?: string[];
+  preconditions?: string[];
+  body?: string;
+  now?: string;
+}
+
+export async function updateFeature(projectDir: string, input: UpdateFeatureInput): Promise<FeatureWriteResult> {
+  if (!FEATURE_ID_RE.test(input.id)) throw new Error(`feature id must match ${FEATURE_ID_RE}; got "${input.id}"`);
+  const state = await loadCharterState(projectDir, input.charterId);
+  if (state.status !== "planning") {
+    throw new Error(`Cannot update_feature from status ${state.status}; only planning is eligible.`);
+  }
+  const dir = charterDir(projectDir, input.charterId);
+  const filePath = join(dir, "plan", `${input.id}.md`);
+  let existing: FeatureDefinition;
+  try {
+    existing = parseFeatureMarkdown(await readFile(filePath, "utf8"));
+  } catch {
+    throw new Error(`Feature ${input.id} not found; use charter_plan action=add_feature to create it.`);
+  }
+  const merged: AddFeatureInput = {
+    charterId: input.charterId,
+    id: existing.id,
+    milestone: input.milestone ?? existing.milestone,
+    order: input.order ?? existing.order,
+    fulfills: input.fulfills ?? existing.fulfills,
+    preconditions: input.preconditions ?? existing.preconditions,
+    body: input.body ?? existing.body,
+  };
+  validateFeatureInput(merged);
+  await writeFile(filePath, renderFeatureMarkdown(merged), "utf8");
+  const now = input.now ?? new Date().toISOString();
+  await appendEvent(dir, {
+    type: "feature_updated",
+    ts: now,
+    charterId: input.charterId,
+    featureId: input.id,
+    milestone: merged.milestone,
+    fulfills: merged.fulfills,
+  });
+  return {
+    charterId: input.charterId,
+    featureId: input.id,
+    path: filePath,
+    message: `Updated feature ${input.id} (milestone=${merged.milestone}, fulfills=[${merged.fulfills.join(", ")}]).`,
+    nextActions: [
+      { tool: "charter_plan", action: "view", hint: "Re-read plan coverage after the update." },
+      { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan once every criterion has a fulfilling feature." },
+    ],
+  };
+}
+
+function validateFeatureInput(input: AddFeatureInput): void {
+  if (!FEATURE_ID_RE.test(input.id)) throw new Error(`feature id must match ${FEATURE_ID_RE}; got "${input.id}"`);
+  if (!input.milestone.trim()) throw new Error("feature milestone is required");
+  if (!Number.isFinite(input.order)) throw new Error("feature order must be a finite number");
+  if (!Array.isArray(input.fulfills) || input.fulfills.length === 0) {
+    throw new Error("feature fulfills must list at least one VAL-* criterion id");
+  }
+  if (!input.body.trim()) throw new Error("feature body markdown is required");
+}
+
+function renderFeatureMarkdown(input: AddFeatureInput): string {
+  const lines: string[] = ["---"];
+  lines.push(`id: ${input.id}`);
+  lines.push(`milestone: ${input.milestone}`);
+  lines.push(`order: ${input.order}`);
+  if (input.fulfills.length === 0) {
+    lines.push("fulfills: []");
+  } else {
+    lines.push("fulfills:");
+    for (const value of input.fulfills) lines.push(`  - ${value}`);
+  }
+  const preconditions = input.preconditions ?? [];
+  if (preconditions.length === 0) {
+    lines.push("preconditions: []");
+  } else {
+    lines.push("preconditions:");
+    for (const value of preconditions) lines.push(`  - ${value}`);
+  }
+  lines.push("---");
+  lines.push("");
+  lines.push(input.body.trim());
+  lines.push("");
+  return lines.join("\n");
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function detectPreconditionCycle(features: FeatureDefinition[]): string[] | undefined {
