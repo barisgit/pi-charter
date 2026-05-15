@@ -26,12 +26,23 @@
 
 M2 planner-critic shipped: `lockPlan` checks empty criteria/features, uncovered criteria, orphan features, unknown criterion refs, and precondition cycles (Tarjan-style DFS). On clean lock it computes a canonical `planDigest` (sha256), transitions `planning -> active`, appends a `plan_locked` event, and writes `state.json.planDigest`.
 
-Next M2 -> M3 ladder:
+M3 partially shipped:
 
-1. Decide whether agents should edit `plan/*.md` directly (and we drop `add_feature`/`update_feature` tool actions) or expose them as thin writers. Current bet: agents author markdown directly; reserve tool actions only if dogfood shows otherwise.
-2. Wire `charter:before_lock_plan` hook with bundled TUI approver subscriber; until then `lock_plan` transitions synchronously.
-3. Begin `charter_record` (evidence/verify/handoff_apply) and `criterion-state.json` updates.
-4. Begin `charter-evaluator` post-turn fold from `intent-sentinel`.
+- `charter_record action=evidence` writes `work/<featureId>/evidence/<criterionId>__<ts>.json`, updates `criterion-state.json` with the latest outcome/path/ts/summary, appends `evidence_recorded` event, and rejects when charter is still in `planning`.
+- `charter_record action=verify` (command verifier only) runs `/bin/sh -c <command>` with a default 120s timeout, captures stdout/stderr up to 64KB, and records evidence with `source=verifier` and `details.exitCode/durationMs/stdout/stderr`.
+- `Command:` field on `### VAL-* — ...` blocks in `charter.md` is now parsed into `CharterCriterion.command`.
+
+Next M3 -> M4 ladder:
+
+1. Implement `verifyCriterion` for verifier kinds `hook`, `prompt`, and `manual` (manual = require existing evidence newer than `requireFreshEvidence` window).
+2. Implement `charter_record action=handoff_apply` to consume returned subagent handoff envelopes and translate them into evidence + criterion-state updates.
+3. Implement `charter_manage action=complete` with completion gate: every criterion has `pass` evidence, and `requireFreshEvidence`/`requireReviewSubagent` predicates hold.
+4. Implement `charter_manage action=force_complete` (with reason) and `amend_charter` (re-open completed/abandoned charters, append `charter_amended` event).
+5. Add `charter:before_lock_plan` and `charter:before_complete` hook bus events with decision-control responses; bundled TUI approver listener last.
+6. Fold intent-sentinel into a `charter-evaluator` post-turn reasoner that injects a per-turn steer reason via `pi.appendSystemContext` (or equivalent).
+7. Implement session binding: forward `state.json.sessionId` plus reverse pointer at `~/.pi/agent/sessions/<sid>/charter.json`; reconcile on `session_start`.
+8. Drift views in `charter_status`: uncovered, stuck (`>= N turns no progress`), stale (`evidence older than freshness window`), readyNext (`fulfills uncovered criterion`).
+9. Bundled `charter-planner-critic` and `charter-verifier` personas under `agents/`.
 
 ## Open decisions to review
 
