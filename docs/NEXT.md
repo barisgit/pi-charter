@@ -2,7 +2,7 @@
 
 ## What shipped this session
 
-pi-charter is a fully tested standalone extension. 38 tests / 121 assertions green; `bun run check-types` clean; ~2488 LOC under `src/`.
+pi-charter is a fully tested standalone extension wired to pi-subagents. 53 tests / 162 assertions green; `bun run check-types` clean; ~2640 LOC under `src/`.
 
 ### Tools (all four LLM-callable surfaces wired)
 
@@ -22,39 +22,39 @@ pi-charter is a fully tested standalone extension. 38 tests / 121 assertions gre
 
 - `evaluator-service.ts` runs post-turn via injected `EvaluatorModelFn`. Persists last 10 verdicts in `evaluator-log.jsonl`. Never gates completion — only surfaces a steer reminder via `pi.sendMessage({deliverAs: 'steer', triggerTurn: false})`.
 - `registerCharterEvaluator(pi)` wired into `index.ts`. `turn_end` handler builds the live context (charter status + drift + recent user messages + recent tool names), invokes `complete()` from `@earendil-works/pi-ai`, parses the JSON verdict, appends to log, fires steer reminder on next turn.
-- Default model: `anthropic/claude-haiku-4-5` (matches Claude Code's `/goal` Haiku pattern). Override via `PI_CHARTER_EVAL_PROVIDER` / `PI_CHARTER_EVAL_MODEL`.
+- Default model: `anthropic/claude-sonnet-4.6`. Override via `PI_CHARTER_EVAL_PROVIDER` / `PI_CHARTER_EVAL_MODEL`.
 
 ### Bundled personas
 
 - `agents/charter-verifier.md` — read-only contract-aware verifier. `scope: internal`. Tool allowlist: `read, grep, find, ls, bash, charter_record, charter_status`. Records exactly one `charter_record action=evidence` entry per run.
 - `agents/charter-planner-critic.md` — read-only adversarial plan critic. `scope: internal`. Runs the same checks the in-process `lock_plan` runs plus milestone hygiene, order field sanity, verifier coverage, and scope/constraint violation checks. Emits a structured `PASS | BLOCK | ADVISORY` verdict.
-- Both use `anthropic/claude-haiku-4-5` (cheap-fast tier).
+- Both use `anthropic/claude-sonnet-4.6`.
 
-## Known external gap: pi-subagents bridge (not blocking dogfood)
+## pi-subagents bridge — wired
 
-pi-subagents on `e35aed7` has only **1 of 4** required surfaces (`internal` scope). Still missing:
+All four required surfaces ship on the pi-subagents side, and the three pi-charter consumer surfaces are wired in `src/index.ts`:
 
-1. `SUBAGENT_EXPOSE_API_EVENT` — emit `{spawnRaw, list}` on extension startup + `session_start`.
-2. `SUBAGENT_REGISTER_PERSONA_DIR_EVENT` / `SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT` — subscribe and store in private registry.
-3. `metadata` passthrough on `subagent:async-started` / `subagent:async-complete` event payloads (additive field; opaque to pi-subagents).
+- pi-subagents commits (in order): `e35aed7` (internal scope), `fff442c` (metadata passthrough), `dd54225` (expose API), `5beb3d4` (register-persona-dir), `b3a03f8` (CI vocabulary guard).
+- pi-charter side:
+  - `registerCharterPersonas` — emits `SUBAGENT_REGISTER_PERSONA_DIR_EVENT` at startup, re-emits on `session_start`, and emits `SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT` on `session_shutdown`. Subscribes to `SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT` and surfaces collisions via `console.warn` (pi-coding-agent has no `ctx.ui` in `pi.events.on` handlers).
+  - `registerCharterSubagentBridge` — subscribes to `SUBAGENT_EXPOSE_API_EVENT` and caches the `SubagentExposedAPI` bag in module state. `getSubagentApi()` returns the handle (or `undefined` when pi-subagents is absent). The evaluator still uses inline `complete()` by default; `spawnRaw` routing is a future opt-in.
+  - `registerCharterAsyncBridge` — subscribes to `SUBAGENT_ASYNC_STARTED_EVENT` and `SUBAGENT_ASYNC_COMPLETE_EVENT`. When payload `metadata` carries `pi-charter.projectDir` + `pi-charter.charterId` (and optionally `pi-charter.featureId` / `pi-charter.criterionId`), appends `feature_started` / `feature_completed` / `feature_failed` to the charter's `events.jsonl`. `exitCode !== 0` maps to `feature_failed`.
 
-Spec updated in `docs/research/2026-05-14-pi-charter-design/orchestration-layering.md §3.2` to the event-bus shape (matching `pi-prune-router` precedent at `pi-prune-swe-pruner-provider/src/types.ts`). Earlier draft incorrectly assumed `pi-coding-agent`'s `ExtensionAPI` exposes a cross-extension method registry — it does not.
+Spec lives in `docs/research/2026-05-14-pi-charter-design/orchestration-layering.md §3.2`. Local event constants and payload types are redeclared in `src/infrastructure/subagent-bridge.ts` so pi-charter does NOT import from pi-subagents (matches the `pi-prune-router` / `pi-prune-swe-pruner-provider` pattern).
 
-What is dogfoodable today without the bridge:
-- Manual evidence (`charter_record action=evidence` from the host agent itself).
-- Command verifiers (`charter_record action=verify`).
-- Drift views and evaluator steering.
-- Planner-critic in-process during `lock_plan`.
+### Metadata convention (host-agent contract)
 
-What is blocked on the bridge:
-- The agent delegating to `charter-verifier` / `charter-planner-critic` personas via `subagent({agent: ...})` (the bundled persona files exist on disk but pi-subagents can't load them yet without `subagent:register-persona-dir`).
-- Handoff envelopes from delegated subagents auto-applying via `subagent:async-complete` + `metadata['pi-charter.featureId']` routing.
+When the host LLM delegates via `subagent({agent: 'charter-verifier' | 'charter-planner-critic', ..., metadata: {...}})`, it must pass the canonical keys:
+
+- `pi-charter.projectDir` — absolute project path (required for the async bridge to locate the charter; no `ctx.cwd` reachable in `pi.events.on` handlers).
+- `pi-charter.charterId` — required.
+- `pi-charter.featureId` — optional, recommended.
+- `pi-charter.criterionId` — optional.
 
 ## Open ladder
 
-- Wire pi-charter to emit `subagent:register-persona-dir` event on startup + `session_start` once the pi-subagents implementer ships the subscribe side. Single edit in `src/index.ts`; no-op when the event has no subscriber.
-- Subscribe to `subagent:async-complete` in `src/application/registration.ts`; when `metadata['pi-charter.charterId']` matches the bound charter, route to `charter_record action=handoff_apply` with the envelope.
-- Capture the `SubagentExposedAPI` bag on `SUBAGENT_EXPOSE_API_EVENT`; pass `subagentApi.spawnRaw` into `registerCharterEvaluator` so the evaluator can run as an isolated child instead of an in-process `complete()` call. Falls back to in-process when the API is absent.
+- Optional: route the evaluator through `getSubagentApi()?.spawnRaw(...)` when available, so the per-turn drift reasoner runs in an isolated child instead of an in-process `complete()` call. Currently a deliberate non-default — inline `complete()` is cheaper/faster for the every-turn cadence.
+- Auto-apply handoff envelopes: extend the async-complete handler to read a `pi-charter.handoff` blob from the subagent summary/details and route to `charter_record action=handoff_apply`. Today the bridge only writes attribution events; handoff envelopes still need `charter_record action=handoff_apply` invoked explicitly by the host agent.
 - Optional bundled TUI approver subscribing to `charter:before_lock_plan` (default ON via `PI_CHARTER_TUI=on`; flipped OFF for Symphony-style orchestration).
 
 ## Known external gaps from earlier passes

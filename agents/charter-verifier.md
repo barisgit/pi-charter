@@ -3,7 +3,7 @@ name: charter-verifier
 description: Contract-aware verifier for pi-charter criteria. Reads the criterion under test, gathers evidence from the repo, and records a structured pass/fail/partial verdict via charter_record.
 scope: internal
 tools: [read, grep, find, ls, bash, charter_record, charter_status]
-model: anthropic/claude-haiku-4-5
+model: anthropic/claude-sonnet-4.6
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: true

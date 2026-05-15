@@ -6,17 +6,16 @@ This repo is intentionally scaffold-first. The current source of truth is the do
 
 ## Current status
 
-**Standalone extension: feature-complete and tested.** 38 tests / 121 assertions green, types clean, ~2488 LOC of `src/`.
+**Feature-complete, tested, bridged.** 53 tests / 162 assertions green, types clean, ~2640 LOC of `src/`.
 
 - Four LLM-callable tools wired: `charter_manage`, `charter_plan`, `charter_record`, `charter_status`.
 - Lifecycle FSM with completion gate, hook bus, drift views, session binding, planner-critic, command verifiers.
-- Post-turn `charter-evaluator` modeled on Claude Code's `/goal` (default model `anthropic/claude-haiku-4-5`).
-- Bundled internal personas: `charter-verifier`, `charter-planner-critic` (both `scope: internal`, haiku model).
+- Post-turn `charter-evaluator` modeled on Claude Code's `/goal` (default `anthropic/claude-sonnet-4.6`).
+- Bundled internal personas: `charter-verifier`, `charter-planner-critic` (both `scope: internal`, `anthropic/claude-sonnet-4.6`).
 - Per-project layout: `<project>/.pi/charters/<charterId>/{charter.md, state.json, plan/, work/, events.jsonl, ...}`.
+- pi-subagents bridge wired: `register-persona-dir` emit, `expose-api` subscriber, `async-started`/`async-complete` → `feature_started`/`feature_completed`/`feature_failed` event mapping.
 - v1 `pi-goals` preserved at `docs/reference/v1-pi-goals/pi-goals/`.
 - Research and ADRs in `docs/research/2026-05-14-pi-charter-design/` and `docs/adr/`.
-
-**External dependency not blocking dogfood:** pi-subagents needs three event-bus surfaces before the agent can delegate to bundled personas; see `docs/NEXT.md` for the exact handoff.
 
 ## Documentation map
 
@@ -59,4 +58,4 @@ bun run check-types
 bun test
 ```
 
-The package is private until naming, tool contracts, and the pi-subagents event-bus bridge land.
+The package is private until naming and tool contracts settle.

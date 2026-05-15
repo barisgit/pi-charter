@@ -1,11 +1,29 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { complete, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve as resolvePath } from "node:path";
 import { lockPlan, viewPlan } from "./plan-service";
 import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { bindCharterToSession, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
 import { runEvaluator, reminderFromEntry, type EvaluatorAssessment, type EvaluatorVerdict } from "./evaluator-service";
+import {
+  PI_CHARTER_EXTENSION_ID,
+  SUBAGENT_ASYNC_COMPLETE_EVENT,
+  SUBAGENT_ASYNC_STARTED_EVENT,
+  SUBAGENT_EXPOSE_API_EVENT,
+  SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT,
+  SUBAGENT_REGISTER_PERSONA_DIR_EVENT,
+  SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT,
+  type PersonaDirErrorPayload,
+  type RegisterPersonaDirPayload,
+  type SubagentAsyncCompletePayload,
+  type SubagentAsyncStartedPayload,
+  type SubagentExposedAPI,
+  type UnregisterPersonaDirPayload,
+} from "../infrastructure/subagent-bridge";
+import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
 
 type CharterManageInput = {
   action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter";
@@ -337,7 +355,7 @@ const EVALUATOR_CUSTOM_TYPE = "charter-evaluator-steer";
 // Default evaluator model: cheap-fast tier, same shape Claude Code's /goal uses.
 // Override per-environment via PI_CHARTER_EVAL_PROVIDER / PI_CHARTER_EVAL_MODEL.
 const DEFAULT_EVAL_PROVIDER = "anthropic";
-const DEFAULT_EVAL_MODEL = "claude-haiku-4-5";
+const DEFAULT_EVAL_MODEL = "claude-sonnet-4.6";
 const EVAL_TIMEOUT_MS = 30_000;
 const EVAL_MAX_TOKENS = 600;
 
@@ -493,6 +511,120 @@ function parseEvaluatorJson(text: string): EvaluatorAssessment {
 
 function stripJsonFences(text: string): string {
   return text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
+}
+
+// ---------------------------------------------------------------------------
+// pi-subagents bridge: surface 2 — capture exposed API bag
+// ---------------------------------------------------------------------------
+
+/**
+ * Captured pi-subagents `SubagentExposedAPI` (cached after the
+ * `subagent:expose-api` event fires). `undefined` until pi-subagents emits;
+ * stays `undefined` if pi-subagents is not loaded.
+ *
+ * Extension code that wants to programmatically spawn an internal persona can
+ * read this through `getSubagentApi()`; callers must handle the `undefined`
+ * case gracefully (typically by falling back to an inline path).
+ */
+let subagentApi: SubagentExposedAPI | undefined;
+
+export function getSubagentApi(): SubagentExposedAPI | undefined {
+  return subagentApi;
+}
+
+/** Test-only: reset the cached API handle. */
+export function __resetSubagentApiForTests(): void {
+  subagentApi = undefined;
+}
+
+export function registerCharterSubagentBridge(pi: ExtensionAPI): void {
+  // Reset on each registration so repeated extension loads in tests/dev
+  // don't keep a stale handle from a prior pi-subagents lifecycle.
+  subagentApi = undefined;
+  pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (raw: unknown) => {
+    const api = raw as SubagentExposedAPI | undefined;
+    if (!api || typeof api.spawnRaw !== "function") return;
+    subagentApi = api;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// pi-subagents bridge: surface 3 — async-event → MissionEvent attribution
+// ---------------------------------------------------------------------------
+
+export function registerCharterAsyncBridge(pi: ExtensionAPI): void {
+  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+    const payload = raw as SubagentAsyncStartedPayload | undefined;
+    if (!payload) return;
+    void handleAsyncStarted({ payload }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      // eslint-disable-next-line no-console
+      console.warn(`[pi-charter] async-bridge feature_started skipped: ${message}`);
+    });
+  });
+  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+    const payload = raw as SubagentAsyncCompletePayload | undefined;
+    if (!payload) return;
+    void handleAsyncComplete({ payload }).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      // eslint-disable-next-line no-console
+      console.warn(`[pi-charter] async-bridge feature_completed skipped: ${message}`);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// pi-subagents bridge: surface 1 — register bundled personas directory
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the absolute path to the `pi-charter/agents/` directory.
+ *
+ * Both Bun (dev/test) and bundled production builds put this file under
+ * `<extension-root>/src/application/registration.{ts,js}`, so the personas
+ * directory is always two `..` away.
+ */
+function resolveAgentsDir(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return resolvePath(here, "..", "..", "agents");
+}
+
+export function registerCharterPersonas(pi: ExtensionAPI): void {
+  const agentsDir = resolveAgentsDir();
+
+  const registerPayload: RegisterPersonaDirPayload = {
+    extensionId: PI_CHARTER_EXTENSION_ID,
+    path: agentsDir,
+    scope: "internal",
+  };
+  const unregisterPayload: UnregisterPersonaDirPayload = {
+    extensionId: PI_CHARTER_EXTENSION_ID,
+  };
+
+  // Surface collisions to the UI; pi-subagents emits this on persona-name
+  // conflict and never throws (originating extension is responsible for
+  // failing its own startup).
+  pi.events.on(SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT, (raw: unknown) => {
+    const payload = raw as PersonaDirErrorPayload | undefined;
+    if (!payload || payload.extensionId !== PI_CHARTER_EXTENSION_ID) return;
+    // No ctx here; events.on has no UI handle. Best-effort: console.warn so
+    // the conflict is at least visible in the dev tail.
+    // eslint-disable-next-line no-console
+    console.warn(`[pi-charter] persona dir registration failed: ${payload.message}`);
+  });
+
+  // Emit at startup …
+  pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, registerPayload);
+
+  // … and re-emit on session_start (matches pi-prune-swe-pruner-provider
+  // re-announce pattern; survives pi-subagents restarts).
+  pi.on("session_start", () => {
+    pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, registerPayload);
+  });
+
+  pi.on("session_shutdown", () => {
+    pi.events.emit(SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT, unregisterPayload);
+  });
 }
 
 function toolResult(text: string, details: unknown) {
