@@ -298,6 +298,23 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
         sessionId: ctx.sessionManager.getSessionId?.(),
       });
       ctx.ui.notify(result.message, "info");
+      // Kick the agent into planning immediately so /charter is one-shot.
+      // Without this the user has to follow up with a second prompt to start
+      // work — see dogfood feedback in docs/NEXT.md.
+      pi.sendUserMessage(
+        [
+          `A new pi-charter has been created. Charter ID: ${result.charterId}.`,
+          `Objective: ${text}`,
+          "",
+          "Start the planning workflow now:",
+          "1. Run charter_status to see the current state and legal nextActions.",
+          "2. Draft the contract (criteria) and macro plan (features). Use charter_plan add_feature to seed features and charter_manage amend_charter to refine the contract if needed.",
+          "3. Once the plan is complete, call charter_plan lock_plan to transition into the active phase.",
+          "4. Then execute the work feature by feature, recording evidence via charter_record evidence (or charter_record verify when a verifier command is defined).",
+          "",
+          "Follow charter_status nextActions instead of guessing transitions.",
+        ].join("\n"),
+      );
     },
   });
 }
