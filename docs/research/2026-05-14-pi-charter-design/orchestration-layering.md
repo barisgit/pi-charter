@@ -89,6 +89,12 @@ Hard rules of the stack:
 
 ### 3.2 New additions for v2 (small, additive)
 
+> **Mechanism note (locked correction).** Earlier drafts of §3.2.2 and §3.2.3 wrote `subagent.spawnRaw({...})` and `subagent.registerPersonaDir({...})` as if `pi-coding-agent`'s `ExtensionAPI` exposed a generic extension-to-extension registry. **It doesn't.** Confirmed by reading `node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts` — the `ExtensionAPI` interface has `registerTool`, `registerCommand`, `registerShortcut`, `registerFlag`, `registerMessageRenderer`, `registerProvider`/`unregisterProvider`. No namespace for sibling extensions to publish arbitrary methods onto `pi.*`.
+>
+> The shipped pattern in your repo for cross-extension function publishing is `pi-prune-router` + `pi-prune-swe-pruner-provider`: paired event constants on `pi.events.emit` / `pi.events.on` carrying the function reference (closures survive event emission — it's plain JS object passing, no serialization). The router stores the function in its own private `Map<string, RegisteredProvider>` and invokes it later. See `pi-prune-swe-pruner-provider/src/types.ts:1-2` (`PRUNE_REGISTER_PROVIDER_EVENT`, `PRUNE_UNREGISTER_PROVIDER_EVENT`) + `pi-prune-router/src/router.ts:22 registerProvider`.
+>
+> Surfaces below now spec to that pattern. §6 hard rules (`spawnRaw`/`registerPersonaDir` are not LLM-callable; no charter vocabulary in pi-subagents; metadata passthrough; persona name uniqueness) all still hold — they just enforce against event payload shape instead of a method on `pi.subagent`.
+
 #### 3.2.1 `internal` role scope
 
 The `scope` field in subagent.json (or persona frontmatter) gains a third value beyond `root` and `subagent`:
@@ -105,64 +111,145 @@ Persona `frontmatter.scope` overrides the default scope from subagent.json. Bund
 
 **Debug visibility:** `subagent.list({ includeInternal: true })` returns them. `pi subagent list --include-internal` from CLI.
 
-#### 3.2.2 `subagent.spawnRaw({...})` — inline systemPrompt + prompt
+#### 3.2.2 `subagent:expose-api` event — inline systemPrompt + prompt
 
-Public TypeScript API on pi-subagents (not exposed as an LLM tool — see §6.2):
+**Mechanism: pi-subagents publishes its programmatic API surface via an event at startup; consumers (pi-charter) subscribe and capture the function reference.**
+
+Shared constant (defined in pi-subagents, copied/re-exported by consumers):
 
 ```ts
-subagent.spawnRaw({
-  systemPrompt: string,
-  prompt: string,
-  tools?: string[],                   // tool allowlist; defaults to safe-read set
-  model?: string,
-  thinking?: "off" | "low" | "medium" | "high",
-  systemPromptMode?: "replace" | "append",
-  inheritProjectContext?: boolean,
-  inheritSkills?: boolean | string[],
-  defaultReads?: string[],
-  defaultProgress?: boolean,
-  hooks?: HookConfig,
-  metadata?: Record<string, unknown>,  // opaque passthrough; see §5
-  async?: boolean,
-  worktree?: boolean,
+export const SUBAGENT_EXPOSE_API_EVENT = "subagent:expose-api";
+
+export interface SubagentExposedAPI {
+  spawnRaw(input: SpawnRawInput): Promise<SpawnResult>;
+  list(options?: { includeInternal?: boolean }): PersonaInfo[];
+  // Future: spawn(...) once internal callers need it; today the LLM-tool form is enough.
+}
+```
+
+pi-subagents emits the bag once at extension startup, and re-emits it on `session_start` for restart safety (mirrors how `pi-prune-swe-pruner-provider` re-announces in `index.ts:51`):
+
+```ts
+// inside pi-subagents extension startup
+const api: SubagentExposedAPI = { spawnRaw: implSpawnRaw, list: implList };
+pi.events.emit(SUBAGENT_EXPOSE_API_EVENT, api);
+pi.on("session_start", () => pi.events.emit(SUBAGENT_EXPOSE_API_EVENT, api));
+```
+
+Consumers cache the latest reference and use it through their own typed handle:
+
+```ts
+// inside pi-charter extension startup
+let subagentApi: SubagentExposedAPI | undefined;
+pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (api: SubagentExposedAPI) => {
+  subagentApi = api;
+});
+```
+
+The `SpawnRawInput` payload (passed to `spawnRaw(...)`) is unchanged from the earlier draft:
+
+```ts
+export interface SpawnRawInput {
+  systemPrompt: string;
+  prompt: string;
+  tools?: string[];                   // tool allowlist; defaults to safe-read set
+  model?: string;
+  thinking?: "off" | "low" | "medium" | "high";
+  systemPromptMode?: "replace" | "append";
+  inheritProjectContext?: boolean;
+  inheritSkills?: boolean | string[];
+  defaultReads?: string[];
+  defaultProgress?: boolean;
+  hooks?: HookConfig;
+  metadata?: Record<string, unknown>;  // opaque passthrough; see §5
+  async?: boolean;
+  worktree?: boolean;
   // context is always "fresh" for raw spawns — not exposed
-})
+}
 ```
 
-`spawnRaw` exists for the case where a system prompt must embed live state and can't be a stored file. The motivating example is pi-charter' post-turn evaluator (absorbed intent-sentinel), whose system prompt embeds current criteria status, last 3 evaluator verdicts, drift signals, and the contract digest. Storing that as a static persona file is impossible; constructing it inline at spawn time is natural.
+`spawnRaw` exists for the case where a system prompt must embed live state and can't be a stored file. The motivating example is pi-charter's post-turn evaluator (absorbed intent-sentinel), whose system prompt embeds current criteria status, last 3 evaluator verdicts, drift signals, and the contract digest. Storing that as a static persona file is impossible; constructing it inline at spawn time is natural.
 
-`context` is not a parameter on `spawnRaw`. Extension-initiated spawns are always `fresh` — there's no parent conversation for the child to inherit. `fork` is reserved for `main` → `main` self-forks, which extensions never do.
+`context` is not a parameter on `SpawnRawInput`. Extension-initiated spawns are always `fresh` — there's no parent conversation for the child to inherit. `fork` is reserved for `main` → `main` self-forks, which extensions never do.
 
-#### 3.2.3 `subagent.registerPersonaDir({...})` — extension-supplied bundled personas
+**Why event-published vs. direct npm import of pi-subagents?**
+- pi-subagents may not be installed in every host that loads pi-charter; the event subscribe is optional and gracefully no-ops when pi-subagents is absent (`subagentApi` stays `undefined`, pi-charter's evaluator falls back to the cheap in-process model call via `complete()` from pi-ai).
+- No version pinning between sibling extensions — the event payload is the contract.
+- Matches the precedent already in your repo (`pi-prune-router` + `pi-prune-swe-pruner-provider`).
+
+#### 3.2.3 `subagent:register-persona-dir` event — extension-supplied bundled personas
+
+**Mechanism: paired events on `pi.events`, modeled on `pi-prune-swe-pruner-provider/src/types.ts` (`PRUNE_REGISTER_PROVIDER_EVENT` / `PRUNE_UNREGISTER_PROVIDER_EVENT`).**
+
+Shared constants (defined in pi-subagents, copied/re-exported by consumers):
 
 ```ts
-subagent.registerPersonaDir({
-  extensionId: string,    // e.g. "pi-charter"
-  path: string,           // absolute path to a directory of *.md persona files
-  scope: "internal",      // only "internal" is currently supported via this API
-})
+export const SUBAGENT_REGISTER_PERSONA_DIR_EVENT = "subagent:register-persona-dir";
+export const SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT = "subagent:unregister-persona-dir";
+
+export interface RegisterPersonaDirPayload {
+  extensionId: string;    // e.g. "pi-charter"; required
+  path: string;           // absolute path to a directory of *.md persona files
+  scope: "internal";      // only "internal" is supported via this event; forced by pi-subagents
+}
+
+export interface UnregisterPersonaDirPayload {
+  extensionId: string;
+}
 ```
 
-Called once per extension at startup. pi-subagents adds the directory to the resolver search path. Personas inside are loaded with `scope: internal` (overriding their frontmatter scope, if present, when registered this way — protects against extensions accidentally registering root-visible personas).
+Consumers emit at extension startup AND re-emit on `session_start` (so that mid-session pi-subagents reloads see the registration again):
+
+```ts
+// inside pi-charter extension startup
+function announcePersonaDir() {
+  pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, {
+    extensionId: "pi-charter",
+    path: path.join(__dirname, "../agents"),
+    scope: "internal",
+  });
+}
+announcePersonaDir();
+pi.on("session_start", announcePersonaDir);
+pi.on("shutdown", () => pi.events.emit(SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT, { extensionId: "pi-charter" }));
+```
+
+pi-subagents subscribes and maintains its own registry:
+
+```ts
+// inside pi-subagents extension
+const personaDirRegistry = new Map<string, RegisterPersonaDirPayload>();
+pi.events.on(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, (payload) => {
+  // Uniqueness guard — throw if a different extension already owns a persona name here.
+  validateAndAdd(personaDirRegistry, payload);
+});
+pi.events.on(SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT, ({ extensionId }) => {
+  personaDirRegistry.delete(extensionId);
+});
+```
+
+Personas inside registered directories are loaded with `scope: internal` (overriding their frontmatter scope, if present — protects against extensions accidentally registering root-visible personas).
 
 **Resolver search order** (first match wins):
-1. Per-context dir, if the spawn supplies one (e.g. `<mission-dir>/agents/<name>.md` — see §4.3)
+1. Per-context dir, if the spawn supplies one (e.g. `<charter-dir>/agents/<name>.md` — see §4.3)
 2. `~/.pi/agent/agents/<name>.md` (user's library)
 3. Extension-registered directories (in registration order, with uniqueness guard on persona name)
 
 This order means **users can shadow extension-bundled personas** by dropping a file with the same name in their own agents dir. They have to know the name first, but that's documented per extension.
 
-**Uniqueness guard:** two extensions cannot register the same persona name. pi-subagents throws a clear startup error: `Extension "pi-foo" attempted to register persona "verifier", but "pi-charter" already owns that name.` Resolved by either extension renaming its persona.
+**Uniqueness guard:** two extensions cannot register the same persona name. pi-subagents emits a `subagent:register-persona-dir-error` event with payload `{extensionId, conflictingExtensionId, personaName, message}` if a collision is detected on subscribe. The originating extension is responsible for handling the error (typically: fail loud during the extension's own startup). Resolved by either extension renaming its persona.
 
 #### 3.2.4 Hook events with passthrough metadata
 
 The existing `subagent:*` events gain a `metadata` field in their payload, copied verbatim from the spawn config:
 
-- `subagent:spawn_started` — `{ runId, agent?, metadata }`
-- `subagent:completed` — `{ runId, exitCode, summary, artifacts, durationMs, metadata }`
-- `subagent:failed` — `{ runId, error, metadata }`
+- `subagent:async-started` — `{ runId, agent?, metadata }`
+- `subagent:async-complete` — `{ runId, exitCode, summary, artifacts, durationMs, metadata }`
+- (Future) `subagent:spawn-started` / `subagent:completed` / `subagent:failed` for sync delegations — same `metadata` field shape
 
-pi-subagents never reads `metadata`. It just emits it. Downstream subscribers (pi-charter) read it.
+This is the only one of the four surfaces that is a pure payload addition rather than a new event — it's additive on existing `subagent:async-*` events and any future sync-delegation events.
+
+pi-subagents never reads `metadata`. It just emits it. Downstream subscribers (pi-charter) read it on `pi.events.on('subagent:async-complete', ev => ev.metadata?.['pi-charter.featureId'])`.
 
 ---
 
@@ -195,26 +282,29 @@ inheritSkills: false
 You are the mission verifier. Read the criterion under test...
 ```
 
-At extension startup, pi-charter calls:
+At extension startup, pi-charter emits:
 ```ts
-subagent.registerPersonaDir({
+pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, {
   extensionId: "pi-charter",
-  path: path.join(__dirname, "agents"),
+  path: path.join(__dirname, "../agents"),
   scope: "internal",
 });
+// also re-emitted on every session_start for restart safety
 ```
 
 ### 4.2 Which uses `spawn` vs `spawnRaw` inside pi-charter
 
 | pi-charter internal use | Surface | Why |
 |---|---|---|
-| Verifier run on a criterion | `spawn({agent: "charter-verifier", task: ...})` | Stable prompt, override-friendly, source-controlled |
-| Planner-critic during planning | `spawn({agent: "charter-planner-critic", task: ...})` | Stable prompt, override-friendly |
-| Post-turn evaluator (mission-scoped or free-form) | `spawnRaw({systemPrompt: buildEvaluatorPrompt(mission?, recentEvents, contractDigest?), prompt: ..., model: "haiku-tier"})` | System prompt embeds live state; can't be a static file |
-| Mission trigger fired on `feature_completed` etc. | Whatever the mission config's `triggers` block says — usually `spawn({agent: <persona>, task: ...})` where persona is configurable | Persona name is mission-config driven; defaults to `charter-verifier` but user can swap to their own |
-| Subagent handoff `charter_handoff_apply` callback | Not a spawn — a tool call from inside the spawned persona back to pi-charter' tool surface | Reverse direction; same mechanism as any other tool call |
+| Verifier run on a criterion | LLM-callable `subagent({agent: "charter-verifier", task: ...})` tool, invoked by the host agent itself | Stable prompt, override-friendly, source-controlled. No extension-side `spawn` call needed — the agent decides when to delegate. |
+| Planner-critic during planning | LLM-callable `subagent({agent: "charter-planner-critic", task: ...})` tool, invoked by the host agent itself | Same reasoning |
+| Post-turn evaluator (charter-scoped or free-form) | `subagentApi.spawnRaw({systemPrompt: buildEvaluatorPrompt(charter?, recentEvents, contractDigest?), prompt: ..., model: "haiku-tier"})` via the `SUBAGENT_EXPOSE_API_EVENT`-captured handle | System prompt embeds live state; can't be a static file. Falls back to in-process `complete()` if pi-subagents is not installed. |
+| Charter trigger fired on `feature_completed` etc. | Whatever the charter config's `triggers` block says — usually `subagent({agent: <persona>, ...})` invoked by the host agent | Persona name is charter-config driven; defaults to `charter-verifier` but user can swap to their own |
+| Subagent handoff `charter_record action=handoff_apply` callback | Not a spawn — a tool call from inside the spawned persona back to pi-charter's tool surface | Reverse direction; same mechanism as any other tool call |
 
-The charter-evaluator being `spawnRaw` is the key reason both surfaces exist. If pi-charter only had `spawn`, the evaluator system prompt would need to live as a template file with placeholder substitution — that's just `spawnRaw` with extra steps, so we expose `spawnRaw` directly.
+The charter-evaluator being `spawnRaw`-shaped is the key reason the `SUBAGENT_EXPOSE_API_EVENT` surface exists at all. If we only had stable-prompt persona spawn (via the LLM `subagent` tool), the evaluator system prompt would need to live as a template file with placeholder substitution — that's just `spawnRaw` with extra steps, so we publish the `spawnRaw` capability directly through the exposed-API event.
+
+In pi-charter today, `evaluator-service.ts` works without `spawnRaw` — it calls `complete()` from `@earendil-works/pi-ai` directly. The `subagentApi.spawnRaw` path is the **upgrade path**: when pi-subagents is present, the evaluator gets a proper isolated child run with tool access, hooks, and per-spawn telemetry. When pi-subagents is absent, the evaluator still functions, just without those affordances.
 
 ### 4.3 Per-mission persona overrides
 
@@ -328,25 +418,25 @@ Same pattern as HTTP request IDs, OpenTelemetry baggage, git note refs — a pas
 
 ## 6. Important hard rules
 
-### 6.1 The two spawn surfaces (`spawn`, `spawnRaw`) are TypeScript APIs, not LLM tools
+### 6.1 `spawnRaw` is published via event payload, never as an LLM tool
 
-The root LLM still uses **only** the tool-form `subagent({agent: "...", task: "..."})`. `spawnRaw` is not exposed as an LLM tool. Reason: if `spawnRaw` were tool-callable, root could bypass persona conventions, ship raw system prompts of arbitrary length, and circumvent the role-topology guard. Extensions calling `spawnRaw` are TypeScript code with explicit author intent; LLMs calling it would be a security hole.
+The root LLM still uses **only** the tool-form `subagent({agent: "...", task: "..."})`. The `spawnRaw` function reference reaches pi-charter as a property on the `SubagentExposedAPI` bag delivered through `SUBAGENT_EXPOSE_API_EVENT`. It is never registered as a pi tool; the LLM cannot call it. Reason: if `spawnRaw` were tool-callable, root could bypass persona conventions, ship raw system prompts of arbitrary length, and circumvent the role-topology guard. Extensions calling `spawnRaw` are TypeScript code with explicit author intent; LLMs calling it would be a security hole.
 
-### 6.2 `registerPersonaDir` is startup-only
+### 6.2 `subagent:register-persona-dir` event is startup-only
 
-Extensions register their persona directories during their initialization. No dynamic registration mid-session — that would create resolver-cache invalidation problems. If an extension wants dynamic personas, it uses `spawnRaw` instead.
+Extensions emit the registration event during their initialization (and re-emit on `session_start` for restart safety). No dynamic re-registration mid-session — that would create resolver-cache invalidation problems. If an extension wants dynamic personas, it uses `spawnRaw` instead.
 
 ### 6.3 `context: "fresh"` is hardcoded for extension spawns
 
-`subagent.spawnRaw` doesn't expose `context` at all. `subagent.spawn` does (for back-compat with existing root-LLM-callable use), but extensions should always pass `fresh` or omit. `fork` is `main` → `main` self-fork only.
+`SpawnRawInput` doesn't include a `context` field. The LLM-callable `subagent({...})` tool does expose `context` (for `main` → `main` self-forks), but the only valid value when extensions invoke `spawnRaw` via the exposed-API event handle is implicit `fresh`. `fork` is `main` → `main` self-fork only and not reachable through `spawnRaw`.
 
-### 6.4 No mission vocabulary in pi-subagents source
+### 6.4 No charter vocabulary in pi-subagents source
 
-Forbidden tokens in pi-subagents codebase: `mission`, `charterId`, `goal`, `goalId`, `criterion`, `criterionId`, `feature` (as a domain noun; `agent feature flag` etc. is fine). Enforce with a CI grep step. The fence is cheap and prevents the coupling drift that would otherwise creep in "just this once."
+Forbidden tokens in pi-subagents codebase: `charter`, `mission`, `charterId`, `goal`, `goalId`, `criterion`, `criterionId`, `feature` (as a domain noun; `agent feature flag` etc. is fine). Enforce with a CI grep step. Event constants (`SUBAGENT_REGISTER_PERSONA_DIR_EVENT`, etc.) MUST use neutral names like `subagent:register-persona-dir`, never `subagent:register-charter-personas`. Event payload field names MUST be neutral (`extensionId`, `path`, `metadata`, etc.) — charter-specific keys live only INSIDE the opaque `metadata` bag, prefixed with `pi-charter.` per §5.
 
-### 6.5 Persona name uniqueness is enforced at startup
+### 6.5 Persona name uniqueness is enforced on subscribe
 
-Two extensions registering the same persona name fail loudly at startup, not silently at spawn time. Renames are owner-side; user can always shadow via `~/.pi/agent/agents/<name>.md`.
+Two extensions registering the same persona name fail loudly on the `subagent:register-persona-dir` subscribe handler, not silently at spawn time. pi-subagents emits `subagent:register-persona-dir-error` carrying `{extensionId, conflictingExtensionId, personaName}`; the originating extension is responsible for failing its own startup if it sees an error on a name it tried to register. Renames are owner-side; user can always shadow via `~/.pi/agent/agents/<name>.md`.
 
 ### 6.6 Bundled personas declare their tools explicitly
 
@@ -411,12 +501,12 @@ Factory's mission abstraction is "goal + plan + worker spawning + persistent roo
 
 ## 9. Migration order
 
-### Phase 0 — pi-subagents API additions (1–2 days)
-- Add `scope: "internal"` to role topology.
-- Add `subagent.spawnRaw({...})` TypeScript API.
-- Add `subagent.registerPersonaDir({...})` startup hook.
-- Add `metadata` passthrough on `subagent:*` hook events.
-- CI grep guard against mission/goal vocabulary leakage.
+### Phase 0 — pi-subagents event-bus surfaces (1–2 days)
+- Add `scope: "internal"` to role topology. **[DONE — commit `e35aed7` in pi-subagents]**
+- Define + emit `SUBAGENT_EXPOSE_API_EVENT` carrying `{spawnRaw, list}` callable bag at extension startup and on `session_start`.
+- Subscribe to `SUBAGENT_REGISTER_PERSONA_DIR_EVENT` / `SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT`; maintain an internal `Map<extensionId, RegisterPersonaDirPayload>`. Emit `subagent:register-persona-dir-error` on name collision.
+- Add `metadata` passthrough field on existing `subagent:async-started` / `subagent:async-complete` event payloads. Future sync-delegation events follow the same shape.
+- CI grep guard against charter/mission/goal vocabulary leakage (§6.4).
 
 These four changes are small, additive, backward-compatible. Existing `subagent({agent, task})` calls keep working. No release coordination with pi-charter required.
 

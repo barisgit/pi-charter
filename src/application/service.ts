@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, writeCharterState } from "../infrastructure/store";
-import type { Budget, CharterState, CharterStatus } from "../domain/types";
+import { loadCriterionState } from "./record-service";
+import { computeDrift } from "./drift-service";
+import { dispatchHook } from "./hooks";
+import { parseCharterMarkdown } from "../domain/charter-md";
+import type { Budget, CharterCriterion, CharterState, CharterStatus } from "../domain/types";
 
 export interface NextAction {
   tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status";
@@ -24,7 +29,12 @@ export interface CharterStatusResult {
   objective: string;
   budget?: Budget;
   evaluator: { lastVerdict?: string; lastReason?: string; lastTs?: string };
-  drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: unknown[] };
+  drift: {
+    uncovered: { criterionId: string; reason: string }[];
+    stuck: { featureId: string; status: string; startedAt?: string }[];
+    stale: { criterionId: string; ageMs: number; lastTs: string }[];
+    readyNext: { featureId: string; fulfills: string[] }[];
+  };
   guidelines: string[];
   nextActions: NextAction[];
 }
@@ -53,6 +63,7 @@ export async function getCharterStatus(
 ): Promise<CharterStatusResult> {
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const state = await loadCharterState(charterDir(projectDir, charterId));
+  const drift = await computeDrift(projectDir, { charterId });
   return {
     charterId: state.charterId,
     status: state.status,
@@ -60,7 +71,7 @@ export async function getCharterStatus(
     objective: state.objective,
     budget: state.budget,
     evaluator: {},
-    drift: { uncovered: [], stuck: [], stale: [], readyNext: [] },
+    drift,
     guidelines: guidelinesForStatus(state.status),
     nextActions: nextActionsForStatus(state.status),
   };
@@ -88,6 +99,164 @@ export async function pauseCharter(
     data: state,
     nextActions: nextActionsForStatus(state.status),
   };
+}
+
+export async function completeCharter(
+  projectDir: string,
+  input: { charterId?: string; completionNote?: string; now?: string },
+): Promise<CharterServiceResult<CharterState>> {
+  const charterId = await resolveCharterId(projectDir, input.charterId);
+  const dir = charterDir(projectDir, charterId);
+  const state = await loadCharterState(dir);
+  if (state.status !== "active" && state.status !== "review") {
+    throw new Error(`Cannot complete charter in status ${state.status}; resume or amend first.`);
+  }
+  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const criterionState = await loadCriterionState(dir, charterId);
+  const failures = checkCompletionGate(charter.criteria, criterionState, state);
+  if (failures.length > 0) {
+    throw new Error(`Cannot complete charter:\n - ${failures.join("\n - ")}`);
+  }
+  const now = input.now ?? new Date().toISOString();
+  await dispatchHook("charter:before_complete", {
+    type: "charter:before_complete",
+    charterId,
+    ts: now,
+    criteriaCount: charter.criteria.length,
+    completionNote: input.completionNote?.trim() || undefined,
+  });
+  state.status = "completed";
+  state.previousStatus = undefined;
+  state.completedAt = now;
+  state.updatedAt = now;
+  state.completionReason = input.completionNote?.trim() || undefined;
+  await writeCharterState(dir, state);
+  await appendEvent(dir, {
+    type: "charter_completed",
+    ts: now,
+    charterId,
+    completionNote: state.completionReason,
+    criteriaCount: charter.criteria.length,
+  });
+  return {
+    charterId,
+    status: state.status,
+    message: `Completed charter ${charterId}.`,
+    data: state,
+    nextActions: nextActionsForStatus(state.status),
+  };
+}
+
+export async function forceCompleteCharter(
+  projectDir: string,
+  input: { charterId?: string; reason: string; target?: "completed" | "abandoned" | "budget_limited"; now?: string },
+): Promise<CharterServiceResult<CharterState>> {
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("force_complete requires a non-empty reason.");
+  const target = input.target ?? "abandoned";
+  if (!isTerminal(target)) throw new Error(`force_complete target must be terminal; got ${target}.`);
+  const charterId = await resolveCharterId(projectDir, input.charterId);
+  const dir = charterDir(projectDir, charterId);
+  const state = await loadCharterState(dir);
+  if (isTerminal(state.status)) throw new Error(`Charter ${charterId} is already terminal (${state.status}).`);
+  const now = input.now ?? new Date().toISOString();
+  await dispatchHook("charter:before_force_complete", {
+    type: "charter:before_force_complete",
+    charterId,
+    ts: now,
+    target,
+    reason,
+  });
+  state.previousStatus = state.status;
+  state.status = target;
+  state.updatedAt = now;
+  state.completionReason = reason;
+  if (target === "completed") state.completedAt = now;
+  else state.terminatedAt = now;
+  await writeCharterState(dir, state);
+  await appendEvent(dir, { type: "charter_force_completed", ts: now, charterId, target, reason });
+  return {
+    charterId,
+    status: state.status,
+    message: `Force-completed charter ${charterId} as ${target}.`,
+    data: state,
+    nextActions: nextActionsForStatus(state.status),
+  };
+}
+
+export async function amendCharter(
+  projectDir: string,
+  input: { charterId?: string; reason: string; target?: "planning" | "review"; now?: string },
+): Promise<CharterServiceResult<CharterState>> {
+  const reason = input.reason?.trim();
+  if (!reason) throw new Error("amend_charter requires a non-empty reason.");
+  const target = input.target ?? "review";
+  if (target !== "planning" && target !== "review") throw new Error(`amend_charter target must be planning or review; got ${target}.`);
+  const charterId = await resolveCharterId(projectDir, input.charterId);
+  const dir = charterDir(projectDir, charterId);
+  const state = await loadCharterState(dir);
+  if (!isTerminal(state.status)) {
+    throw new Error(`amend_charter only re-opens terminal charters; current status is ${state.status}.`);
+  }
+  const now = input.now ?? new Date().toISOString();
+  await dispatchHook("charter:before_amend_charter", {
+    type: "charter:before_amend_charter",
+    charterId,
+    ts: now,
+    target,
+    reason,
+  });
+  state.previousStatus = state.status;
+  state.status = target;
+  state.updatedAt = now;
+  state.completedAt = undefined;
+  state.terminatedAt = undefined;
+  state.completionReason = undefined;
+  await writeCharterState(dir, state);
+  await appendEvent(dir, { type: "charter_amended", ts: now, charterId, target, reason });
+  return {
+    charterId,
+    status: state.status,
+    message: `Amended charter ${charterId} back into ${target}.`,
+    data: state,
+    nextActions: nextActionsForStatus(state.status),
+  };
+}
+
+function checkCompletionGate(
+  criteria: CharterCriterion[],
+  criterionState: { criteria: Record<string, { outcome: string; lastTs: string; source?: string; lastFeatureId?: string }> },
+  state: CharterState,
+): string[] {
+  const failures: string[] = [];
+  const freshnessWindowMs = 24 * 60 * 60 * 1000;
+  const lockTs = state.updatedAt;
+  for (const criterion of criteria) {
+    const record = criterionState.criteria[criterion.id];
+    if (!record || record.outcome !== "pass") {
+      failures.push(`${criterion.id}: no pass evidence yet`);
+      continue;
+    }
+    if (criterion.requireFreshEvidence) {
+      const ageMs = Date.now() - Date.parse(record.lastTs);
+      const lockedAgeMs = Date.parse(record.lastTs) - Date.parse(lockTs);
+      if (lockedAgeMs < 0) {
+        failures.push(`${criterion.id}: evidence predates plan lock`);
+        continue;
+      }
+      if (Number.isFinite(ageMs) && ageMs > freshnessWindowMs) {
+        failures.push(`${criterion.id}: evidence older than ${Math.round(freshnessWindowMs / 3600000)}h freshness window`);
+        continue;
+      }
+    }
+    if (criterion.requireReviewSubagent) {
+      const source = (record as { source?: string }).source;
+      if (source !== "verifier" && source !== "subagent") {
+        failures.push(`${criterion.id}: requires review subagent evidence (got ${source ?? "manual"})`);
+      }
+    }
+  }
+  return failures;
 }
 
 export async function resumeCharter(
@@ -139,7 +308,10 @@ export function nextActionsForStatus(status: CharterStatus): NextAction[] {
         { tool: "charter_status", hint: "Inspect current charter state." },
       ];
     default:
-      return [{ tool: "charter_status", hint: "Inspect terminal charter result." }];
+      return [
+        { tool: "charter_status", hint: "Inspect terminal charter result." },
+        { tool: "charter_manage", action: "amend_charter", hint: "Amend if the charter must be re-opened." },
+      ];
   }
 }
 

@@ -6,6 +6,7 @@ import type { CharterCriterion, CharterStatus } from "../domain/types";
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { appendEvent, charterDir, loadCharterState, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
 import { nextActionsForStatus, type NextAction } from "./service";
+import { dispatchHook } from "./hooks";
 
 export interface PlanView {
   charterId: string;
@@ -110,6 +111,13 @@ export async function lockPlan(
   const planDigest = digestFeatures(plan.features);
   const now = input.now ?? new Date().toISOString();
   const dir = charterDir(projectDir, input.charterId);
+  await dispatchHook("charter:before_lock_plan", {
+    type: "charter:before_lock_plan",
+    charterId: state.charterId,
+    ts: now,
+    planDigest,
+    featureCount: plan.features.length,
+  });
   state.status = "active";
   state.planDigest = planDigest;
   state.updatedAt = now;

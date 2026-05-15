@@ -1,9 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { complete, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { lockPlan, viewPlan } from "./plan-service";
-import { recordEvidence, verifyCriterion } from "./record-service";
-import { createCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
+import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
+import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
+import { bindCharterToSession, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
+import { runEvaluator, reminderFromEntry, type EvaluatorAssessment, type EvaluatorVerdict } from "./evaluator-service";
 
 type CharterManageInput = {
   action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter";
@@ -11,6 +13,7 @@ type CharterManageInput = {
   objective?: string;
   reason?: string;
   completionNote?: string;
+  target?: "completed" | "abandoned" | "budget_limited" | "planning" | "review";
   idempotencyKey?: string;
   budget?: { tokens?: number; wallclockMs?: number; turns?: number };
 };
@@ -35,6 +38,9 @@ type CharterRecordInput = {
   artifacts?: string[];
   details?: Record<string, unknown>;
   timeoutMs?: number;
+  subagentSessionId?: string;
+  handoffNote?: string;
+  completedCriteria?: HandoffCompletedCriterion[];
 };
 
 const CharterManageParams = Type.Object({
@@ -43,6 +49,7 @@ const CharterManageParams = Type.Object({
   objective: Type.Optional(Type.String({ description: "Required for action=create. The desired outcome, not a spec path." })),
   reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
   completionNote: Type.Optional(Type.String({ description: "Completion note for action=complete." })),
+  target: Type.Optional(StringEnum(["completed", "abandoned", "budget_limited", "planning", "review"] as const)),
   idempotencyKey: Type.Optional(Type.String({ description: "Stable retry key for orchestrator-driven creates." })),
   budget: Type.Optional(Type.Object({
     tokens: Type.Optional(Type.Number()),
@@ -71,6 +78,15 @@ const CharterRecordParams = Type.Object({
   artifacts: Type.Optional(Type.Array(Type.String())),
   details: Type.Optional(Type.Object({}, { additionalProperties: true })),
   timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for verify (default 120000)." })),
+  subagentSessionId: Type.Optional(Type.String({ description: "Subagent session id for action=handoff_apply." })),
+  handoffNote: Type.Optional(Type.String({ description: "Free-text handoff note for action=handoff_apply." })),
+  completedCriteria: Type.Optional(Type.Array(Type.Object({
+    criterionId: Type.String(),
+    outcome: StringEnum(["pass", "fail", "partial"] as const),
+    summary: Type.String(),
+    artifacts: Type.Optional(Type.Array(Type.String())),
+    details: Type.Optional(Type.Object({}, { additionalProperties: true })),
+  }))),
 });
 
 export function registerCharterTools(pi: ExtensionAPI): void {
@@ -88,12 +104,16 @@ export function registerCharterTools(pi: ExtensionAPI): void {
       switch (params.action) {
         case "create": {
           if (!params.objective?.trim()) throw new Error("objective is required for charter_manage action=create");
+          const sessionId = ctx.sessionManager.getSessionId?.();
           const result = await createCharter(ctx.cwd, {
             objective: params.objective,
             budget: params.budget,
             idempotencyKey: params.idempotencyKey,
-            sessionId: ctx.sessionManager.getSessionId?.(),
+            sessionId,
           });
+          if (sessionId) {
+            await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId });
+          }
           return toolResult(result.message, result);
         }
         case "pause": {
@@ -102,12 +122,34 @@ export function registerCharterTools(pi: ExtensionAPI): void {
         }
         case "resume": {
           const result = await resumeCharter(ctx.cwd, { charterId: params.charterId });
+          const sessionId = ctx.sessionManager.getSessionId?.();
+          if (sessionId) {
+            await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId });
+          }
           return toolResult(result.message, result);
         }
-        case "complete":
-        case "force_complete":
-        case "amend_charter":
-          throw new Error(`charter_manage action=${params.action} is reserved but not implemented in the M1 scaffold`);
+        case "complete": {
+          const result = await completeCharter(ctx.cwd, { charterId: params.charterId, completionNote: params.completionNote });
+          return toolResult(result.message, result);
+        }
+        case "force_complete": {
+          const target = params.target === "completed" || params.target === "abandoned" || params.target === "budget_limited" ? params.target : undefined;
+          const result = await forceCompleteCharter(ctx.cwd, {
+            charterId: params.charterId,
+            reason: params.reason ?? "",
+            target,
+          });
+          return toolResult(result.message, result);
+        }
+        case "amend_charter": {
+          const target = params.target === "planning" || params.target === "review" ? params.target : undefined;
+          const result = await amendCharter(ctx.cwd, {
+            charterId: params.charterId,
+            reason: params.reason ?? "",
+            target,
+          });
+          return toolResult(result.message, result);
+        }
       }
     },
   });
@@ -139,7 +181,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "charter_record",
     label: "Charter Record",
-    description: "Record evidence or run verifiers against charter criteria. handoff_apply is reserved.",
+    description: "Record evidence, run verifiers, or apply subagent handoffs against charter criteria.",
     promptSnippet: "Record evidence, run command verifiers, and link results back to charter criteria.",
     promptGuidelines: [
       "Use charter_record action=evidence after a manual check; charter_record action=verify to execute a command verifier defined in charter.md.",
@@ -174,7 +216,21 @@ export function registerCharterTools(pi: ExtensionAPI): void {
         });
         return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
       }
-      throw new Error(`charter_record action=${params.action} is reserved but not implemented yet`);
+      if (params.action === "handoff_apply") {
+        if (!params.subagentSessionId?.trim()) throw new Error("subagentSessionId is required for charter_record action=handoff_apply");
+        if (!params.featureId?.trim()) throw new Error("featureId is required for charter_record action=handoff_apply");
+        if (!params.handoffNote?.trim()) throw new Error("handoffNote is required for charter_record action=handoff_apply");
+        if (!params.completedCriteria || params.completedCriteria.length === 0) throw new Error("completedCriteria must have at least one entry for charter_record action=handoff_apply");
+        const result = await applyHandoff(ctx.cwd, {
+          charterId: status.charterId,
+          featureId: params.featureId,
+          subagentSessionId: params.subagentSessionId,
+          handoffNote: params.handoffNote,
+          completedCriteria: params.completedCriteria,
+        });
+        return toolResult(`Applied handoff from ${result.subagentSessionId} for feature ${result.featureId} (${result.appliedCount} criteria).`, result);
+      }
+      throw new Error(`charter_record action=${params.action} is not implemented yet`);
     },
   });
 
@@ -241,15 +297,202 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId?.();
+
+    // Reconcile reverse pointer first — if this session previously bound a
+    // charter (e.g. after compaction or process restart), restore the forward
+    // pointer in state.json before any other action.
+    if (sessionId) {
+      const reconciled = await reconcileSessionBinding({ sessionId });
+      if (reconciled) {
+        ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
+      }
+    }
+
+    const resumeId = String(pi.getFlag("charter-resume") ?? "").trim();
+    if (resumeId) {
+      const result = await resumeCharter(ctx.cwd, { charterId: resumeId });
+      if (sessionId) {
+        await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId });
+      }
+      ctx.ui.notify(result.message, "info");
+      return;
+    }
+
     const objective = String(pi.getFlag("charter-objective") ?? "").trim();
     if (!objective) return;
     const result = await createCharter(ctx.cwd, {
       objective,
-      sessionId: ctx.sessionManager.getSessionId?.(),
+      sessionId,
       idempotencyKey: `flag:${objective}`,
     });
+    if (sessionId) {
+      await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId });
+    }
     ctx.ui.notify(result.message, "info");
   });
+}
+
+const EVALUATOR_CUSTOM_TYPE = "charter-evaluator-steer";
+// Default evaluator model: cheap-fast tier, same shape Claude Code's /goal uses.
+// Override per-environment via PI_CHARTER_EVAL_PROVIDER / PI_CHARTER_EVAL_MODEL.
+const DEFAULT_EVAL_PROVIDER = "anthropic";
+const DEFAULT_EVAL_MODEL = "claude-haiku-4-5";
+const EVAL_TIMEOUT_MS = 30_000;
+const EVAL_MAX_TOKENS = 600;
+
+export function registerCharterEvaluator(pi: ExtensionAPI): void {
+  pi.on("turn_end", async (_event, ctx) => {
+    try {
+      const sessionId = ctx.sessionManager.getSessionId?.();
+      if (!sessionId) return;
+      const binding = await readSessionBinding({ sessionId });
+      if (!binding) return;
+      const projectDir = binding.projectDir;
+      const charterId = binding.charterId;
+
+      const recentUserMessages = extractRecentUserMessages(ctx, 2);
+      const recentToolNames = extractRecentToolNames(ctx, 8);
+
+      const modelFn = buildEvaluatorModelFn(ctx);
+      if (!modelFn) return; // no model available; skip silently
+
+      const entry = await runEvaluator(projectDir, {
+        charterId,
+        trigger: "turn_end",
+        modelFn,
+        recentUserMessages,
+        recentToolNames,
+      });
+      const reminder = reminderFromEntry(entry);
+      if (!reminder) return;
+      pi.sendMessage(
+        {
+          customType: EVALUATOR_CUSTOM_TYPE,
+          content: reminder,
+          display: true,
+          details: entry,
+        },
+        { deliverAs: "steer", triggerTurn: false },
+      );
+    } catch (error) {
+      // Never block the agent loop on evaluator failures.
+      const message = error instanceof Error ? error.message : String(error);
+      if (ctx.hasUI) ctx.ui.notify(`charter-evaluator skipped: ${message}`, "warning");
+    }
+  });
+}
+
+function extractRecentUserMessages(ctx: { sessionManager: { getBranch?: () => unknown[] } }, limit: number): string[] {
+  const entries = (ctx.sessionManager.getBranch?.() ?? []) as Array<{ type?: string; content?: unknown }>;
+  const userTexts: string[] = [];
+  for (const entry of entries) {
+    if (entry?.type !== "user_message") continue;
+    const text = extractEntryText(entry.content);
+    if (text) userTexts.push(text);
+  }
+  return userTexts.slice(-limit);
+}
+
+function extractRecentToolNames(ctx: { sessionManager: { getBranch?: () => unknown[] } }, limit: number): string[] {
+  const entries = (ctx.sessionManager.getBranch?.() ?? []) as Array<{ type?: string; name?: string; toolName?: string }>;
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (entry?.type !== "tool_call") continue;
+    const name = entry.name ?? entry.toolName;
+    if (typeof name === "string" && name) names.push(name);
+  }
+  return names.slice(-limit);
+}
+
+function extractEntryText(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text ?? "") : ""))
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+type ModelRegistryLike = {
+  find: (provider: string, modelId: string) => unknown;
+  getApiKeyAndHeaders: (model: unknown) => Promise<{ ok: true; apiKey: string; headers?: Record<string, string> } | { ok: false; error: string }>;
+};
+
+function buildEvaluatorModelFn(ctx: { modelRegistry?: unknown }) {
+  const registry = ctx.modelRegistry as ModelRegistryLike | undefined;
+  if (!registry) return undefined;
+  const provider = process.env.PI_CHARTER_EVAL_PROVIDER ?? DEFAULT_EVAL_PROVIDER;
+  const modelId = process.env.PI_CHARTER_EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+  const model = registry.find(provider, modelId);
+  if (!model) return undefined;
+  type CompleteArgs = Parameters<typeof complete>;
+  type CompleteContext = CompleteArgs[1];
+  type CompleteOptions = CompleteArgs[2];
+  return async (input: { prompt: string }): Promise<EvaluatorAssessment> => {
+    const auth = await registry.getApiKeyAndHeaders(model);
+    if (!auth.ok) throw new Error(auth.error);
+    const context: CompleteContext = {
+      systemPrompt: "You are charter-evaluator. Reply with ONLY a single JSON object matching the requested schema. No prose.",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: input.prompt }],
+          timestamp: Date.now(),
+        },
+      ],
+    } as CompleteContext;
+    const options = {
+      apiKey: auth.apiKey,
+      headers: auth.headers,
+      timeoutMs: EVAL_TIMEOUT_MS,
+      maxTokens: EVAL_MAX_TOKENS,
+      temperature: 0,
+      reasoning: "minimal",
+    } as unknown as CompleteOptions;
+    const response = await complete(model as CompleteArgs[0], context, options);
+    if (response.stopReason === "error") {
+      const errMessage = (response as unknown as { errorMessage?: string }).errorMessage ?? "unknown";
+      throw new Error(`evaluator model error: ${errMessage}`);
+    }
+    const text = response.content
+      .filter((part): part is { type: "text"; text: string } => part.type === "text")
+      .map((part) => String(part.text ?? ""))
+      .join("\n");
+    return parseEvaluatorJson(text);
+  };
+}
+
+function parseEvaluatorJson(text: string): EvaluatorAssessment {
+  const stripped = stripJsonFences(text).trim();
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start < 0 || end <= start) throw new Error("evaluator response did not contain a JSON object");
+  const json = stripped.slice(start, end + 1);
+  const obj = JSON.parse(json) as Record<string, unknown>;
+  const verdict = String(obj.verdict ?? "") as EvaluatorVerdict;
+  const allowed: EvaluatorVerdict[] = ["on_track", "drifting", "blocked", "ready_to_complete", "unclear"];
+  if (!allowed.includes(verdict)) throw new Error(`evaluator returned unknown verdict: ${obj.verdict}`);
+  const confidence = typeof obj.confidence === "number" ? obj.confidence : 0.5;
+  const reason = typeof obj.reason === "string" ? obj.reason : "";
+  const steerReminder = typeof obj.steerReminder === "string" ? obj.steerReminder : undefined;
+  const citesRaw = Array.isArray(obj.cites) ? obj.cites : [];
+  const cites = citesRaw
+    .map((c) => (typeof c === "object" && c ? (c as Record<string, unknown>) : null))
+    .filter((c): c is Record<string, unknown> => c !== null)
+    .map((c) => ({
+      criterionId: typeof c.criterionId === "string" ? c.criterionId : undefined,
+      featureId: typeof c.featureId === "string" ? c.featureId : undefined,
+    }))
+    .filter((c) => c.criterionId || c.featureId);
+  return { verdict, confidence, reason, steerReminder, cites };
+}
+
+function stripJsonFences(text: string): string {
+  return text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
 }
 
 function toolResult(text: string, details: unknown) {

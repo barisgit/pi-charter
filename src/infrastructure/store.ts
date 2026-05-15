@@ -162,6 +162,9 @@ function normalizeCharterState(value: unknown): CharterState {
     sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
     budget: typeof raw.budget === "object" && raw.budget ? (raw.budget as Budget) : undefined,
     previousStatus: isStatus(raw.previousStatus) ? raw.previousStatus : undefined,
+    completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
+    terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
+    completionReason: typeof raw.completionReason === "string" ? raw.completionReason : undefined,
   };
 }
 

@@ -71,8 +71,14 @@ function parseCriterion(heading: string, body: string): CharterCriterion | undef
     description: fields.get("description"),
     verifier: parseVerifier(fields.get("verifier")),
     command: commandValue?.trim() ? commandValue.trim() : undefined,
-    requireFreshEvidence: parseBoolean(fields.get("fresh evidence required"), false),
-    requireReviewSubagent: parseBoolean(fields.get("review subagent required"), false),
+    requireFreshEvidence: parseBoolean(
+      fields.get("fresh evidence required") ?? fields.get("require fresh evidence"),
+      false,
+    ),
+    requireReviewSubagent: parseBoolean(
+      fields.get("review subagent required") ?? fields.get("require review subagent"),
+      false,
+    ),
   };
 }
 

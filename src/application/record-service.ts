@@ -22,7 +22,7 @@ export interface RecordEvidenceInput {
   summary: string;
   artifacts?: string[];
   details?: Record<string, unknown>;
-  source?: "manual" | "verifier";
+  source?: "manual" | "verifier" | "subagent";
   now?: string;
 }
 
@@ -36,15 +36,16 @@ export interface RecordEvidenceResult {
   nextActions: NextAction[];
 }
 
-interface CriterionStateRecord {
+export interface CriterionStateRecord {
   outcome: EvidenceOutcome;
   lastEvidencePath: string;
   lastTs: string;
   lastSummary: string;
   lastFeatureId?: string;
+  source?: "manual" | "verifier" | "subagent";
 }
 
-interface CriterionStateFile {
+export interface CriterionStateFile {
   charterId: string;
   criteria: Record<string, CriterionStateRecord>;
 }
@@ -91,6 +92,7 @@ export async function recordEvidence(
     lastTs: now,
     lastSummary: record.summary,
     lastFeatureId: input.featureId,
+    source: input.source ?? "manual",
   };
   await writeJsonAtomic(join(dir, "criterion-state.json"), stateFile);
 
@@ -115,7 +117,7 @@ export async function recordEvidence(
   };
 }
 
-async function loadCriterionState(dir: string, charterId: string): Promise<CriterionStateFile> {
+export async function loadCriterionState(dir: string, charterId: string): Promise<CriterionStateFile> {
   try {
     const parsed = JSON.parse(await readFile(join(dir, "criterion-state.json"), "utf8")) as Partial<CriterionStateFile>;
     return {
@@ -241,6 +243,137 @@ function runCommand(command: string, options: { cwd: string; timeoutMs: number }
       resolve({ exitCode: 127, stdout, stderr: stderr + String(err), truncated, timedOut });
     });
   });
+}
+
+export interface HandoffCompletedCriterion {
+  criterionId: string;
+  outcome: EvidenceOutcome;
+  summary: string;
+  artifacts?: string[];
+  details?: Record<string, unknown>;
+}
+
+export interface ApplyHandoffInput {
+  charterId: string;
+  featureId: string;
+  subagentSessionId: string;
+  handoffNote: string;
+  completedCriteria: HandoffCompletedCriterion[];
+  now?: string;
+}
+
+export interface ApplyHandoffResult {
+  charterId: string;
+  featureId: string;
+  subagentSessionId: string;
+  handoffPath: string;
+  appliedCount: number;
+  ts: string;
+  nextActions: NextAction[];
+}
+
+export interface FeatureStateRecord {
+  status?: string;
+  startedAt?: string;
+  completedAt?: string;
+  lastWorkerSessionId?: string;
+  lastHandoffPath?: string;
+}
+
+export interface FeatureStateFile {
+  charterId: string;
+  features: Record<string, FeatureStateRecord>;
+}
+
+export async function applyHandoff(projectDir: string, input: ApplyHandoffInput): Promise<ApplyHandoffResult> {
+  if (!input.completedCriteria || input.completedCriteria.length === 0) {
+    throw new Error("applyHandoff requires at least one completedCriteria entry.");
+  }
+  if (!input.featureId?.trim()) throw new Error("applyHandoff requires featureId.");
+  if (!input.subagentSessionId?.trim()) throw new Error("applyHandoff requires subagentSessionId.");
+  const dir = charterDir(projectDir, input.charterId);
+  const state = await loadCharterState(dir);
+  if (state.status !== "active" && state.status !== "review") {
+    throw new Error(`Cannot apply handoff in status ${state.status}; charter must be active or in review.`);
+  }
+  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
+  for (const completed of input.completedCriteria) {
+    if (!criteriaById.has(completed.criterionId)) throw new Error(`Unknown criterion ${completed.criterionId} in handoff.`);
+  }
+  const now = input.now ?? new Date().toISOString();
+  const stamp = now.replace(/[:.]/g, "-");
+  const handoffRelative = join("handoffs", `${stamp}__${input.featureId}__${input.subagentSessionId}.json`);
+  const handoffAbsolute = join(dir, handoffRelative);
+  const envelope = {
+    charterId: input.charterId,
+    featureId: input.featureId,
+    subagentSessionId: input.subagentSessionId,
+    handoffNote: input.handoffNote,
+    completedCriteria: input.completedCriteria,
+    ts: now,
+  };
+  await writeTextAtomic(handoffAbsolute, `${JSON.stringify(envelope, null, 2)}\n`);
+
+  for (const completed of input.completedCriteria) {
+    await recordEvidence(projectDir, {
+      charterId: input.charterId,
+      criterionId: completed.criterionId,
+      featureId: input.featureId,
+      outcome: completed.outcome,
+      summary: completed.summary,
+      artifacts: completed.artifacts,
+      details: { ...(completed.details ?? {}), subagentSessionId: input.subagentSessionId, handoffPath: handoffRelative },
+      source: "subagent",
+      now,
+    });
+  }
+
+  const featureState = await loadFeatureState(dir, input.charterId);
+  const existing = featureState.features[input.featureId] ?? {};
+  featureState.features[input.featureId] = {
+    ...existing,
+    status: existing.status ?? "in_progress",
+    startedAt: existing.startedAt ?? now,
+    lastWorkerSessionId: input.subagentSessionId,
+    lastHandoffPath: handoffRelative,
+  };
+  await writeJsonAtomic(join(dir, "feature-state.json"), featureState);
+
+  await appendEvent(dir, {
+    type: "handoff_applied",
+    ts: now,
+    charterId: input.charterId,
+    featureId: input.featureId,
+    subagentSessionId: input.subagentSessionId,
+    appliedCount: input.completedCriteria.length,
+  });
+
+  return {
+    charterId: input.charterId,
+    featureId: input.featureId,
+    subagentSessionId: input.subagentSessionId,
+    handoffPath: handoffRelative,
+    appliedCount: input.completedCriteria.length,
+    ts: now,
+    nextActions: [
+      { tool: "charter_status", hint: "Inspect drift after handoff." },
+      { tool: "charter_record", action: "verify", hint: "Re-run verifiers to confirm subagent claims." },
+      ...nextActionsForStatus(state.status),
+    ],
+  };
+}
+
+async function loadFeatureState(dir: string, charterId: string): Promise<FeatureStateFile> {
+  try {
+    const parsed = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8")) as Partial<FeatureStateFile>;
+    return {
+      charterId: parsed.charterId ?? charterId,
+      features: parsed.features && typeof parsed.features === "object" ? (parsed.features as Record<string, FeatureStateRecord>) : {},
+    };
+  } catch {
+    return { charterId, features: {} };
+  }
 }
 
 function nextActionsForEvidence(criterion: CharterCriterion, outcome: EvidenceOutcome, status: "active" | "review"): NextAction[] {

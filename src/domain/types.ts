@@ -26,6 +26,9 @@ export interface CharterState {
   sessionId?: string;
   budget?: Budget;
   previousStatus?: CharterStatus;
+  completedAt?: string;
+  terminatedAt?: string;
+  completionReason?: string;
 }
 
 export interface CharterCriterion {

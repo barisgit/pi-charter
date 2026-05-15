@@ -1,0 +1,125 @@
+/**
+ * Session binding for pi-charter.
+ *
+ * Forward: `state.json.sessionId` (lives in <project>/.pi/charters/<charterId>/state.json).
+ * Reverse: `<homeDir>/.pi/agent/sessions/<sessionId>/charter.json` ->
+ *          `{ sessionId, charterId, projectDir, boundAt }`.
+ *
+ * Both pointers are written atomically so a partial restore or crash can be
+ * reconciled by `reconcileSessionBinding(sessionId)`: if the reverse pointer
+ * exists but the forward pointer is missing or stale, restore the forward one
+ * from the reverse record.
+ */
+
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { charterDir, loadCharterState, writeCharterState } from "../infrastructure/store";
+
+export interface SessionBindingRecord {
+  sessionId: string;
+  charterId: string;
+  projectDir: string;
+  boundAt: string;
+}
+
+interface BindInput {
+  charterId: string;
+  sessionId: string;
+  homeDir?: string;
+  now?: string;
+}
+
+function resolveHome(homeDir?: string): string {
+  return homeDir ?? homedir();
+}
+
+function reversePath(homeDir: string, sessionId: string): string {
+  return join(homeDir, ".pi/agent/sessions", sessionId, "charter.json");
+}
+
+async function writeReverse(homeDir: string, record: SessionBindingRecord): Promise<void> {
+  const path = reversePath(homeDir, record.sessionId);
+  await mkdir(join(homeDir, ".pi/agent/sessions", record.sessionId), { recursive: true });
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, JSON.stringify(record, null, 2));
+  const { rename } = await import("node:fs/promises");
+  await rename(tmp, path);
+}
+
+async function removeReverse(homeDir: string, sessionId: string): Promise<void> {
+  const dir = join(homeDir, ".pi/agent/sessions", sessionId);
+  await rm(dir, { recursive: true, force: true });
+}
+
+export async function bindCharterToSession(projectDir: string, input: BindInput): Promise<SessionBindingRecord> {
+  if (!input.sessionId.trim()) throw new Error("bindCharterToSession requires a non-empty sessionId.");
+  const home = resolveHome(input.homeDir);
+  const dir = charterDir(projectDir, input.charterId);
+  const state = await loadCharterState(dir);
+  const now = input.now ?? new Date().toISOString();
+  state.sessionId = input.sessionId;
+  state.updatedAt = now;
+  await writeCharterState(dir, state);
+  const record: SessionBindingRecord = {
+    sessionId: input.sessionId,
+    charterId: input.charterId,
+    projectDir,
+    boundAt: now,
+  };
+  await writeReverse(home, record);
+  return record;
+}
+
+export async function rebindCharter(projectDir: string, input: BindInput): Promise<SessionBindingRecord> {
+  const home = resolveHome(input.homeDir);
+  const dir = charterDir(projectDir, input.charterId);
+  const state = await loadCharterState(dir);
+  const previousSessionId = state.sessionId;
+  const result = await bindCharterToSession(projectDir, input);
+  if (previousSessionId && previousSessionId !== input.sessionId) {
+    await removeReverse(home, previousSessionId);
+  }
+  return result;
+}
+
+export async function readSessionBinding(input: {
+  sessionId: string;
+  homeDir?: string;
+}): Promise<SessionBindingRecord | null> {
+  const home = resolveHome(input.homeDir);
+  const path = reversePath(home, input.sessionId);
+  try {
+    await stat(path);
+  } catch {
+    return null;
+  }
+  try {
+    const raw = JSON.parse(await readFile(path, "utf8")) as SessionBindingRecord;
+    if (!raw.sessionId || !raw.charterId || !raw.projectDir) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+export async function reconcileSessionBinding(input: {
+  sessionId: string;
+  homeDir?: string;
+  now?: string;
+}): Promise<SessionBindingRecord | null> {
+  const record = await readSessionBinding(input);
+  if (!record) return null;
+  const dir = charterDir(record.projectDir, record.charterId);
+  try {
+    const state = await loadCharterState(dir);
+    if (state.sessionId !== input.sessionId) {
+      state.sessionId = input.sessionId;
+      state.updatedAt = input.now ?? new Date().toISOString();
+      await writeCharterState(dir, state);
+    }
+    return record;
+  } catch {
+    return null;
+  }
+}
