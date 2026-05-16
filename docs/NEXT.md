@@ -22,13 +22,13 @@ pi-charter is a fully tested standalone extension wired to pi-subagents. 53 test
 
 - `evaluator-service.ts` runs post-turn via injected `EvaluatorModelFn`. Persists last 10 verdicts in `evaluator-log.jsonl`. Never gates completion — only surfaces a steer reminder via `pi.sendMessage({deliverAs: 'steer', triggerTurn: false})`.
 - `registerCharterEvaluator(pi)` wired into `index.ts`. `turn_end` handler builds the live context (charter status + drift + recent user messages + recent tool names), invokes `complete()` from `@earendil-works/pi-ai`, parses the JSON verdict, appends to log, fires steer reminder on next turn.
-- Default model: `anthropic/claude-sonnet-4.6`. Override via `PI_CHARTER_EVAL_PROVIDER` / `PI_CHARTER_EVAL_MODEL`.
+- Default model: `anthropic/claude-sonnet-4-6`. Override via `PI_CHARTER_EVAL_PROVIDER` / `PI_CHARTER_EVAL_MODEL`.
 
 ### Bundled personas
 
 - `agents/charter-verifier.md` — read-only contract-aware verifier. `scope: internal`. Tool allowlist: `read, grep, find, ls, bash, charter_record, charter_status`. Records exactly one `charter_record action=evidence` entry per run.
 - `agents/charter-planner-critic.md` — read-only adversarial plan critic. `scope: internal`. Runs the same checks the in-process `lock_plan` runs plus milestone hygiene, order field sanity, verifier coverage, and scope/constraint violation checks. Emits a structured `PASS | BLOCK | ADVISORY` verdict.
-- Both use `anthropic/claude-sonnet-4.6`.
+- Both use `anthropic/claude-sonnet-4-6`.
 
 ## pi-subagents bridge — wired
 

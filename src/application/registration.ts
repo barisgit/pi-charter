@@ -473,12 +473,16 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
 const EVALUATOR_CUSTOM_TYPE = "charter-evaluator-steer";
 // Default evaluator model: cheap-fast tier, same shape Claude Code's /goal uses.
 // Override per-environment via PI_CHARTER_EVAL_PROVIDER / PI_CHARTER_EVAL_MODEL.
-// Per-turn evaluator runs every turn end. Pick a cheap-fast tier; Sonnet stays
-// reserved for the planner-critic and verifier subagents that run on demand.
+// Per-turn evaluator runs every turn end. Sonnet, not Haiku: the evaluator
+// judges drift against the full charter + drift views + recent tool history;
+// that's a reasoning job, not a cheap-fast one. Latency at turn boundaries is
+// not the bottleneck.
+//
 // The model id MUST match `getModel('anthropic', <id>)` from pi-ai’s registry
-// (dash form, not dotted). Verified via `getModel('anthropic', 'claude-haiku-4-5')`.
+// (dash form, not dotted). Verified resolvable via
+// `getModel('anthropic', 'claude-sonnet-4-6')`.
 const DEFAULT_EVAL_PROVIDER = "anthropic";
-const DEFAULT_EVAL_MODEL = "claude-haiku-4-5";
+const DEFAULT_EVAL_MODEL = "claude-sonnet-4-6";
 const EVAL_TIMEOUT_MS = 30_000;
 const EVAL_MAX_TOKENS = 600;
 

@@ -10,8 +10,8 @@ This repo is intentionally scaffold-first. The current source of truth is the do
 
 - Four LLM-callable tools wired: `charter_manage`, `charter_plan`, `charter_record`, `charter_status`.
 - Lifecycle FSM with completion gate, hook bus, drift views, session binding, planner-critic, command verifiers.
-- Post-turn `charter-evaluator` modeled on Claude Code's `/goal` (default `anthropic/claude-sonnet-4.6`).
-- Bundled internal personas: `charter-verifier`, `charter-planner-critic` (both `scope: internal`, `anthropic/claude-sonnet-4.6`).
+- Post-turn `charter-evaluator` modeled on Claude Code's `/goal` (default `anthropic/claude-sonnet-4-6`).
+- Bundled internal personas: `charter-verifier`, `charter-planner-critic` (both `scope: internal`, `anthropic/claude-sonnet-4-6`).
 - Per-project layout: `<project>/.pi/charters/<charterId>/{charter.md, state.json, plan/, work/, events.jsonl, ...}`.
 - pi-subagents bridge wired: `register-persona-dir` emit, `expose-api` subscriber, `async-started`/`async-complete` → `feature_started`/`feature_completed`/`feature_failed` event mapping.
 - v1 `pi-goals` preserved at `docs/reference/v1-pi-goals/pi-goals/`.

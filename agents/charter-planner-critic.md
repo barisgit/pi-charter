@@ -3,7 +3,7 @@ name: charter-planner-critic
 description: Adversarial pass on a pi-charter plan during the planning phase. Flags uncovered scope, orphan features, cyclic preconditions, and budget sanity issues. Read-only.
 scope: internal
 tools: [read, grep, find, ls, charter_status, charter_plan]
-model: anthropic/claude-sonnet-4.6
+model: anthropic/claude-sonnet-4-6
 thinking: high
 systemPromptMode: replace
 inheritProjectContext: true
