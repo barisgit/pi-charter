@@ -483,8 +483,11 @@ const EVALUATOR_CUSTOM_TYPE = "charter-evaluator-steer";
 // `getModel('anthropic', 'claude-sonnet-4-6')`.
 const DEFAULT_EVAL_PROVIDER = "anthropic";
 const DEFAULT_EVAL_MODEL = "claude-sonnet-4-6";
-const EVAL_TIMEOUT_MS = 30_000;
-const EVAL_MAX_TOKENS = 600;
+const EVAL_TIMEOUT_MS = 60_000;
+// Bumped from 600 — with thinking enabled the model needs headroom to think
+// before emitting the JSON verdict. Anthropic counts thinking tokens against
+// maxTokens, so 600 was being eaten by the reasoning phase alone.
+const EVAL_MAX_TOKENS = 4096;
 
 // Surface evaluator misconfiguration exactly once per process so users notice
 // when no model is wired — previously this was a silent `return` and a wrong
@@ -607,13 +610,16 @@ function buildEvaluatorModelFn(ctx: { modelRegistry?: unknown }) {
         },
       ],
     } as CompleteContext;
+    // Drift reasoning is non-trivial; keep thinking enabled at 'medium'.
+    // Explicit thinkingBudgets are well above Anthropic's 1024 floor so the
+    // budget-based fallback path can't trigger `budget_tokens < 1024` errors.
     const options = {
       apiKey: auth.apiKey,
       headers: auth.headers,
       timeoutMs: EVAL_TIMEOUT_MS,
       maxTokens: EVAL_MAX_TOKENS,
-      temperature: 0,
-      reasoning: "minimal",
+      reasoning: "medium",
+      thinkingBudgets: { minimal: 4096, low: 4096, medium: 8192, high: 16384 },
     } as unknown as CompleteOptions;
     const response = await complete(model as CompleteArgs[0], context, options);
     if (response.stopReason === "error") {
