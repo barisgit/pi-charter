@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { renderInitialCharterMarkdown } from "../domain/charter-md";
 import type { Budget, CharterEvent, CharterState } from "../domain/types";
@@ -86,18 +87,38 @@ export async function loadCharterIndex(projectDir: string): Promise<CharterIndex
   }
 }
 
+// Per-path serialization. Parallel charter_plan calls (and any other in-process
+// writer that targets the same file in the same turn) chain through one promise
+// per absolute path so read-modify-write sequences like appendEvent can't lose
+// concurrent updates and tmp-rename races can't ENOENT each other.
+const writeQueues = new Map<string, Promise<unknown>>();
+
+async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const prev = writeQueues.get(path) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  // Store the swallowed-error version so a failed write doesn't poison the queue.
+  const guard = next.catch(() => undefined);
+  writeQueues.set(path, guard);
+  try {
+    return await next;
+  } finally {
+    // GC: if no later writer chained onto us, drop the entry.
+    if (writeQueues.get(path) === guard) writeQueues.delete(path);
+  }
+}
+
 export async function appendEvent(dir: string, event: CharterEvent): Promise<void> {
   const path = join(dir, "events.jsonl");
   await mkdir(dirname(path), { recursive: true });
-  // Atomic append is not necessary for first cut because pi tools execute in the
-  // extension process; revisit with a file mutation queue if multiple writers emerge.
-  let existing = "";
-  try {
-    existing = await readFile(path, "utf8");
-  } catch {
-    existing = "";
-  }
-  await writeTextAtomic(path, `${existing}${JSON.stringify(event)}\n`);
+  await withPathLock(path, async () => {
+    let existing = "";
+    try {
+      existing = await readFile(path, "utf8");
+    } catch {
+      existing = "";
+    }
+    await writeTextAtomicUnsafe(path, `${existing}${JSON.stringify(event)}\n`);
+  });
 }
 
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
@@ -105,8 +126,14 @@ export async function writeJsonAtomic(path: string, value: unknown): Promise<voi
 }
 
 export async function writeTextAtomic(path: string, value: string): Promise<void> {
+  await withPathLock(path, () => writeTextAtomicUnsafe(path, value));
+}
+
+async function writeTextAtomicUnsafe(path: string, value: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  // Random suffix prevents sub-ms collisions across parallel writers (multiple
+  // charter_plan add_feature calls in the same turn race on Date.now()).
+  const tempPath = `${path}.${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}.tmp`;
   await writeFile(tempPath, value, "utf8");
   await rename(tempPath, path);
 }

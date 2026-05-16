@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createCharterWorkspace, loadCharterState } from "../src/infrastructure/store";
-import { parseCharterMarkdown } from "../src/domain/charter-md";
+import { appendEvent, createCharterWorkspace, loadCharterState } from "../src/infrastructure/store";
+import { parseCharterMarkdown, renderInitialCharterMarkdown } from "../src/domain/charter-md";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pi-charter-test-"));
@@ -41,6 +41,55 @@ describe("charter filesystem store", () => {
 
       const index = await readFile(join(projectDir, ".pi", "charters", "index.json"), "utf8");
       expect(index).toContain(created.charterId);
+    });
+  });
+});
+
+describe("appendEvent concurrency", () => {
+  test("parallel appendEvent calls preserve every event without ENOENT", async () => {
+    await withTempProject(async (projectDir) => {
+      const created = await createCharterWorkspace(projectDir, {
+        charterId: "00000000-0000-4000-8000-000000000099",
+        objective: "concurrency probe",
+        now: "2026-05-15T00:00:00.000Z",
+      });
+      const dir = created.charterDir;
+      // 12 parallel appends — mirrors the dogfood case of 6 charter_plan add_feature
+      // calls racing on events.jsonl tmp-rename and read-modify-write.
+      const events = Array.from({ length: 12 }, (_, i) => ({
+        type: "feature_added" as const,
+        ts: `2026-05-15T00:00:00.${String(i).padStart(3, "0")}Z`,
+        charterId: created.charterId,
+        featureId: `f${i}`,
+        milestone: "m1",
+        fulfills: ["VAL-1"],
+      }));
+      await Promise.all(events.map((e) => appendEvent(dir, e)));
+      const raw = await readFile(join(dir, "events.jsonl"), "utf8");
+      const lines = raw.trim().split("\n");
+      // 1 charter_created + 12 feature_added
+      expect(lines).toHaveLength(13);
+      const featureIds = lines
+        .map((line) => JSON.parse(line))
+        .filter((e) => e.type === "feature_added")
+        .map((e) => e.featureId)
+        .sort();
+      expect(featureIds).toEqual(events.map((e) => e.featureId).sort());
+    });
+  });
+});
+
+describe("renderInitialCharterMarkdown", () => {
+  test("initial template parses cleanly and surfaces the example criterion", () => {
+    const md = renderInitialCharterMarkdown("Probe objective");
+    const parsed = parseCharterMarkdown(md);
+    expect(parsed.objective).toBe("Probe objective");
+    // The worked example must round-trip so agents can copy its shape.
+    expect(parsed.criteria).toHaveLength(1);
+    expect(parsed.criteria[0]).toMatchObject({
+      id: "VAL-EXAMPLE",
+      verifier: "manual",
+      requireFreshEvidence: false,
     });
   });
 });

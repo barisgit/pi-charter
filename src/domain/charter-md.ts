@@ -3,7 +3,47 @@ import type { CharterCriterion, ParsedCharterMarkdown, VerifierKind } from "./ty
 const DEFAULT_VERIFIER: VerifierKind = "manual";
 
 export function renderInitialCharterMarkdown(objective: string): string {
-  return `# Charter\n\n## Objective\n\n${objective.trim()}\n\n## Criteria\n\n<!-- Add VAL-* criteria during planning. -->\n\n## Scope and constraints\n\n<!-- Add constraints and non-goals during planning. -->\n`;
+  // The initial template doubles as a worked example. The parser only recognizes
+  // criteria written as `### VAL-<ID>` H3 headings with `Verifier:`/`Description:`
+  // /`Fresh evidence required:` field lines beneath; bullet lists are NOT parsed.
+  // Showing one full criterion makes the convention discoverable without forcing
+  // the agent to read the skill before authoring.
+  return [
+    "# Charter",
+    "",
+    "## Objective",
+    "",
+    objective.trim(),
+    "",
+    "## Criteria",
+    "",
+    "<!--",
+    "Replace the example below with real VAL-* criteria for this charter.",
+    "",
+    "Format (strict — parsed by pi-charter):",
+    "  ### VAL-<UPPER-SNAKE-OR-NUMERIC-ID> <short title>",
+    "  Description: <one-line outcome statement>",
+    "  Verifier: <manual|command|hook|prompt>",
+    "  Command: <shell command if Verifier: command>",
+    "  Fresh evidence required: <true|false>",
+    "  Review subagent required: <true|false>",
+    "",
+    "Notes:",
+    "  - Bullet lists (`- VAL-1: ...`) are IGNORED. Use ### VAL- H3 headings.",
+    "  - Every VAL-* id you list here must be the fulfills= target of at least one",
+    "    feature added via charter_plan action=add_feature.",
+    "-->",
+    "",
+    "### VAL-EXAMPLE Example criterion (delete me)",
+    "Description: Replace this example with the real outcome you want verified.",
+    "Verifier: manual",
+    "Fresh evidence required: false",
+    "",
+    "## Scope and constraints",
+    "",
+    "<!-- One bullet per scope or constraint, e.g. \"- Do not modify the public API.\" -->",
+    "",
+  ].join("\n");
 }
 
 export function parseCharterMarkdown(markdown: string): ParsedCharterMarkdown {

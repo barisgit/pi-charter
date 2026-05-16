@@ -333,7 +333,7 @@ function phaseForStatus(status: CharterStatus): CharterStatusResult["phase"] {
 
 function guidelinesForStatus(status: CharterStatus): string[] {
   if (status === "planning") return [
-    "Edit charter.md inside .pi/charters/<id>/ to add VAL-* criteria and scope/constraints; do NOT create a repo-root charter.md.",
+    "Edit charter.md inside .pi/charters/<id>/ to add VAL-* criteria; the initial template includes a worked example. Format is `### VAL-<ID> <title>` H3 headings with `Verifier:`/`Description:` field lines beneath — bullet lists are ignored. Do NOT create a repo-root charter.md.",
     "Use charter_plan action=add_feature for each feature; do NOT write plan/<featureId>.md at the repo root — the tool writes to .pi/charters/<id>/plan/.",
     "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns.",
   ];
