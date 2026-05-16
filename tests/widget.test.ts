@@ -211,3 +211,64 @@ describe("widget render", () => {
     expect(formatElapsed(63 * 60 * 1000 + 12_000)).toBe("1h 03m");
   });
 });
+
+describe("planning widget", () => {
+  test("empty charter: only 'create' step done, hint asks for VAL criteria", () => {
+    const vm = buildViewModel(defaultInput({ status: "planning" }));
+    expect(vm.isPlanning).toBe(true);
+    expect(vm.planning?.steps.map((s) => `${s.id}:${s.state}`)).toEqual([
+      "create:done",
+      "criteria:pending",
+      "features:pending",
+      "critique:pending",
+      "lock:pending",
+    ]);
+    expect(vm.planning?.nextHint).toMatch(/charter\.md/);
+  });
+
+  test("partial coverage: features step is partial, hint targets uncovered ids", () => {
+    const vm = buildViewModel(defaultInput({
+      status: "planning",
+      criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3")],
+      features: [feature({ id: "f1", fulfills: ["VAL-1"] })],
+    }));
+    const steps = vm.planning?.steps ?? [];
+    expect(steps.find((s) => s.id === "criteria")?.state).toBe("done");
+    expect(steps.find((s) => s.id === "features")?.state).toBe("partial");
+    expect(vm.planning?.uncoveredCriteria).toEqual(["VAL-2", "VAL-3"]);
+    expect(vm.planning?.nextHint).toMatch(/VAL-2/);
+  });
+
+  test("full coverage: features step done, hint nudges critique + lock_plan", () => {
+    const vm = buildViewModel(defaultInput({
+      status: "planning",
+      criteria: [criterion("VAL-1")],
+      features: [feature({ id: "f1", fulfills: ["VAL-1"] })],
+    }));
+    expect(vm.planning?.steps.find((s) => s.id === "features")?.state).toBe("done");
+    expect(vm.planning?.nextHint).toMatch(/charter-planner-critic|lock_plan/);
+  });
+
+  test("render: pipeline replaces the bar/feature view in planning", () => {
+    const vm = buildViewModel(defaultInput({
+      status: "planning",
+      name: "my-charter",
+      criteria: [criterion("VAL-1")],
+      features: [feature({ id: "f1", fulfills: ["VAL-1"] })],
+    }));
+    const lines = renderCharterWidget({ width: 100, theme, vm });
+    // Header shows planning state.
+    expect(lines[0]).toMatch(/my-charter/);
+    expect(lines[0]).toMatch(/planning/);
+    // No VAL bar glyphs anywhere.
+    expect(lines.some((l) => /[█▓░]/.test(l))).toBe(false);
+    // All five pipeline steps appear.
+    expect(lines.some((l) => l.includes("Create charter"))).toBe(true);
+    expect(lines.some((l) => l.includes("Define VAL criteria"))).toBe(true);
+    expect(lines.some((l) => l.includes("Seed features"))).toBe(true);
+    expect(lines.some((l) => l.includes("charter-planner-critic"))).toBe(true);
+    expect(lines.some((l) => l.includes("lock_plan"))).toBe(true);
+    // Next-action hint row present.
+    expect(lines.some((l) => l.includes("Next:"))).toBe(true);
+  });
+});

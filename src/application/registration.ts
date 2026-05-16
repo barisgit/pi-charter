@@ -6,7 +6,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 import { addFeature, lockPlan, updateFeature, viewPlan } from "./plan-service";
 import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
-import { bindCharterToSession, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
+import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorVerdict } from "./evaluator-service";
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import {
@@ -826,6 +826,18 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
 // charter_* tool call within the turn), and async-bridge events. The widget
 // hides itself when no charter is bound.
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns true when the snapshot load failed because the charter directory
+ * no longer exists (user deleted .pi/charters/<id>/ between turns). We rely
+ * on the standard Node ENOENT error code surfaced by readFile on state.json.
+ */
+function isMissingCharterError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "ENOENT";
+}
+
 export function registerCharterWidget(pi: ExtensionAPI): void {
   const widget = new CharterWidget();
   const runningSubagents = new RunningSubagentRegistry();
@@ -837,12 +849,12 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
       widget.dispose();
       return;
     }
+    const binding = await readSessionBinding({ sessionId }).catch(() => null);
+    if (!binding) {
+      widget.dispose();
+      return;
+    }
     try {
-      const binding = await readSessionBinding({ sessionId });
-      if (!binding) {
-        widget.dispose();
-        return;
-      }
       const vm = await loadCharterSnapshot({
         projectDir: binding.projectDir,
         charterId: binding.charterId,
@@ -850,6 +862,14 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
       });
       widget.update(vm);
     } catch (error) {
+      // Charter state vanished out from under us (most common: the user
+      // `rm -rf`'d .pi/charters/<id>/). Drop the stale reverse pointer and
+      // hide the widget; the next charter_manage action=create will rebind.
+      if (isMissingCharterError(error)) {
+        await clearSessionBinding(sessionId).catch(() => undefined);
+        widget.dispose();
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       // eslint-disable-next-line no-console
       console.warn(`[pi-charter] widget refresh skipped: ${message}`);

@@ -12,7 +12,7 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { CharterStatus } from "../domain/types";
-import type { CharterWidgetVM, FeatureRowVM, ValState } from "./widget-state";
+import type { CharterWidgetVM, FeatureRowVM, PlanningStep, PlanningVM, ValState } from "./widget-state";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
@@ -68,6 +68,15 @@ export function renderCharterWidget(opts: RenderOptions): string[] {
     lines.push(renderFooter(width, opts.theme));
     return lines.map((line) => truncateToWidth(line, width));
   }
+  if (opts.vm.isPlanning && opts.vm.planning) {
+    return renderPlanningView({
+      width,
+      theme: opts.theme,
+      displayName,
+      elapsedMs: opts.vm.elapsedMs,
+      planning: opts.vm.planning,
+    });
+  }
   const headerTail = formatElapsed(opts.vm.elapsedMs);
   lines.push(renderHeader(width, displayName, headerTail, opts.theme, "accent"));
   lines.push(renderBarLine(width, opts.vm.bar, opts.theme));
@@ -89,6 +98,54 @@ function statusColor(status: CharterStatus): string {
   if (status === "abandoned") return "error";
   if (status === "paused" || status === "budget_limited") return "warning";
   return "accent";
+}
+
+/**
+ * Planning-phase render: pipeline of 5 steps with state glyphs, inline
+ * detail counts, and a next-action hint. No VAL bar (no evidence yet) and no
+ * feature rows (the task tracker above the widget already shows them).
+ */
+function renderPlanningView(opts: {
+  width: number;
+  theme: ThemeLike;
+  displayName: string;
+  elapsedMs: number;
+  planning: PlanningVM;
+}): string[] {
+  const { width, theme, displayName, planning } = opts;
+  const headerTail = `planning · ${formatElapsed(opts.elapsedMs)}`;
+  const lines: string[] = [];
+  lines.push(renderHeader(width, displayName, headerTail, theme, "warning"));
+  lines.push(renderEmptyBoxLine(width, theme));
+  const labelWidth = Math.max(0, ...planning.steps.map((s) => s.label.length));
+  for (const step of planning.steps) {
+    lines.push(renderPlanningStep(width, theme, step, labelWidth));
+  }
+  lines.push(renderEmptyBoxLine(width, theme));
+  lines.push(renderPlanningNext(width, theme, planning.nextHint));
+  lines.push(renderFooter(width, theme));
+  return lines.map((line) => truncateToWidth(line, width));
+}
+
+function renderPlanningStep(width: number, theme: ThemeLike, step: PlanningStep, labelWidth: number): string {
+  const glyphRaw = step.state === "done" ? "✔" : step.state === "partial" ? "◐" : "○";
+  const glyphColor = step.state === "done" ? "success" : step.state === "partial" ? "accent" : "dim";
+  const glyph = theme.fg(glyphColor, glyphRaw);
+  const labelColor = step.state === "pending" ? "dim" : "toolTitle";
+  const labelPlain = step.label.padEnd(labelWidth, " ");
+  const label = theme.fg(labelColor, labelPlain);
+  const detailPlain = step.detail ? `  ${step.detail}` : "";
+  const detail = step.detail ? theme.fg("dim", detailPlain) : "";
+  // Layout: "  <glyph> <label><detail>"
+  const visibleLen = 2 + 1 + 1 + labelWidth + detailPlain.length;
+  return wrapInBox(`  ${glyph} ${label}${detail}`, visibleLen, width, theme);
+}
+
+function renderPlanningNext(width: number, theme: ThemeLike, hint: string): string {
+  const prefix = theme.fg("accent", "Next:");
+  const text = theme.fg("dim", hint);
+  const plain = `  Next: ${hint}`;
+  return wrapInBox(`  ${prefix} ${text}`, plain.length, width, theme);
 }
 
 function renderHeader(width: number, displayName: string, tail: string, theme: ThemeLike, nameColor: string): string {

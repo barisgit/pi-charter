@@ -52,6 +52,16 @@ async function removeReverse(homeDir: string, sessionId: string): Promise<void> 
   await rm(dir, { recursive: true, force: true });
 }
 
+/**
+ * Remove the reverse session pointer for `sessionId`. Used by the widget
+ * host when it discovers a stale binding whose forward state.json no longer
+ * exists (e.g. the user `rm -rf`'d the charter dir).
+ */
+export async function clearSessionBinding(sessionId: string, homeDir?: string): Promise<void> {
+  const home = resolveHome(homeDir);
+  await removeReverse(home, sessionId);
+}
+
 export async function bindCharterToSession(projectDir: string, input: BindInput): Promise<SessionBindingRecord> {
   if (!input.sessionId.trim()) throw new Error("bindCharterToSession requires a non-empty sessionId.");
   const home = resolveHome(input.homeDir);

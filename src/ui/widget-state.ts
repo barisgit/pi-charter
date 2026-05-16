@@ -39,10 +39,36 @@ export interface CharterWidgetVM {
   displayName: string;
   status: CharterStatus;
   isTerminal: boolean;
+  /** True while status==="planning" — renderer switches to the pipeline view. */
+  isPlanning: boolean;
   elapsedMs: number;          // since state.createdAt
   bar: { pass: number; running: number; total: number };
   rows: FeatureRowVM[];
   overflow: { hidden: number; done: number };
+  /** Only set when isPlanning is true. */
+  planning?: PlanningVM;
+}
+
+/**
+ * Planning-phase view model. Captures the 5 step pipeline + headline counts
+ * + a concrete next-action hint. The reducer computes this entirely from the
+ * same inputs as the active view; no extra disk reads needed.
+ */
+export interface PlanningVM {
+  steps: PlanningStep[];
+  criteriaCount: number;
+  featuresCount: number;
+  uncoveredCriteria: string[];
+  nextHint: string;
+}
+
+export type PlanningStepState = "done" | "partial" | "pending";
+
+export interface PlanningStep {
+  id: "create" | "criteria" | "features" | "critique" | "lock";
+  state: PlanningStepState;
+  label: string;
+  detail?: string;
 }
 
 export interface RunningSubagent {
@@ -92,7 +118,23 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
 
   if (isTerminal) {
     // Collapsed view: skip feature rows entirely.
-    return { charterId: input.charterId, displayName, status: input.status, isTerminal: true, elapsedMs: Math.max(0, now - createdMs), bar, rows: [], overflow: { hidden: 0, done: 0 } };
+    return { charterId: input.charterId, displayName, status: input.status, isTerminal: true, isPlanning: false, elapsedMs: Math.max(0, now - createdMs), bar, rows: [], overflow: { hidden: 0, done: 0 } };
+  }
+
+  if (input.status === "planning") {
+    const planning = buildPlanningVM(input.criteria, input.features);
+    return {
+      charterId: input.charterId,
+      displayName,
+      status: input.status,
+      isTerminal: false,
+      isPlanning: true,
+      elapsedMs: Math.max(0, now - createdMs),
+      bar,
+      rows: [],
+      overflow: { hidden: 0, done: 0 },
+      planning,
+    };
   }
 
   // Per-feature running subagents (excludes pure VAL-level verifier pins —
@@ -178,6 +220,7 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
     displayName,
     status: input.status,
     isTerminal: false,
+    isPlanning: false,
     elapsedMs: Math.max(0, now - createdMs),
     bar,
     rows,
@@ -243,4 +286,67 @@ function resolveDisplayName(charterId: string, name?: string): string {
   const trimmed = name?.trim();
   if (trimmed) return trimmed;
   return charterId.slice(0, 8);
+}
+
+/**
+ * Build the 5-step planning pipeline VM. We can derive everything from the
+ * already-loaded criteria + features arrays; no extra I/O. The 'critique'
+ * step is intentionally always pending during planning — there's no first-
+ * class signal that a planner-critic ran, so we don't try to fake one.
+ */
+function buildPlanningVM(criteria: CharterCriterion[], features: FeatureDefinition[]): PlanningVM {
+  const fulfilledIds = new Set<string>();
+  for (const f of features) for (const id of f.fulfills) fulfilledIds.add(id);
+  const uncovered = criteria.filter((c) => !fulfilledIds.has(c.id)).map((c) => c.id);
+
+  const criteriaDone = criteria.length > 0;
+  const featuresDone = features.length > 0 && uncovered.length === 0;
+  const featuresPartial = features.length > 0 && !featuresDone;
+
+  const steps: PlanningStep[] = [
+    { id: "create", state: "done", label: "Create charter" },
+    {
+      id: "criteria",
+      state: criteriaDone ? "done" : "pending",
+      label: "Define VAL criteria",
+      detail: criteriaDone ? `${criteria.length} in charter.md` : undefined,
+    },
+    {
+      id: "features",
+      state: featuresDone ? "done" : featuresPartial ? "partial" : "pending",
+      label: "Seed features",
+      detail: features.length > 0
+        ? `${features.length} features${uncovered.length > 0 ? ` · ${uncovered.length} uncovered` : ""}`
+        : undefined,
+    },
+    { id: "critique", state: "pending", label: "Run charter-planner-critic" },
+    { id: "lock", state: "pending", label: "charter_plan action=lock_plan" },
+  ];
+
+  return {
+    steps,
+    criteriaCount: criteria.length,
+    featuresCount: features.length,
+    uncoveredCriteria: uncovered,
+    nextHint: planningNextHint(criteria, features, uncovered),
+  };
+}
+
+function planningNextHint(
+  criteria: CharterCriterion[],
+  features: FeatureDefinition[],
+  uncovered: string[],
+): string {
+  if (criteria.length === 0) {
+    return "edit .pi/charters/<id>/charter.md to add VAL-* criteria";
+  }
+  if (features.length === 0) {
+    return "charter_plan action=add_feature to seed features (fulfills[] → VAL ids)";
+  }
+  if (uncovered.length > 0) {
+    const preview = uncovered.slice(0, 3).join(", ");
+    const more = uncovered.length > 3 ? `, +${uncovered.length - 3} more` : "";
+    return `charter_plan action=add_feature covering ${preview}${more}`;
+  }
+  return "subagent({agent:'charter-planner-critic'}) then charter_plan action=lock_plan";
 }
