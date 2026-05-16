@@ -7,7 +7,8 @@ import { addFeature, lockPlan, updateFeature, viewPlan } from "./plan-service";
 import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { bindCharterToSession, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
-import { runEvaluator, reminderFromEntry, type EvaluatorAssessment, type EvaluatorVerdict } from "./evaluator-service";
+import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorVerdict } from "./evaluator-service";
+import { charterDir, loadCharterState } from "../infrastructure/store";
 import {
   PI_CHARTER_EXTENSION_ID,
   SUBAGENT_ASYNC_COMPLETE_EVENT,
@@ -495,6 +496,23 @@ const EVAL_MAX_TOKENS = 4096;
 // meant the evaluator never ran and nobody saw why.
 let evaluatorMisconfigNotified = false;
 
+// Statuses where the evaluator has nothing useful to say: completed/abandoned
+// charters are terminal; paused / budget_limited explicitly want the agent to
+// stop chasing the charter. Skip the model call entirely (cost) and skip the
+// steer (which was firing 'ready_to_complete' on already-completed charters
+// and hammering the agent every turn).
+const EVALUATOR_SKIP_STATUSES = new Set([
+  "completed",
+  "abandoned",
+  "paused",
+  "budget_limited",
+]);
+
+// Per-charter cooldown: if the last evaluator entry has the same verdict and
+// was emitted within this window, skip. Prevents the same nudge firing every
+// turn while the agent is mid-task.
+const EVALUATOR_DEDUP_MS = 120_000;
+
 export function registerCharterEvaluator(pi: ExtensionAPI): void {
   pi.on("turn_end", async (_event, ctx) => {
     try {
@@ -504,6 +522,11 @@ export function registerCharterEvaluator(pi: ExtensionAPI): void {
       if (!binding) return;
       const projectDir = binding.projectDir;
       const charterId = binding.charterId;
+
+      // Bail before the model call when the charter is in a terminal /
+      // dormant state. No point reasoning about drift on a closed charter.
+      const state = await loadCharterState(charterDir(projectDir, charterId)).catch(() => undefined);
+      if (!state || EVALUATOR_SKIP_STATUSES.has(state.status)) return;
 
       const recentUserMessages = extractRecentUserMessages(ctx, 2);
       const recentToolNames = extractRecentToolNames(ctx, 8);
@@ -531,6 +554,19 @@ export function registerCharterEvaluator(pi: ExtensionAPI): void {
       });
       const reminder = reminderFromEntry(entry);
       if (!reminder) return;
+
+      // Dedup: if the previous entry had the same verdict within the cooldown
+      // window, the model has nothing new to say. The just-written `entry` is
+      // the last line of the log; read history and compare to the prior one.
+      const history = await readEvaluatorLog(projectDir, charterId).catch(() => []);
+      const prior = history.length >= 2 ? history[history.length - 2] : undefined;
+      if (prior && prior.verdict === entry.verdict) {
+        const priorTs = Date.parse(prior.ts);
+        const currentTs = Date.parse(entry.ts);
+        if (Number.isFinite(priorTs) && Number.isFinite(currentTs) && currentTs - priorTs < EVALUATOR_DEDUP_MS) {
+          return;
+        }
+      }
       pi.sendMessage(
         {
           customType: EVALUATOR_CUSTOM_TYPE,
