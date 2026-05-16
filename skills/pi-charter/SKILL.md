@@ -1,37 +1,112 @@
 ---
 name: pi-charter
 description: |
-  Run durable, charter-bound work: create a charter, write VAL-* criteria,
-  decompose into features under .pi/charters/<id>/plan/, lock the plan, execute
-  feature by feature, record evidence, and complete. Use whenever you see
-  charter_manage / charter_plan / charter_record / charter_status tools, the
-  /charter slash command, the --charter-objective CLI flag, or a charter
-  sitting in <project>/.pi/charters/.
+  Run durable, charter-bound work end-to-end: create a charter, write VAL-*
+  criteria, decompose into features, lock the plan, then implement every
+  feature to completion in this same loop using subagents for verification
+  and critique. Use whenever you see charter_manage / charter_plan /
+  charter_record / charter_status tools, the /charter slash command, the
+  --charter-objective CLI flag, or a charter directory under
+  <project>/.pi/charters/.
 ---
 
 # pi-charter
 
-This is the end-to-end workflow for working under a charter. Charters are how
-the agent declares intent up front, decomposes work, records evidence, and
-gates completion. Use this skill when any of the `charter_*` tools are
-involved or when a charter already exists in the project.
+You are operating under a **charter**. A charter is a multi-phase commitment:
+plan once, then implement end to end without stopping until every VAL-*
+criterion has pass evidence. Read this skill once at the start of any charter
+work and refer back to the Quick Reference when in doubt.
+
+## What a charter actually is
+
+A charter is **not** a planning artifact you hand off. It is the agent's own
+contract with itself, broken into four phases that you drive in one
+continuous run:
+
+```
+1. CREATE        charter_manage action=create
+                 |
+2. PLAN          edit charter.md to add VAL-* criteria
+                 charter_plan action=add_feature  (per feature)
+                 subagent({agent:'charter-planner-critic'})   <-- mandatory
+                 charter_plan action=lock_plan
+                 |
+3. EXECUTE       feature-by-feature implementation
+                 subagent({agent:'charter-verifier'})         <-- per criterion
+                 charter_record action=evidence | verify
+                 |
+4. COMPLETE      charter_manage action=complete
+                 (gated: every VAL-* must have pass evidence)
+```
+
+Once the plan is locked the charter is a single end-to-end commitment. You
+do not pause between features to ask the user "should I keep going?". The
+Ralph-style outer loop will re-prompt you if your turn ends, but every turn
+inside the active phase should be moving toward the next feature, the next
+piece of evidence, the next completion.
 
 ## Hard rules (do not break)
 
-- **Never create `charter.md` at the repo root.** It lives at
-  `<cwd>/.pi/charters/<id>/charter.md`. `charter_manage action=create` writes
-  the stub for you; edit that file directly to add criteria.
-- **Never write `plan/<featureId>.md` files yourself.** Use
-  `charter_plan action=add_feature` (and `update_feature`). The tool writes
-  them under `<cwd>/.pi/charters/<id>/plan/<id>.md` with the correct YAML
-  frontmatter.
-- **Never call `charter_manage action=complete` until every VAL-* criterion
-  has pass evidence.** The completion gate will reject it and `charter_status`
-  will tell you exactly which criteria are still uncovered.
-- **Always follow `charter_status` `nextActions[]`.** Do not guess
-  transitions. The tool returns the legal next moves for the current state.
-- **Delegate planning critique and verification to bundled personas** instead
-  of running them inline (see "Delegation" below).
+1. **Use subagents for bounded work. Main agent context is precious.**
+   Verification of a criterion, plan critique, and any long read-only recon
+   MUST go through `subagent({...})`. Doing them inline burns your context
+   window and kills the loop on long charters. See "Delegate aggressively"
+   below.
+2. **Never write `charter.md` at the repo root.** It lives at
+   `<cwd>/.pi/charters/<id>/charter.md`. `charter_manage action=create`
+   writes the stub for you; edit that file directly to add criteria.
+3. **Never write `plan/<featureId>.md` files yourself.** Use
+   `charter_plan action=add_feature` / `update_feature`. The tool writes
+   them under `<cwd>/.pi/charters/<id>/plan/<id>.md` with correct frontmatter.
+4. **Never call `charter_manage action=complete` until every VAL-* has pass
+   evidence.** The gate will reject and `charter_status` will list the gaps.
+5. **Always follow `charter_status` `nextActions[]`.** Do not guess
+   transitions; the tool returns the legal next moves for the current state.
+6. **Run `charter-planner-critic` before `lock_plan`.** Resolve every BLOCK
+   finding it returns; ADVISORY findings are optional.
+7. **End-of-turn questions are last resort.** If you have an unblocked next
+   move per `charter_status nextActions`, take it. Surface a decision in the
+   commit message, not as a blocking question, when the user's intent is
+   already clear from the objective.
+
+## Delegate aggressively (the single most important rule)
+
+The main agent runs the charter loop and coordinates. Anything bounded and
+read-only is a subagent job. Concretely:
+
+| Job                                              | Where it runs            |
+|--------------------------------------------------|--------------------------|
+| Plan critique before `lock_plan`                 | `charter-planner-critic` |
+| Per-criterion verification + evidence recording  | `charter-verifier`       |
+| Code recon, symbol tracing, file/path discovery  | `explorer`               |
+| Long external research (vendor docs, library API)| `explorer`               |
+| Bounded same-language implementation             | `fixer` (after you scope) |
+| Hard-debug deterministic-loop building           | `oracle` (advisory)      |
+
+If you catch yourself reading a third file in a row, stop and delegate to
+`explorer`. If you catch yourself running the same verifier command twice,
+stop and delegate to `charter-verifier`. Long charters die when the main
+agent's context fills with grep results and tool output that a subagent
+could have absorbed and summarized.
+
+Subagent call shape for the bundled charter personas:
+
+```
+subagent({
+  agent: 'charter-verifier',                  # or 'charter-planner-critic'
+  prompt: '<short, concrete task>',
+  metadata: {
+    'pi-charter.projectDir': <cwd>,           # required for async bridge
+    'pi-charter.charterId': '<id>',
+    'pi-charter.featureId': '<id>',           # verifier only
+    'pi-charter.criterionId': 'VAL-...',      # verifier only
+  },
+})
+```
+
+Both bundled personas are read-only. The verifier records exactly one
+`charter_record action=evidence`. The planner-critic returns a structured
+`PASS | BLOCK | ADVISORY` report.
 
 ## Filesystem layout
 
@@ -40,89 +115,56 @@ involved or when a charter already exists in the project.
   charter.md             # objective + Criteria (VAL-*) + Scope + Constraints
   state.json             # status, phase, sessionId, planDigest
   events.jsonl           # append-only event log
-  plan/
-    <featureId>.md       # ONE FILE PER FEATURE, written by charter_plan
-  plan.json              # computed sidecar (generated from plan/*.md)
+  plan/<featureId>.md    # ONE per feature, written by charter_plan
+  plan.json              # computed sidecar
   criterion-state.json   # last evidence outcome per VAL-*
   feature-state.json     # per-feature progress
-  work/<featureId>/
-    evidence/VAL-*__<ts>.json
+  work/<featureId>/evidence/VAL-*__<ts>.json
   handoffs/<ts>__<featureId>__<sessionId>.json
 ```
 
-You usually only touch:
-- `charter.md` (with a normal text editor / Edit tool — to add VAL-* criteria
-  and scope/constraints once `charter_manage create` has stubbed it).
-- Code under the project root that fulfills the criteria.
+You only touch `charter.md` directly (to add criteria). Everything else is
+owned by tools.
 
-Everything else is owned by tools.
-
-## Lifecycle
-
-```
-[no charter]
-     |
-     |  charter_manage action=create { objective, charterId? }
-     v
-  planning   <-- edit charter.md criteria here
-     |
-     |  charter_plan action=add_feature  (repeat per feature)
-     |  charter_plan action=update_feature  (optional)
-     |  subagent({agent:'charter-planner-critic'})
-     |  charter_plan action=lock_plan
-     v
-   active    <-- execute features, record evidence
-     |       <-- charter_record action=evidence | action=verify
-     |       <-- subagent({agent:'charter-verifier', ...})
-     |
-     |  charter_manage action=complete  (only when all criteria pass)
-     v
-  completed
-```
-
-`charter_manage action=pause | resume | force_complete | amend_charter` are
-escape hatches; use them deliberately.
-
-## Step-by-step workflow
-
-### 1. Create the charter
+## Phase 1: Create
 
 ```
 charter_manage action=create { objective: "<one-line intent>", charterId?: "short-slug" }
 ```
 
-- The tool creates `<cwd>/.pi/charters/<id>/` with a stub `charter.md`,
-  empty `plan/`, empty event log, and `state.status: 'planning'`.
-- If you omit `charterId`, a UUID is generated. Prefer passing a concise
-  slug-style id for readability.
-- The session is automatically bound: `state.sessionId` and a reverse pointer
-  under `~/.pi/agent/sessions/<sessionId>/charter.json` are written.
+- Pass a concise slug `charterId` when you can; otherwise a UUID is generated.
+- The tool stubs `charter.md` with a worked VAL-EXAMPLE criterion (template
+  format is documented in-line), empty `plan/`, and `state.status: planning`.
+- Session is auto-bound.
 
-### 2. Author the contract
+## Phase 2: Plan
 
-Edit `<cwd>/.pi/charters/<id>/charter.md` directly (Edit tool). Replace the
-`<!-- Add VAL-* criteria during planning. -->` placeholder. Each criterion
-looks like:
+### 2a. Author criteria
+
+Edit `<cwd>/.pi/charters/<id>/charter.md` directly. Replace the VAL-EXAMPLE
+block. The format is strict — use `### VAL-<ID>` H3 headings with field
+lines beneath. **Bullet lists like `- VAL-1: ...` are silently ignored by
+the parser.**
 
 ```markdown
-### VAL-AUTH-001 — User can sign in with Google OAuth
-- verifier: command
-- command: bun test tests/oauth-google.test.ts
-- timeoutMs: 60000
-- requireFreshEvidence: true
+### VAL-AUTH-001 Sign-in succeeds with Google OAuth
+Description: User can complete OAuth and reach the dashboard.
+Verifier: command
+Command: bun test tests/oauth-google.test.ts
+Fresh evidence required: true
 ```
 
 Verifier kinds:
-- `verifier: manual` — a person/subagent decides. Default if not specified.
-- `verifier: command` — the tool runs `command` via `/bin/sh -c` with
-  `timeoutMs` (default 120000) and 64 KB stdout/stderr capture. Exit 0 = pass.
+- `Verifier: command` — tool runs `Command` via `/bin/sh -c`, exit 0 = pass.
+- `Verifier: manual` — a person or `charter-verifier` subagent records evidence.
+- `Verifier: hook` / `Verifier: prompt` — advanced; rarely used at first.
 
-Also flesh out the `Scope` and `Constraints` sections in `charter.md` if the
-stub left them empty.
+Also fill in the `## Scope and constraints` section if the stub left it
+empty.
 
-### 3. Seed the macro plan
+### 2b. Seed features
 
-For each feature, call:
+For each feature:
 
 ```
 charter_plan action=add_feature {
@@ -131,181 +173,143 @@ charter_plan action=add_feature {
   milestone: "m1-bootstrap",
   order: 1,
   fulfills: ["VAL-BOOT-001", "VAL-BOOT-002"],
-  preconditions: [],          // optional, list other feature ids
-  body: "Markdown body describing what this feature does and how it satisfies the listed criteria."
+  preconditions: [],
+  body: "Markdown body describing what this feature does and how it satisfies the listed criteria.",
 }
 ```
 
 - `id` must match `/^[a-z0-9][a-z0-9_-]*$/i`.
-- `fulfills[]` MUST list at least one VAL-* criterion id from `charter.md`.
-- The tool writes `<cwd>/.pi/charters/<id>/plan/<featureId>.md` with the
-  correct YAML frontmatter and your body. Do not create that file yourself.
-- Use `charter_plan action=update_feature` to revise an existing feature (pass
-  `id` plus any fields you want to change).
+- `fulfills[]` must list at least one real VAL-* id from `charter.md`.
+- Use `update_feature` (same params) to revise.
 
-### 4. Critique the plan before locking
+### 2c. Run planner-critic (mandatory)
 
 ```
 subagent({
   agent: 'charter-planner-critic',
-  prompt: 'Critique charter <id>. Read .pi/charters/<id>/charter.md and plan/.',
-  metadata: {
-    'pi-charter.projectDir': <cwd>,
-    'pi-charter.charterId': '<id>',
-  },
+  prompt: 'Critique charter <id>.',
+  metadata: { 'pi-charter.projectDir': <cwd>, 'pi-charter.charterId': '<id>' },
 })
 ```
 
-The persona is read-only and emits a structured
-`charter-planner-critic verdict: PASS | BLOCK | ADVISORY` with bullet
-findings. Resolve every BLOCK before locking.
+Resolve every BLOCK before locking. ADVISORY findings are optional but
+worth fixing when cheap.
 
-### 5. Lock the plan
+### 2d. Lock
 
 ```
 charter_plan action=lock_plan { charterId }
 ```
 
-- Runs in-process checks (uncovered scope, orphan features, cyclic
-  preconditions, unknown VAL-* references, missing verifier commands).
-- Computes `planDigest` (sha256 of features), writes it to `state.json`,
-  appends a `plan_locked` event, transitions `planning → active`.
-- Throws `Cannot lock plan because of drift: ...` if anything is off.
+Runs in-process checks (uncovered scope, orphan features, cyclic
+preconditions, unknown VAL-* refs, missing verifier commands). Throws
+`Cannot lock plan because of drift: ...` with details if anything is off.
+On success: `planning → active`, `plan_locked` event appended.
 
-### 6. Execute and record evidence
+## Phase 3: Execute (end to end)
 
-For each feature:
+Once the plan is locked, **drive every feature to evidence without
+stopping**. The shape per feature:
 
-- Do the work (edit code, add tests, run commands).
-- Record a manual pass/fail:
+1. Pull the next ready feature from `charter_status` (`drift.readyNext[]`).
+2. Implement the code. Run local checks (tests, typecheck) as you go.
+3. For each VAL-* the feature fulfills, delegate verification:
 
-  ```
-  charter_record action=evidence {
-    charterId,
-    criterionId: 'VAL-AUTH-001',
-    outcome: 'pass' | 'fail' | 'partial',
-    summary: '<one line>',
-    artifacts: { command: '...', stdoutPath: '...' },   // optional
-    featureId?: '<id>',
-  }
-  ```
+   ```
+   subagent({
+     agent: 'charter-verifier',
+     prompt: 'Verify VAL-AUTH-001 on charter <id>, feature f1-pin-deps.',
+     metadata: {
+       'pi-charter.projectDir': <cwd>,
+       'pi-charter.charterId': '<id>',
+       'pi-charter.featureId': 'f1-pin-deps',
+       'pi-charter.criterionId': 'VAL-AUTH-001',
+     },
+   })
+   ```
 
-- Or run the criterion's command verifier directly:
+   The persona runs the criterion's verifier or its own equivalent checks
+   and writes exactly one `charter_record action=evidence`. The async
+   bridge appends `feature_completed` / `feature_failed` based on outcome.
 
-  ```
-  charter_record action=verify { charterId, criterionId: 'VAL-AUTH-001' }
-  ```
+4. Move to the next feature. Loop until `charter_status` shows
+   `drift.uncovered: []` and every VAL-* has pass evidence.
 
-  The tool runs the criterion's `command` and writes evidence based on exit
-  code.
+You can also call `charter_record action=verify` directly if you want the
+main agent to run the criterion's `Command` itself, but **prefer the
+subagent** for context hygiene.
 
-- Prefer delegating verification to the bundled persona:
-
-  ```
-  subagent({
-    agent: 'charter-verifier',
-    prompt: 'Verify VAL-AUTH-001 on charter <id>.',
-    metadata: {
-      'pi-charter.projectDir': <cwd>,
-      'pi-charter.charterId': '<id>',
-      'pi-charter.featureId': 'f1-pin-deps',
-      'pi-charter.criterionId': 'VAL-AUTH-001',
-    },
-  })
-  ```
-
-  The persona reads the criterion, runs the verifier (or its own checks),
-  and calls `charter_record action=evidence` exactly once. The async bridge
-  picks up `subagent:async-complete` and appends a `feature_completed` event
-  to the charter's `events.jsonl` if the metadata is set.
-
-### 7. Complete
+## Phase 4: Complete
 
 ```
-charter_manage action=complete { charterId }
+charter_manage action=complete { charterId, completionNote?: "..." }
 ```
 
-The completion gate verifies every VAL-* has `outcome: 'pass'` evidence; if
-not, it throws and `charter_status` will list the gaps. After it succeeds,
-status moves to `completed` and the session is unbound.
+Completion gate verifies every VAL-* has `outcome: 'pass'` evidence. On
+success: `active → completed`, session unbound. If the gate rejects,
+`charter_status` will list the gaps; resolve them and try again.
+
+`force_complete` and `amend_charter` are escape hatches subject to blocking
+hooks; use them deliberately.
 
 ## Reading status and drift
 
-```
-charter_status { charterId? }
-```
+Run `charter_status` whenever you are unsure what to do next, after
+recording evidence, and before completing. The tool returns:
 
-Returns:
 - `status`, `phase`, `objective`, `budget`.
-- `drift`:
-  - `uncovered[]` — criteria with no evidence or non-pass evidence.
-  - `stuck[]` — features in `in_progress` with no recent update.
-  - `stale[]` — pass evidence past `requireFreshEvidence` window.
-  - `readyNext[]` — features whose preconditions are satisfied.
-- `nextActions[]` — legal next moves (tool + action + hint).
+- `drift.uncovered[]` — criteria with no/non-pass evidence.
+- `drift.stuck[]` — features in `in_progress` with no recent update.
+- `drift.stale[]` — pass evidence past the fresh-evidence window.
+- `drift.readyNext[]` — features whose preconditions are satisfied.
+- `nextActions[]` — legal next moves.
 - `guidelines[]` — short reminders for the current status.
 
-Run `charter_status` whenever you are unsure what to do next, after recording
-evidence, and before calling `charter_manage action=complete`.
-
-## Delegation
-
-Two bundled internal personas. Both default to `anthropic/claude-sonnet-4.6`.
-
-- **`charter-planner-critic`** — read-only adversarial plan critic. Run BEFORE
-  `charter_plan action=lock_plan`. Emits `PASS | BLOCK | ADVISORY` with bullet
-  findings citing ids/paths. Resolves uncovered scope, orphan features,
-  cyclic preconditions, scope/constraint violations, missing verifier
-  commands. Never proposes fixes — only finds problems.
-
-- **`charter-verifier`** — read-only contract-aware verifier. Reads the
-  criterion definition in `charter.md`, gathers evidence (no code mutations),
-  records exactly one `charter_record action=evidence` entry. Use it instead
-  of judging evidence inline.
-
-You SHOULD use these subagents rather than doing planning critique or
-verification inline whenever the work fits. The host agent stays in control
-and coordinates; the personas do bounded read-only work and return.
+The text channel formatted block shows phase, drift counts, the top 3
+nextActions, and current guidelines.
 
 ## CLI / slash entry points
 
 - `/charter <objective>` and `pi --charter-objective "<text>"` hand the
-  objective to the agent via `pi.sendUserMessage`. They DO NOT call
-  `charter_manage create` directly — the agent owns charter creation.
-- `/charter` bare opens the status surface.
-- `/charter status` prints the same formatted status block tools see.
+  objective to the agent via a structured user message. **The agent owns
+  charter creation** — these surfaces never call `charter_manage create`
+  directly.
+- `/charter` bare prints the current charter status block.
+- `/charter status` is the same block.
 - `/charter pause` and `/charter resume` are lifecycle shortcuts.
 
 ## Hooks (advanced)
 
-Four blocking hook events:
-- `charter:before_lock_plan`
-- `charter:before_complete`
-- `charter:before_force_complete`
-- `charter:before_amend_charter`
-
-Subscribers receive `{charterId, ...}` and return `{decision: 'allow'}` or
-`{decision: 'block', reason}`. A block throws so the FSM never advances when
-any subscriber vetoes. This is the integration point for a TUI approver, CI
-gate, or compliance check.
+Four blocking hook events: `charter:before_lock_plan`,
+`charter:before_complete`, `charter:before_force_complete`,
+`charter:before_amend_charter`. Subscribers return `{decision: 'allow'}` or
+`{decision: 'block', reason}`. A block throws and the FSM does not advance.
+This is the integration point for a TUI approver or CI gate.
 
 ## Common pitfalls
 
-- Writing `charter.md` or `plan/*.md` at the repo root. The agent has done
-  this — do not. The tools manage these paths.
-- Calling `charter_manage action=complete` early. The gate will reject; check
-  `charter_status` drift.uncovered first.
-- Letting the post-turn evaluator's `on_track` verdict substitute for real
-  evidence. The evaluator is a steering signal, not a gate.
-- Forgetting `pi-charter.projectDir` in subagent metadata. Without it the
-  async bridge cannot locate the per-project charter dir; feature events
-  will not be appended.
+- **Stopping after planning** to ask the user "should I implement now?".
+  No. The objective + locked plan is your authorization to implement end to
+  end. If you hit a real blocker, record it as evidence/fail and
+  `charter_status nextActions[]` will tell you the next legal move.
+- **Doing verification inline** instead of delegating to `charter-verifier`.
+  Your main-agent context is the scarcest resource in a long charter.
+- **Writing `charter.md` or `plan/*.md` at the repo root.** Common mistake;
+  the tools own these paths.
+- **Asking decision questions whose answer is implied by the objective**
+  (commit author, build flags, branch name). Pick the obvious default,
+  proceed, and surface the choice in the commit message.
+- **Trusting the post-turn evaluator's `on_track` verdict as a completion
+  signal.** It is a steering nudge, not a gate.
+- **Forgetting `pi-charter.projectDir` in subagent metadata.** Without it
+  the async bridge cannot locate the per-project charter dir; feature
+  events will not be appended.
 
 ## Quick reference
 
 | Tool                                  | Purpose                                          |
 |---------------------------------------|--------------------------------------------------|
-| `charter_manage action=create`        | Open a new charter; sessions auto-bind.          |
+| `charter_manage action=create`        | Open a new charter; session auto-binds.          |
 | `charter_manage action=pause/resume`  | Lifecycle escape hatch.                          |
 | `charter_manage action=complete`      | Gated finish; requires all VAL-* pass.           |
 | `charter_manage action=force_complete`| Manual override; subject to hook.                |
@@ -318,3 +322,8 @@ gate, or compliance check.
 | `charter_record action=verify`        | Run the criterion's command verifier.            |
 | `charter_record action=handoff_apply` | Apply a returned handoff envelope.               |
 | `charter_status`                      | Status + drift + nextActions + guidelines.       |
+
+| Persona                  | Use when                                                 |
+|--------------------------|----------------------------------------------------------|
+| `charter-planner-critic` | Before `lock_plan`. Resolve every BLOCK it returns.      |
+| `charter-verifier`       | Per-criterion verification + evidence recording.         |

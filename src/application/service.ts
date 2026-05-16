@@ -335,11 +335,12 @@ function guidelinesForStatus(status: CharterStatus): string[] {
   if (status === "planning") return [
     "Edit charter.md inside .pi/charters/<id>/ to add VAL-* criteria; the initial template includes a worked example. Format is `### VAL-<ID> <title>` H3 headings with `Verifier:`/`Description:` field lines beneath — bullet lists are ignored. Do NOT create a repo-root charter.md.",
     "Use charter_plan action=add_feature for each feature; do NOT write plan/<featureId>.md at the repo root — the tool writes to .pi/charters/<id>/plan/.",
-    "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns.",
+    "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns. After lock_plan you implement end-to-end.",
   ];
   if (status === "active") return [
+    "Charter is locked: implement every feature end to end without stopping. Do not ask 'should I keep going?' — the locked plan is your authorization.",
+    "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification to subagent({agent:'charter-verifier', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.criterionId':'VAL-...','pi-charter.projectDir':<cwd>}}); delegate read-only recon to subagent({agent:'explorer', ...}).",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
-    "Delegate verification with subagent({agent:'charter-verifier', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.projectDir':<cwd>}}) instead of running verifier commands inline.",
   ];
   if (status === "review") return ["Inspect evidence before completing; evaluator done is not a gate."];
   if (status === "paused") return ["Resume before recording new evidence or changing plan state."];

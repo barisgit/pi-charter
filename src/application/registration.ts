@@ -403,7 +403,8 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "8. Call charter_manage action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
           "",
           "Follow charter_status nextActions instead of guessing transitions. Read the pi-charter skill for the full workflow if you are unsure.",
-          "You SHOULD use subagents (charter-planner-critic, charter-verifier) rather than doing planning or verification inline whenever the task fits the persona's scope.",
+          "You MUST use subagents (charter-planner-critic, charter-verifier, explorer) rather than doing planning critique, verification, or read-only recon inline. Main agent context is precious; long charters die when it fills with grep results and tool output. Delegate aggressively.",
+          "After lock_plan, implement every feature end-to-end without pausing to ask 'should I keep going?'. The locked plan is your authorization. Surface routine decisions (commit identity, build flags, branch names) in the work itself, not as blocking questions.",
         ].join("\n"),
       );
     },
@@ -462,6 +463,8 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
         "4. Delegate plan critique to subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan.",
         "5. Execute feature by feature. Prefer subagent({agent:'charter-verifier'}) for evidence over inline verifier runs; record results with charter_record action=evidence or action=verify.",
         "6. Follow charter_status nextActions; never guess transitions. Read the pi-charter skill for the full workflow if you are unsure.",
+        "7. After lock_plan, drive every feature to evidence end-to-end. Delegate verification and recon to subagents (charter-verifier, charter-planner-critic, explorer) — main agent context is precious.",
+        "8. Do not stop mid-charter to ask routine questions; surface decisions in the work itself.",
       ].join("\n"),
     );
   });
@@ -470,10 +473,20 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
 const EVALUATOR_CUSTOM_TYPE = "charter-evaluator-steer";
 // Default evaluator model: cheap-fast tier, same shape Claude Code's /goal uses.
 // Override per-environment via PI_CHARTER_EVAL_PROVIDER / PI_CHARTER_EVAL_MODEL.
+// Per-turn evaluator runs every turn end. Pick a cheap-fast tier; Sonnet stays
+// reserved for the planner-critic and verifier subagents that run on demand.
+// The model id MUST match `getModel('anthropic', <id>)` from pi-ai’s registry
+// (dash form, not dotted). Verified via `getModel('anthropic', 'claude-haiku-4-5')`.
 const DEFAULT_EVAL_PROVIDER = "anthropic";
-const DEFAULT_EVAL_MODEL = "claude-sonnet-4.6";
+const DEFAULT_EVAL_MODEL = "claude-haiku-4-5";
 const EVAL_TIMEOUT_MS = 30_000;
 const EVAL_MAX_TOKENS = 600;
+
+// Surface evaluator misconfiguration exactly once per process so users notice
+// when no model is wired — previously this was a silent `return` and a wrong
+// model id (e.g. dotted "claude-sonnet-4.6" instead of "claude-sonnet-4-5")
+// meant the evaluator never ran and nobody saw why.
+let evaluatorMisconfigNotified = false;
 
 export function registerCharterEvaluator(pi: ExtensionAPI): void {
   pi.on("turn_end", async (_event, ctx) => {
@@ -489,7 +502,18 @@ export function registerCharterEvaluator(pi: ExtensionAPI): void {
       const recentToolNames = extractRecentToolNames(ctx, 8);
 
       const modelFn = buildEvaluatorModelFn(ctx);
-      if (!modelFn) return; // no model available; skip silently
+      if (!modelFn) {
+        if (!evaluatorMisconfigNotified && ctx.hasUI) {
+          const provider = process.env.PI_CHARTER_EVAL_PROVIDER ?? DEFAULT_EVAL_PROVIDER;
+          const modelId = process.env.PI_CHARTER_EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
+          ctx.ui.notify(
+            `charter-evaluator disabled: model ${provider}/${modelId} not found in registry. Set PI_CHARTER_EVAL_PROVIDER/PI_CHARTER_EVAL_MODEL.`,
+            "warning",
+          );
+          evaluatorMisconfigNotified = true;
+        }
+        return;
+      }
 
       const entry = await runEvaluator(projectDir, {
         charterId,
