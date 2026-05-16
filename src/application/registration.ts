@@ -31,6 +31,7 @@ import { loadCharterSnapshot, RunningSubagentRegistry } from "../ui/widget-servi
 type CharterManageInput = {
   action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter";
   charterId?: string;
+  name?: string;
   objective?: string;
   reason?: string;
   completionNote?: string;
@@ -73,6 +74,7 @@ type CharterRecordInput = {
 const CharterManageParams = Type.Object({
   action: StringEnum(["create", "pause", "resume", "complete", "force_complete", "amend_charter"] as const),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional when exactly one active charter exists." })),
+  name: Type.Optional(Type.String({ description: "Optional short slug shown in widget headers and status (e.g. 'headless-click-pid'). Lowercased; non-slug chars stripped; clamped to 32 chars. Falls back to the first 8 chars of the charterId when omitted." })),
   objective: Type.Optional(Type.String({ description: "Required for action=create. The desired outcome, not a spec path." })),
   reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
   completionNote: Type.Optional(Type.String({ description: "Completion note for action=complete." })),
@@ -140,6 +142,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           const sessionId = ctx.sessionManager.getSessionId?.();
           const result = await createCharter(ctx.cwd, {
             objective: params.objective,
+            name: params.name,
             budget: params.budget,
             idempotencyKey: params.idempotencyKey,
             sessionId,
@@ -321,6 +324,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
  */
 function formatCharterStatusText(result: {
   charterId: string;
+  name?: string;
   status: string;
   phase: string;
   objective: string;
@@ -333,7 +337,8 @@ function formatCharterStatusText(result: {
   const trimmedObjective = firstObjectiveLine.length > 120
     ? `${firstObjectiveLine.slice(0, 117)}...`
     : firstObjectiveLine;
-  lines.push(`Charter ${result.charterId} [${result.status} · phase=${result.phase}]`);
+  const idLabel = result.name ? `${result.name} (${result.charterId})` : result.charterId;
+  lines.push(`Charter ${idLabel} [${result.status} · phase=${result.phase}]`);
   lines.push(`  objective: ${trimmedObjective}`);
   lines.push(
     `  drift: uncovered=${result.drift.uncovered.length} stuck=${result.drift.stuck.length} stale=${result.drift.stale.length} readyNext=${result.drift.readyNext.length}`,
@@ -396,7 +401,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           text,
           "",
           "Create and execute the charter end-to-end:",
-          "1. Call charter_manage action=create with this objective. Use a concise generated id; do not embed the objective text in the id.",
+          "1. Call charter_manage action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; the charterId itself stays an opaque UUID.",
           "2. Run charter_status to confirm the planning state and legal nextActions.",
           "3. Author the contract by editing .pi/charters/<id>/charter.md to add VAL-* criteria, scope, and constraints. Do NOT create a charter.md at the repo root.",
           "4. Seed the macro plan by calling charter_plan action=add_feature for each feature (id, milestone, order, fulfills[], body). Do NOT write plan/<featureId>.md files yourself — the tool writes them under .pi/charters/<id>/plan/.",
@@ -460,7 +465,7 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
         "",
         objective,
         "",
-        "1. Call charter_manage action=create with this objective. Pick a concise id; do not embed objective text.",
+        "1. Call charter_manage action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; do not embed objective text in id or name.",
         "2. Run charter_status; then edit .pi/charters/<id>/charter.md to add VAL-* criteria (do NOT create a repo-root charter.md).",
         "3. Seed features via charter_plan action=add_feature (id, milestone, order, fulfills[], body); do NOT write plan/*.md files yourself.",
         "4. Delegate plan critique to subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan.",

@@ -6,6 +6,7 @@ import type { Budget, CharterEvent, CharterState } from "../domain/types";
 
 export interface CreateCharterWorkspaceInput {
   charterId: string;
+  name?: string;
   objective: string;
   now: string;
   budget?: Budget;
@@ -42,6 +43,7 @@ export async function createCharterWorkspace(
   const dir = charterDir(projectDir, input.charterId);
   const state: CharterState = {
     charterId: input.charterId,
+    name: input.name,
     objective: input.objective.trim(),
     status: "planning",
     createdAt: input.now,
@@ -180,6 +182,7 @@ function normalizeCharterState(value: unknown): CharterState {
   const now = new Date().toISOString();
   return {
     charterId: raw.charterId,
+    name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
     objective: raw.objective.trim(),
     status: raw.status,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,

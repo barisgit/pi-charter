@@ -59,15 +59,19 @@ export interface RenderOptions {
 
 export function renderCharterWidget(opts: RenderOptions): string[] {
   const width = Math.max(MIN_TERMINAL_WIDTH, opts.width);
-  const headerTail = opts.vm.isTerminal ? statusLabel(opts.vm.status) : formatElapsed(opts.vm.elapsedMs);
+  const displayName = opts.vm.displayName;
   const lines: string[] = [];
-  lines.push(renderHeader(width, headerTail));
-  lines.push(renderBarLine(width, opts.vm.bar, opts.theme, headerTail.length));
   if (opts.vm.isTerminal) {
-    lines.push(renderFooter(width));
+    const tail = statusLabel(opts.vm.status);
+    lines.push(renderHeader(width, displayName, tail, opts.theme, statusColor(opts.vm.status)));
+    lines.push(renderBarLine(width, opts.vm.bar, opts.theme));
+    lines.push(renderFooter(width, opts.theme));
     return lines.map((line) => truncateToWidth(line, width));
   }
-  lines.push(renderEmptyBoxLine(width));
+  const headerTail = formatElapsed(opts.vm.elapsedMs);
+  lines.push(renderHeader(width, displayName, headerTail, opts.theme, "accent"));
+  lines.push(renderBarLine(width, opts.vm.bar, opts.theme));
+  lines.push(renderEmptyBoxLine(width, opts.theme));
   const featureLines = renderFeatureRows({
     width,
     theme: opts.theme,
@@ -76,34 +80,43 @@ export function renderCharterWidget(opts: RenderOptions): string[] {
     frame: opts.frame ?? 0,
   });
   for (const line of featureLines) lines.push(line);
-  lines.push(renderFooter(width));
+  lines.push(renderFooter(width, opts.theme));
   return lines.map((line) => truncateToWidth(line, width));
 }
 
-function renderHeader(width: number, tail: string): string {
-  // ╭─ Active ──── ... ──── <tail> ─╮
-  const label = " Active ";
-  const tailFmt = ` ${tail} `;
-  // Internal layout between the two corners:
-  //   <─><label><dashes><tailFmt><─>
-  // width budget between corners = width - 2.
+function statusColor(status: CharterStatus): string {
+  if (status === "completed") return "success";
+  if (status === "abandoned") return "error";
+  if (status === "paused" || status === "budget_limited") return "warning";
+  return "accent";
+}
+
+function renderHeader(width: number, displayName: string, tail: string, theme: ThemeLike, nameColor: string): string {
+  // ╭─ <displayName> ──── ... ──── <tail> ─╮
+  const labelPlain = ` ${displayName} `;
+  const tailPlain = ` ${tail} `;
   const innerWidth = width - 2;
-  const dashCount = innerWidth - label.length - tailFmt.length - 2; // both leading and trailing single dashes
-  const dashes = BORDER.horizontal.repeat(Math.max(1, dashCount));
-  return `${BORDER.topLeft}${BORDER.horizontal}${label}${dashes}${tailFmt}${BORDER.horizontal}${BORDER.topRight}`;
+  const dashCount = innerWidth - labelPlain.length - tailPlain.length - 2;
+  const dashes = theme.fg("dim", BORDER.horizontal.repeat(Math.max(1, dashCount)));
+  const border = (s: string) => theme.fg("dim", s);
+  const label = ` ${theme.fg(nameColor, displayName)} `;
+  const tailColored = ` ${theme.fg(nameColor, tail)} `;
+  return `${border(BORDER.topLeft)}${border(BORDER.horizontal)}${label}${dashes}${tailColored}${border(BORDER.horizontal)}${border(BORDER.topRight)}`;
 }
 
-function renderFooter(width: number): string {
-  const inner = BORDER.horizontal.repeat(Math.max(0, width - 2));
-  return `${BORDER.bottomLeft}${inner}${BORDER.bottomRight}`;
+function renderFooter(width: number, theme: ThemeLike): string {
+  const border = (s: string) => theme.fg("dim", s);
+  const inner = border(BORDER.horizontal.repeat(Math.max(0, width - 2)));
+  return `${border(BORDER.bottomLeft)}${inner}${border(BORDER.bottomRight)}`;
 }
 
-function renderEmptyBoxLine(width: number): string {
+function renderEmptyBoxLine(width: number, theme: ThemeLike): string {
   const padding = " ".repeat(Math.max(0, width - 2));
-  return `${BORDER.vertical}${padding}${BORDER.vertical}`;
+  const v = theme.fg("dim", BORDER.vertical);
+  return `${v}${padding}${v}`;
 }
 
-function renderBarLine(width: number, bar: CharterWidgetVM["bar"], theme: ThemeLike, _tailLenUnused: number): string {
+function renderBarLine(width: number, bar: CharterWidgetVM["bar"], theme: ThemeLike): string {
   // " <bar> <tail> "
   const tail = `${bar.pass}/${bar.total}`;
   // box vertical + space on each side
@@ -113,10 +126,9 @@ function renderBarLine(width: number, bar: CharterWidgetVM["bar"], theme: ThemeL
   const cleanBarWidth = Math.max(1, barWidth);
   const segs = barSegments(cleanBarWidth, bar);
   const barText = `${theme.fg("success", BAR_GLYPHS.pass.repeat(segs.pass))}${theme.fg("accent", BAR_GLYPHS.running.repeat(segs.running))}${theme.fg("dim", BAR_GLYPHS.pending.repeat(segs.pending))}`;
-  // Pad tail block to keep right border at column width.
   const tailBlock = ` ${theme.fg("dim", tail)} `;
   const inner = ` ${barText}${tailBlock}`;
-  return wrapInBox(inner, cleanBarWidth + 3 + tail.length, width);
+  return wrapInBox(inner, cleanBarWidth + 3 + tail.length, width, theme);
 }
 
 function barSegments(width: number, bar: CharterWidgetVM["bar"]): { pass: number; running: number; pending: number } {
@@ -134,12 +146,13 @@ function barSegments(width: number, bar: CharterWidgetVM["bar"]): { pass: number
   return { pass: p, running: r, pending };
 }
 
-function wrapInBox(innerText: string, visibleLen: number, width: number): string {
+function wrapInBox(innerText: string, visibleLen: number, width: number, theme: ThemeLike): string {
   // visibleLen is the count of *visible* chars in innerText (excluding ANSI).
   // Add trailing spaces so border aligns at column `width - 1`.
   const innerCapacity = width - 2;
   const padCount = Math.max(0, innerCapacity - visibleLen);
-  return `${BORDER.vertical}${innerText}${" ".repeat(padCount)}${BORDER.vertical}`;
+  const v = theme.fg("dim", BORDER.vertical);
+  return `${v}${innerText}${" ".repeat(padCount)}${v}`;
 }
 
 function renderFeatureRows(opts: {
@@ -192,7 +205,7 @@ function renderFeatureRow(row: FeatureRowVM, theme: ThemeLike, width: number, id
   const innerParts = [` ${glyph} ${id}   ${beadResult.rendered}`];
   if (tailRendered) innerParts.push(`   ${tailRendered}`);
   const visibleLen = 1 + 1 + 1 + idColumnWidth + 3 + beadPlainLen + (tailPlain ? 3 + tailPlain.length : 0);
-  return wrapInBox(innerParts.join(""), visibleLen, width);
+  return wrapInBox(innerParts.join(""), visibleLen, width, theme);
 }
 
 function renderBeads(n: number, valStates: ValState[], budget: number, theme: ThemeLike): { rendered: string; plainLen: number } {
@@ -239,7 +252,7 @@ function renderOverflow(overflow: CharterWidgetVM["overflow"], theme: ThemeLike,
   if (overflow.done > 0) parts.push(`· ${overflow.done} done`);
   const plain = parts.join(" ");
   const inner = ` ${theme.fg("dim", plain)}`;
-  return wrapInBox(inner, 1 + plain.length, width);
+  return wrapInBox(inner, 1 + plain.length, width, theme);
 }
 
 function statusLabel(status: CharterStatus): string {

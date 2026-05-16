@@ -34,6 +34,9 @@ export interface FeatureRowVM {
 }
 
 export interface CharterWidgetVM {
+  charterId: string;
+  /** Short header label: name when set, else first 8 chars of UUID. */
+  displayName: string;
   status: CharterStatus;
   isTerminal: boolean;
   elapsedMs: number;          // since state.createdAt
@@ -51,6 +54,9 @@ export interface RunningSubagent {
 }
 
 export interface ReducerInput {
+  charterId: string;
+  /** Optional short label set at charter creation; reducer falls back to UUID prefix. */
+  name?: string;
   status: CharterStatus;
   createdAt: string;          // ISO
   criteria: CharterCriterion[];
@@ -82,9 +88,11 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
   }
   const bar = { pass, running, total: input.criteria.length };
 
+  const displayName = resolveDisplayName(input.charterId, input.name);
+
   if (isTerminal) {
     // Collapsed view: skip feature rows entirely.
-    return { status: input.status, isTerminal: true, elapsedMs: Math.max(0, now - createdMs), bar, rows: [], overflow: { hidden: 0, done: 0 } };
+    return { charterId: input.charterId, displayName, status: input.status, isTerminal: true, elapsedMs: Math.max(0, now - createdMs), bar, rows: [], overflow: { hidden: 0, done: 0 } };
   }
 
   // Per-feature running subagents (excludes pure VAL-level verifier pins —
@@ -166,6 +174,8 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
   }
 
   return {
+    charterId: input.charterId,
+    displayName,
     status: input.status,
     isTerminal: false,
     elapsedMs: Math.max(0, now - createdMs),
@@ -222,4 +232,15 @@ function parseIsoOrFallback(iso: string | undefined, fallback: number): number {
   if (!iso) return fallback;
   const parsed = Date.parse(iso);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+/**
+ * Pick a short header label. Explicit name wins; otherwise we slice the
+ * UUID-shaped charter id to its first 8 hex chars (the user-recognizable
+ * prefix shown in `charter_status` output).
+ */
+function resolveDisplayName(charterId: string, name?: string): string {
+  const trimmed = name?.trim();
+  if (trimmed) return trimmed;
+  return charterId.slice(0, 8);
 }

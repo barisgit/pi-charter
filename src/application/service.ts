@@ -24,6 +24,7 @@ export interface CharterServiceResult<T = unknown> {
 
 export interface CharterStatusResult {
   charterId: string;
+  name?: string;
   status: CharterStatus;
   phase: "planning" | "active" | "review" | "terminal";
   objective: string;
@@ -41,13 +42,14 @@ export interface CharterStatusResult {
 
 export async function createCharter(
   projectDir: string,
-  input: { objective: string; budget?: Budget; idempotencyKey?: string; charterId?: string; now?: string; sessionId?: string },
+  input: { objective: string; name?: string; budget?: Budget; idempotencyKey?: string; charterId?: string; now?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   const objective = input.objective.trim();
   if (!objective) throw new Error("objective is required");
   const now = input.now ?? new Date().toISOString();
   const charterId = input.charterId ?? randomUUID();
-  const created = await createCharterWorkspace(projectDir, { charterId, objective, budget: input.budget, now, sessionId: input.sessionId });
+  const name = sanitizeCharterName(input.name);
+  const created = await createCharterWorkspace(projectDir, { charterId, name, objective, budget: input.budget, now, sessionId: input.sessionId });
   return {
     charterId,
     status: created.state.status,
@@ -66,6 +68,7 @@ export async function getCharterStatus(
   const drift = await computeDrift(projectDir, { charterId });
   return {
     charterId: state.charterId,
+    name: state.name,
     status: state.status,
     phase: phaseForStatus(state.status),
     objective: state.objective,
@@ -130,6 +133,11 @@ export async function completeCharter(
   state.completedAt = now;
   state.updatedAt = now;
   state.completionReason = input.completionNote?.trim() || undefined;
+  // Note: we intentionally keep state.sessionId + reverse pointer here so the
+  // widget can render its single-line terminal strip for the rest of the
+  // current session. The binding is released on the NEXT session_start
+  // (see registerCharterFlags) when a fresh session boots and the bound
+  // charter is already terminal.
   await writeCharterState(dir, state);
   await appendEvent(dir, {
     type: "charter_completed",
@@ -173,6 +181,7 @@ export async function forceCompleteCharter(
   state.completionReason = reason;
   if (target === "completed") state.completedAt = now;
   else state.terminatedAt = now;
+  // Binding release deferred to next session_start (see completeCharter).
   await writeCharterState(dir, state);
   await appendEvent(dir, { type: "charter_force_completed", ts: now, charterId, target, reason });
   return {
@@ -349,4 +358,23 @@ function guidelinesForStatus(status: CharterStatus): string[] {
 
 function isTerminal(status: CharterStatus): boolean {
   return status === "completed" || status === "budget_limited" || status === "abandoned";
+}
+
+/**
+ * Coerce a user-supplied charter name into a short slug suitable for header
+ * display. Trims, lowercases, replaces whitespace with hyphens, strips
+ * non-slug chars, and clamps to 32 chars. Returns undefined when the input is
+ * empty/blank so callers fall back to the short UUID.
+ */
+function sanitizeCharterName(name?: string): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "")
+    .slice(0, 32);
+  return slug || undefined;
 }

@@ -38,6 +38,8 @@ export async function loadCharterSnapshot(input: SnapshotInput): Promise<Charter
     readFeatureStates(dir),
   ]);
   const reducerInput: ReducerInput = {
+    charterId: input.charterId,
+    name: state.name,
     status: state.status,
     createdAt: state.createdAt,
     criteria: charter.criteria,

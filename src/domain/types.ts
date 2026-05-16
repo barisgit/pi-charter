@@ -17,6 +17,12 @@ export interface Budget {
 
 export interface CharterState {
   charterId: string;
+  /**
+   * Optional short human-friendly slug shown in widget headers and status
+   * output. When absent, callers should fall back to `charterId.slice(0,8)`.
+   * Set at creation time; never mutated by lifecycle transitions.
+   */
+  name?: string;
   objective: string;
   status: CharterStatus;
   createdAt: string;

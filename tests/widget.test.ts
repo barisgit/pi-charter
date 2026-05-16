@@ -36,6 +36,7 @@ function feature(input: {
 
 function defaultInput(overrides: Partial<ReducerInput> = {}): ReducerInput {
   return {
+    charterId: "test-charter",
     status: "active" as CharterStatus,
     createdAt: "2026-05-15T10:00:00Z",
     criteria: [],
@@ -126,7 +127,8 @@ describe("widget render", () => {
       features: [feature({ id: "m3-cli", fulfills: ["VAL-1", "VAL-2", "VAL-3"] })],
     }));
     const lines = renderCharterWidget({ width: 100, theme, vm });
-    expect(lines[0]?.startsWith("╭─ Active ")).toBe(true);
+    // No explicit name set; reducer falls back to first 8 chars of charterId.
+    expect(lines[0]?.startsWith("╭─ test-cha ")).toBe(true);
     expect(lines[0]?.endsWith("─╮")).toBe(true);
     // Bar tail must show 1/4
     expect(lines[1]).toMatch(/1\/4/);
@@ -135,16 +137,29 @@ describe("widget render", () => {
     expect(lines[lines.length - 1]?.endsWith("╯")).toBe(true);
   });
 
-  test("collapsed terminal state has no feature rows + shows status label in tail", () => {
+  test("terminal state renders boxed celebratory view (header + full bar + footer)", () => {
     const vm = buildViewModel(defaultInput({
+      name: "my-charter",
       status: "completed",
       criteria: [criterion("VAL-1"), criterion("VAL-2")],
       criterionOutcomes: { "VAL-1": { outcome: "pass" }, "VAL-2": { outcome: "pass" } },
     }));
     const lines = renderCharterWidget({ width: 60, theme, vm });
-    expect(lines.length).toBe(3); // header, bar, footer
+    expect(lines.length).toBe(3); // header + bar + footer
+    expect(lines[0]).toMatch(/my-charter/);
     expect(lines[0]).toMatch(/completed/);
     expect(lines[1]).toMatch(/2\/2/);
+    // Bar should be entirely pass glyphs.
+    expect(lines[1]).toMatch(/█/);
+    expect(lines[1]).not.toMatch(/░/);
+    expect(lines[2]?.startsWith("╰")).toBe(true);
+    expect(lines[2]?.endsWith("╯")).toBe(true);
+  });
+
+  test("explicit name overrides UUID prefix in header", () => {
+    const vm = buildViewModel(defaultInput({ name: "headless-click-pid" }));
+    const lines = renderCharterWidget({ width: 100, theme, vm });
+    expect(lines[0]).toMatch(/headless-click-pid/);
   });
 
   test("full bead row at wide width (B >= N)", () => {
