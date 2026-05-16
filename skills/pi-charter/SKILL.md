@@ -1,13 +1,6 @@
 ---
 name: pi-charter
-description: |
-  Run durable, charter-bound work end-to-end: create a charter, write VAL-*
-  criteria, decompose into features, lock the plan, then implement every
-  feature to completion in this same loop using subagents for verification
-  and critique. Use whenever you see charter_manage / charter_plan /
-  charter_record / charter_status tools, the /charter slash command, the
-  --charter-objective CLI flag, or a charter directory under
-  <project>/.pi/charters/.
+description: Drive multi-feature work to completion under a durable contract with VAL criteria + evidence. Use for charter_manage/charter_plan/charter_record/charter_status tools, /charter command, --charter-objective flag, .pi/charters/ dirs, or user asks to implement/build/ship something spanning many turns. Skip for single-file edits or quick fixes.
 ---
 
 # pi-charter
