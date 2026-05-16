@@ -7,6 +7,7 @@ import {
   registerCharterPersonas,
   registerCharterSubagentBridge,
   registerCharterTools,
+  registerCharterWidget,
 } from "./application/registration";
 
 /**
@@ -26,6 +27,10 @@ export default function charterExtension(pi: ExtensionAPI): void {
   // wants to call `spawnRaw` once persona resolution is wired.
   registerCharterSubagentBridge(pi);
   registerCharterAsyncBridge(pi);
+  // Widget listener registered AFTER the async bridge so its event handlers
+  // fire after the bridge has written feature_started/feature_completed
+  // events to disk; the widget then reads the updated state.
+  registerCharterWidget(pi);
   registerCharterEvaluator(pi);
   registerCharterPersonas(pi);
 }

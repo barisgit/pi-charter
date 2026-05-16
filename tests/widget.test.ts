@@ -1,0 +1,198 @@
+import { describe, expect, test } from "bun:test";
+import type { CharterCriterion, CharterStatus } from "../src/domain/types";
+import type { FeatureDefinition } from "../src/domain/feature-md";
+import { buildViewModel, type ReducerInput, type RunningSubagent } from "../src/ui/widget-state";
+import { renderCharterWidget, formatElapsed } from "../src/ui/widget";
+
+// Plain identity theme: tests assert on the raw glyph stream, not ANSI codes.
+const theme = { fg: (_color: string, text: string) => text };
+
+function criterion(id: string): CharterCriterion {
+  return {
+    id,
+    title: `${id} title`,
+    verifier: "manual",
+    requireFreshEvidence: false,
+    requireReviewSubagent: false,
+  };
+}
+
+function feature(input: {
+  id: string;
+  order?: number;
+  fulfills?: string[];
+  preconditions?: string[];
+  milestone?: string;
+}): FeatureDefinition {
+  return {
+    id: input.id,
+    milestone: input.milestone ?? "m1",
+    order: input.order ?? 10,
+    fulfills: input.fulfills ?? [],
+    preconditions: input.preconditions ?? [],
+    body: "",
+  };
+}
+
+function defaultInput(overrides: Partial<ReducerInput> = {}): ReducerInput {
+  return {
+    status: "active" as CharterStatus,
+    createdAt: "2026-05-15T10:00:00Z",
+    criteria: [],
+    features: [],
+    criterionOutcomes: {},
+    featureStates: {},
+    runningSubagents: [],
+    now: Date.parse("2026-05-15T10:05:00Z"),
+    ...overrides,
+  };
+}
+
+describe("widget-state reducer", () => {
+  test("counts pass/running/total across whole charter", () => {
+    const vm = buildViewModel(defaultInput({
+      criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3"), criterion("VAL-4")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" }, "VAL-2": { outcome: "pass" } },
+      runningSubagents: [{ runId: "r1", agentName: "charter-verifier", criterionId: "VAL-3", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
+    }));
+    expect(vm.bar).toEqual({ pass: 2, running: 1, total: 4 });
+  });
+
+  test("running features sort oldest-first; idle ready before idle blocked", () => {
+    const subs: RunningSubagent[] = [
+      { runId: "r1", agentName: "fixer", featureId: "f-newer", startedAt: "2026-05-15T10:04:30Z" },
+      { runId: "r2", agentName: "fixer", featureId: "f-older", startedAt: "2026-05-15T10:03:00Z" },
+    ];
+    const features = [
+      feature({ id: "f-blocked", order: 10, preconditions: ["f-older"] }),
+      feature({ id: "f-newer", order: 20 }),
+      feature({ id: "f-older", order: 30 }),
+      feature({ id: "f-ready", order: 40 }),
+    ];
+    const vm = buildViewModel(defaultInput({ features, runningSubagents: subs }));
+    expect(vm.rows.map((r) => `${r.state}:${r.id}`)).toEqual([
+      "running:f-older",
+      "running:f-newer",
+      "idle_ready:f-ready",
+      "idle_blocked:f-blocked",
+    ]);
+  });
+
+  test("terminal status returns collapsed view (no rows)", () => {
+    const vm = buildViewModel(defaultInput({
+      status: "completed",
+      criteria: [criterion("VAL-1"), criterion("VAL-2")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" }, "VAL-2": { outcome: "pass" } },
+      features: [feature({ id: "f1" })],
+    }));
+    expect(vm.isTerminal).toBe(true);
+    expect(vm.rows).toEqual([]);
+  });
+
+  test("done features increment overflow.done, never appear as rows", () => {
+    const vm = buildViewModel(defaultInput({
+      features: [feature({ id: "f1" }), feature({ id: "f2" }), feature({ id: "f3" })],
+      featureStates: { f1: { status: "done" }, f2: { status: "completed" } },
+    }));
+    expect(vm.rows.map((r) => r.id)).toEqual(["f3"]);
+    expect(vm.overflow).toEqual({ hidden: 0, done: 2 });
+  });
+
+  test("trims to MAX_ROWS - 1 when overflow needed and surfaces hidden count", () => {
+    const features = Array.from({ length: 10 }, (_, i) => feature({ id: `f${i}`, order: i }));
+    const vm = buildViewModel(defaultInput({ features }));
+    // MAX_ROWS=6 → 5 rows + overflow line
+    expect(vm.rows.length).toBe(5);
+    expect(vm.overflow.hidden).toBe(5);
+    expect(vm.overflow.done).toBe(0);
+  });
+
+  test("per-feature valStates reflect outcome + verifying set in declaration order", () => {
+    const vm = buildViewModel(defaultInput({
+      criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" } },
+      features: [feature({ id: "f1", fulfills: ["VAL-1", "VAL-3", "VAL-2"] })],
+      runningSubagents: [{ runId: "r1", agentName: "v", featureId: "f1", criterionId: "VAL-2", startedAt: "2026-05-15T10:04:00Z" }],
+    }));
+    expect(vm.rows[0]?.valStates).toEqual(["pass", "pending", "running"]);
+  });
+});
+
+describe("widget render", () => {
+  test("renders box border + bar tail at 100 cols", () => {
+    const vm = buildViewModel(defaultInput({
+      criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3"), criterion("VAL-4")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" } },
+      features: [feature({ id: "m3-cli", fulfills: ["VAL-1", "VAL-2", "VAL-3"] })],
+    }));
+    const lines = renderCharterWidget({ width: 100, theme, vm });
+    expect(lines[0]?.startsWith("╭─ Active ")).toBe(true);
+    expect(lines[0]?.endsWith("─╮")).toBe(true);
+    // Bar tail must show 1/4
+    expect(lines[1]).toMatch(/1\/4/);
+    // Final line is the bottom border.
+    expect(lines[lines.length - 1]?.startsWith("╰")).toBe(true);
+    expect(lines[lines.length - 1]?.endsWith("╯")).toBe(true);
+  });
+
+  test("collapsed terminal state has no feature rows + shows status label in tail", () => {
+    const vm = buildViewModel(defaultInput({
+      status: "completed",
+      criteria: [criterion("VAL-1"), criterion("VAL-2")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" }, "VAL-2": { outcome: "pass" } },
+    }));
+    const lines = renderCharterWidget({ width: 60, theme, vm });
+    expect(lines.length).toBe(3); // header, bar, footer
+    expect(lines[0]).toMatch(/completed/);
+    expect(lines[1]).toMatch(/2\/2/);
+  });
+
+  test("full bead row at wide width (B >= N)", () => {
+    const vm = buildViewModel(defaultInput({
+      criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" } },
+      features: [feature({ id: "f", fulfills: ["VAL-1", "VAL-2", "VAL-3"] })],
+    }));
+    const lines = renderCharterWidget({ width: 180, theme, vm });
+    // f row should contain three beads: ▰ pass, ▱ pending, ▱ pending.
+    const row = lines.find((line) => line.includes(" f "));
+    expect(row).toBeDefined();
+    expect(row).toMatch(/▰▱▱/);
+  });
+
+  test("fraction-only beads when budget < BEAD_MIN_BUDGET (narrow + long subagent name)", () => {
+    const vm = buildViewModel(defaultInput({
+      criteria: Array.from({ length: 20 }, (_, i) => criterion(`VAL-${i + 1}`)),
+      criterionOutcomes: Object.fromEntries(
+        Array.from({ length: 7 }, (_, i) => [`VAL-${i + 1}`, { outcome: "pass" }] as const),
+      ),
+      features: [feature({ id: "wide-feature-name", fulfills: Array.from({ length: 20 }, (_, i) => `VAL-${i + 1}`) })],
+      runningSubagents: [{ runId: "r1", agentName: "charter-verifier-with-loud-name", featureId: "wide-feature-name", startedAt: "2026-05-15T10:04:00Z" }],
+    }));
+    const lines = renderCharterWidget({ width: 60, theme, vm });
+    // Minimum width clamps to 60; row should still render. Beads should fall
+    // back to fraction "7/20" rather than 20 individual glyphs.
+    const row = lines.find((line) => line.includes("wide-feature-name"));
+    expect(row).toBeDefined();
+    expect(row).toMatch(/7\/20/);
+    // 20 sequential bead glyphs should NOT appear.
+    expect(row).not.toMatch(/▱▱▱▱▱▱▱▱▱▱/);
+  });
+
+  test("overflow line shows '+N more · M done' when both apply", () => {
+    const features = Array.from({ length: 8 }, (_, i) => feature({ id: `f${i}`, order: i }));
+    const featureStates = { f0: { status: "done" }, f1: { status: "done" } };
+    const vm = buildViewModel(defaultInput({ features, featureStates }));
+    const lines = renderCharterWidget({ width: 100, theme, vm });
+    const overflowRow = lines.find((line) => line.includes("more"));
+    expect(overflowRow).toBeDefined();
+    expect(overflowRow).toMatch(/\+1 more/);
+    expect(overflowRow).toMatch(/2 done/);
+  });
+
+  test("formatElapsed: <1m → seconds, <1h → 'Xm YYs', >=1h → 'Xh YYm'", () => {
+    expect(formatElapsed(12_000)).toBe("12s");
+    expect(formatElapsed(4 * 60 * 1000 + 12_000)).toBe("4m 12s");
+    expect(formatElapsed(63 * 60 * 1000 + 12_000)).toBe("1h 03m");
+  });
+});

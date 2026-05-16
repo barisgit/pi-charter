@@ -25,6 +25,8 @@ import {
   type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
+import { CharterWidget } from "../ui/widget";
+import { loadCharterSnapshot, RunningSubagentRegistry } from "../ui/widget-service";
 
 type CharterManageInput = {
   action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter";
@@ -810,6 +812,79 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", () => {
     pi.events.emit(SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT, unregisterPayload);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Widget: VAL progress strip rendered above the editor while a charter is
+// bound. Snapshot recomputed on session_start, turn_end (covers every
+// charter_* tool call within the turn), and async-bridge events. The widget
+// hides itself when no charter is bound.
+// ---------------------------------------------------------------------------
+export function registerCharterWidget(pi: ExtensionAPI): void {
+  const widget = new CharterWidget();
+  const runningSubagents = new RunningSubagentRegistry();
+
+  const refresh = async (ctx: { hasUI: boolean; ui: { setWidget: unknown } }, sessionId: string | undefined): Promise<void> => {
+    if (!ctx.hasUI) return;
+    widget.setUi(ctx.ui as Parameters<typeof widget.setUi>[0]);
+    if (!sessionId) {
+      widget.dispose();
+      return;
+    }
+    try {
+      const binding = await readSessionBinding({ sessionId });
+      if (!binding) {
+        widget.dispose();
+        return;
+      }
+      const vm = await loadCharterSnapshot({
+        projectDir: binding.projectDir,
+        charterId: binding.charterId,
+        runningSubagents: runningSubagents.forCharter(binding.charterId),
+      });
+      widget.update(vm);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // eslint-disable-next-line no-console
+      console.warn(`[pi-charter] widget refresh skipped: ${message}`);
+    }
+  };
+
+  pi.on("session_start", async (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId?.();
+    await refresh(ctx, sessionId);
+  });
+
+  pi.on("turn_end", async (_event, ctx) => {
+    const sessionId = ctx.sessionManager.getSessionId?.();
+    await refresh(ctx, sessionId);
+  });
+
+  pi.on("session_shutdown", () => {
+    widget.dispose();
+  });
+
+  // Subagent lifecycle: update the in-memory registry first so the next
+  // snapshot reflects in-flight work. We don't have a session/UI handle
+  // here, so we can't refresh immediately; the next turn_end (which usually
+  // fires right after the async dispatch) will pick it up. Async-complete
+  // also triggers a feature_state write in the async bridge, so turn_end is
+  // the right beat anyway.
+  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+    const payload = raw as SubagentAsyncStartedPayload | undefined;
+    if (!payload) return;
+    runningSubagents.start({
+      runId: payload.runId,
+      agent: payload.agent,
+      metadata: payload.metadata,
+      startedAt: payload.startedAt !== undefined ? new Date(payload.startedAt).toISOString() : undefined,
+    });
+  });
+  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+    const payload = raw as SubagentAsyncCompletePayload | undefined;
+    if (!payload) return;
+    runningSubagents.complete(payload.runId);
   });
 }
 
