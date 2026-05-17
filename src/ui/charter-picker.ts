@@ -1,229 +1,358 @@
-/**
- * Master-detail charter picker overlay (VAL-5 / f4-picker-overlay).
- *
- * Renders inside a single `Component.render(width)`: the viewport is split
- * into a left list pane and a right detail pane joined with `│` dividers.
- * Lifted from the pi-subagents `subagents-status.ts` `bodyRow(left, right,
- * leftW, rightW)` pattern — same 2-column layout, same `│<cell>│<cell>│`
- * border, same MIN_LEFT_PANE / MIN_RIGHT_PANE clamps. We intentionally
- * copy-adapt rather than depend on pi-subagents (per f4 plan).
- *
- * Right pane reuses `renderCharterWidget` so the detail view matches the
- * single-charter widget look exactly (header line, VAL bar, feature rows).
- * Each detail line is already padded to its target width by renderCharterWidget,
- * so we drop it straight into the right cell as-is — the outer `│` from
- * `bodyRow` ends up next to the widget's own border, giving nested-box chrome.
- */
-
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
-import type { CharterListEntry } from "../application/service";
-import { renderCharterWidget } from "./widget";
-import type { CharterWidgetVM } from "./widget-state";
+import type { CharterStatus } from "../domain/types";
+import type { CharterListRow, PickerSnapshot, PlanCriterionNode, PlanFeatureNode } from "./picker-snapshot";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
 }
 
-const LEFT_PANE_CAP = 50;
-const MIN_LEFT_PANE = 20;
-const MIN_RIGHT_PANE = 20;
-
-const BORDER = {
-  topLeft: "╭",
-  topRight: "╮",
-  bottomLeft: "╰",
-  bottomRight: "╯",
-  horizontal: "─",
-  vertical: "│",
-  teeDown: "┬",
-  teeUp: "┴",
-} as const;
-
 export interface CharterPickerOptions {
-  charters: CharterListEntry[];
-  snapshots: Map<string, CharterWidgetVM>;
+  charters: CharterListRow[];
+  snapshots: Map<string, PickerSnapshot>;
   theme: ThemeLike;
-  initialSelectedCharterId?: string;
-  onDone: (charterId: string | null) => void;
+  heightProvider: () => number;
+  initialCursorCharterId?: string;
+  boundCharterId: string | null;
+  onDone: (result: null) => void;
 }
 
-/**
- * pi-tui Component. Cursor navigation clamps at the bounds (no wrap), matching
- * the subagents-status behavior. Empty active list renders a one-line "No
- * active charters." message and treats both enter and esc as `onDone(null)`.
- */
+const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
+  "completed",
+  "abandoned",
+  "budget_limited",
+]);
+
+const LEFT_FOOTER = "tab:focus  j/k:move  esc:close";
+const RIGHT_FOOTER = "tab:focus  j/k:scroll  space:fold  o:objective  esc:close";
+const BANNED_PRINTABLE = new Set(["b", "r", "p", "a", "c"]);
+
 export class CharterPickerComponent implements Component {
-  private readonly charters: CharterListEntry[];
-  private readonly snapshots: Map<string, CharterWidgetVM>;
+  private readonly charters: CharterListRow[];
+  private readonly snapshots: Map<string, PickerSnapshot>;
   private readonly theme: ThemeLike;
-  private readonly initialSelectedCharterId?: string;
-  private readonly onDone: (charterId: string | null) => void;
-  private cursor = 0;
+  private readonly heightProvider: () => number;
+  private readonly boundCharterId: string | null;
+  private readonly onDone: (result: null) => void;
+  private cursorIndex = 0;
+  private focus: "left" | "right" = "left";
+  private allExpanded = false;
+  private objectiveExpanded = false;
+  private rightScrollLine = 0;
   private finished = false;
+  private lastRightMaxScroll = 0;
 
   constructor(opts: CharterPickerOptions) {
     this.charters = opts.charters;
     this.snapshots = opts.snapshots;
     this.theme = opts.theme;
-    this.initialSelectedCharterId = opts.initialSelectedCharterId;
+    this.heightProvider = opts.heightProvider;
+    this.boundCharterId = opts.boundCharterId;
     this.onDone = opts.onDone;
-    this.reconcileSelection();
-  }
-
-  /** Auto-select the first row on construction; clamp the cursor on later refreshes. */
-  private reconcileSelection(): void {
-    if (this.charters.length === 0) {
-      this.cursor = 0;
-      return;
-    }
-    this.cursor = Math.max(0, Math.min(this.charters.length - 1, this.cursor));
+    const initial = opts.initialCursorCharterId
+      ? this.charters.findIndex((row) => row.charterId === opts.initialCursorCharterId)
+      : -1;
+    this.cursorIndex = initial >= 0 ? initial : 0;
+    this.clampCursor();
   }
 
   render(width: number): string[] {
-    const w = Math.max(8, width);
-    if (this.charters.length === 0) {
-      return renderEmptyBox(w, this.theme);
-    }
-    // Spec: left ~35% capped at [MIN_LEFT_PANE, LEFT_PANE_CAP]; right takes
-    // the remainder, with 3 vertical border columns reserved (`│<L>│<R>│`).
-    let leftW = Math.max(MIN_LEFT_PANE, Math.min(LEFT_PANE_CAP, Math.floor(w * 0.35)));
-    let rightW = Math.max(MIN_RIGHT_PANE, w - leftW - 3);
-    // If both mins can't fit (very narrow terminal), drop the right-pane
-    // floor and then the left-pane floor rather than overflow `w`.
-    if (leftW + rightW + 3 > w) {
-      rightW = Math.max(4, w - leftW - 3);
-      if (leftW + rightW + 3 > w) {
-        leftW = Math.max(4, w - rightW - 3);
-      }
-    }
+    const totalWidth = Math.max(3, Math.floor(width));
+    const height = Math.max(2, Math.floor(this.heightProvider()));
+    const interiorWidth = Math.max(0, totalWidth - 3);
+    let leftWidth = clamp(Math.floor(interiorWidth * 0.32), 28, 50);
+    if (leftWidth > interiorWidth) leftWidth = interiorWidth;
+    const rightWidth = interiorWidth - leftWidth;
+    const bodyHeight = height - 2;
+    const contentHeight = Math.max(0, bodyHeight - 1);
 
-    const leftLines = this.buildLeftPane(leftW);
-    const rightLines = this.buildRightPane(rightW);
+    const leftContent = this.buildLeftPane(leftWidth);
+    const rightContent = this.buildRightPane(rightWidth);
+    this.lastRightMaxScroll = Math.max(0, rightContent.length - contentHeight);
+    this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
+    const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + contentHeight);
 
-    const bodyHeight = Math.max(leftLines.length, rightLines.length);
-    const rows: string[] = [];
-    rows.push(this.renderTopBorder(leftW, rightW));
+    const rows = [this.topBorder(leftWidth, rightWidth)];
     for (let i = 0; i < bodyHeight; i++) {
-      rows.push(this.bodyRow(leftLines[i] ?? "", rightLines[i] ?? "", leftW, rightW));
+      const isFooter = i === bodyHeight - 1;
+      const left = isFooter ? LEFT_FOOTER : (leftContent[i] ?? "");
+      const right = isFooter ? RIGHT_FOOTER : (rightVisible[i] ?? "");
+      rows.push(this.bodyRow(left, right, leftWidth, rightWidth));
     }
-    rows.push(this.renderBottomBorder(leftW, rightW));
-    return rows;
-  }
-
-  private buildLeftPane(width: number): string[] {
-    const lines: string[] = [];
-    for (let i = 0; i < this.charters.length; i++) {
-      const entry = this.charters[i]!;
-      const isCursor = i === this.cursor;
-      const isInitial = this.initialSelectedCharterId !== undefined
-        && entry.charterId === this.initialSelectedCharterId;
-      const cursorMark = isCursor ? this.theme.fg("accent", "> ") : "  ";
-      const selectedMark = isInitial ? this.theme.fg("accent", "*") : " ";
-      const namePlain = entry.name;
-      const fracPlain = ` ${entry.passCount}/${entry.totalCount}`;
-      // Visible plain layout: "<cursor 2><selected 1><space 1><name…><frac>"
-      const fixed = 2 + 1 + 1 + fracPlain.length;
-      const nameBudget = Math.max(0, width - fixed);
-      const nameTrunc = truncateToWidth(namePlain, nameBudget);
-      const nameStyled = isCursor ? this.theme.fg("accent", nameTrunc) : nameTrunc;
-      const frac = this.theme.fg("dim", fracPlain);
-      const line = `${cursorMark}${selectedMark} ${nameStyled}${frac}`;
-      lines.push(line);
-    }
-    return lines;
-  }
-
-  private buildRightPane(width: number): string[] {
-    const entry = this.charters[this.cursor];
-    if (!entry) return [];
-    const vm = this.snapshots.get(entry.charterId);
-    if (!vm) {
-      return [this.theme.fg("dim", truncateToWidth("(no snapshot for this charter)", width))];
-    }
-    // renderCharterWidget enforces its own MIN_TERMINAL_WIDTH (60). When the
-    // right pane is narrower we let it render at 60 and clip per-line; the
-    // bodyRow padRight will truncate excess columns. Tests pin widths >=40
-    // where rightW ends up ~17-49 cols.
-    return renderCharterWidget({ width, theme: this.theme, vm });
-  }
-
-  private bodyRow(left: string, right: string, leftW: number, rightW: number): string {
-    const v = this.theme.fg("dim", BORDER.vertical);
-    return `${v}${padRight(left, leftW)}${v}${padRight(right, rightW)}${v}`;
-  }
-
-  private renderTopBorder(leftW: number, rightW: number): string {
-    const border = (s: string) => this.theme.fg("dim", s);
-    return `${border(BORDER.topLeft)}${border(BORDER.horizontal.repeat(leftW))}${border(BORDER.teeDown)}${border(BORDER.horizontal.repeat(rightW))}${border(BORDER.topRight)}`;
-  }
-
-  private renderBottomBorder(leftW: number, rightW: number): string {
-    const border = (s: string) => this.theme.fg("dim", s);
-    return `${border(BORDER.bottomLeft)}${border(BORDER.horizontal.repeat(leftW))}${border(BORDER.teeUp)}${border(BORDER.horizontal.repeat(rightW))}${border(BORDER.bottomRight)}`;
+    rows.push(this.bottomBorder(leftWidth, rightWidth));
+    return rows.map((line) => padRight(line, totalWidth));
   }
 
   handleInput(data: string): void {
     if (this.finished) return;
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "q")) {
-      this.fire(null);
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+      this.finish();
       return;
     }
-    if (matchesKey(data, "return") || matchesKey(data, "enter")) {
-      const entry = this.charters[this.cursor];
-      this.fire(entry ? entry.charterId : null);
+    if (isBannedKey(data)) return;
+    if (matchesKey(data, "tab")) {
+      this.focus = this.focus === "left" ? "right" : "left";
       return;
     }
-    if (this.charters.length === 0) return;
-    if (matchesKey(data, "j") || matchesKey(data, "down")) {
-      this.cursor = Math.min(this.charters.length - 1, this.cursor + 1);
+    if (matchesPrintable(data, "j")) {
+      if (this.focus === "left") {
+        this.cursorIndex = Math.min(Math.max(0, this.charters.length - 1), this.cursorIndex + 1);
+        this.rightScrollLine = 0;
+      } else {
+        this.rightScrollLine = clamp(this.rightScrollLine + 1, 0, this.lastRightMaxScroll);
+      }
       return;
     }
-    if (matchesKey(data, "k") || matchesKey(data, "up")) {
-      this.cursor = Math.max(0, this.cursor - 1);
+    if (matchesPrintable(data, "k")) {
+      if (this.focus === "left") {
+        this.cursorIndex = Math.max(0, this.cursorIndex - 1);
+        this.rightScrollLine = 0;
+      } else {
+        this.rightScrollLine = Math.max(0, this.rightScrollLine - 1);
+      }
       return;
     }
-    if (matchesKey(data, "g")) {
-      this.cursor = 0;
+    if (matchesKey(data, "space") && this.focus === "right") {
+      this.allExpanded = !this.allExpanded;
+      this.rightScrollLine = 0;
       return;
     }
-    if (matchesKey(data, "shift+g")) {
-      this.cursor = this.charters.length - 1;
-      return;
+    if (matchesPrintable(data, "o") && this.focus === "right") {
+      this.objectiveExpanded = !this.objectiveExpanded;
+      this.rightScrollLine = 0;
     }
   }
 
   invalidate(): void {
-    // No cached state to reset.
+    // No cached render output.
   }
 
-  /** Test-only accessor for the current cursor index. */
-  getCursorIndex(): number {
-    return this.cursor;
+  private buildLeftPane(width: number): string[] {
+    if (width <= 0) return [];
+    const nonTerminal = this.charters
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => !TERMINAL_STATUSES.has(row.status));
+    const terminal = this.charters
+      .map((row, index) => ({ row, index }))
+      .filter(({ row }) => TERMINAL_STATUSES.has(row.status));
+    const lines: string[] = [titledRule("Charters", width, "╭", "╮")];
+    for (const entry of nonTerminal) lines.push(this.leftRow(entry.row, entry.index, width, false));
+    if (terminal.length > 0) lines.push(titledRule("done", width, "├", "┤"));
+    for (const entry of terminal) lines.push(this.leftRow(entry.row, entry.index, width, true));
+    return lines;
   }
 
-  private fire(result: string | null): void {
+  private leftRow(row: CharterListRow, index: number, width: number, dim: boolean): string {
+    const cursorMark = index === this.cursorIndex ? "►" : " ";
+    const boundMark = row.charterId === this.boundCharterId ? "*" : " ";
+    const prefix = `${cursorMark}${boundMark} `;
+    const bar = progressBar(row.passCount, row.totalCount, 8);
+    const count = `${row.passCount}/${row.totalCount}`;
+    const tail = `${bar} ${count}  ${row.status}`;
+    const nameWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(tail));
+    const line = `${prefix}${padRight(clipText(row.name, nameWidth), nameWidth)}${tail}`;
+    return dim ? this.color("dim", line) : line;
+  }
+
+  private buildRightPane(width: number): string[] {
+    if (width <= 0) return [];
+    const row = this.charters[this.cursorIndex];
+    if (!row) return [this.color("dim", "No charters.")];
+    const snapshot = this.snapshots.get(row.charterId);
+    if (!snapshot) return [this.color("dim", "No snapshot for this charter.")];
+
+    const lines: string[] = [];
+    const header = `${snapshot.header.name}  [${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
+    lines.push(header);
+    lines.push(progressBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
+    lines.push(this.color("yellow", "Objective"));
+    const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
+    if (!this.objectiveExpanded && objectiveLines.length > 2) {
+      lines.push(...objectiveLines.slice(0, 2).map((line) => `  ${line}`));
+      lines.push("  [o for full]");
+    } else {
+      lines.push(...objectiveLines.map((line) => `  ${line}`));
+    }
+
+    if (snapshot.evaluatorVerdict) {
+      lines.push(this.color(verdictColor(snapshot.evaluatorVerdict.verdict), `Evaluator: ${snapshot.evaluatorVerdict.verdict}`));
+      for (const line of wrapText(snapshot.evaluatorVerdict.steer, Math.max(1, width - 2))) {
+        lines.push(`  ${line}`);
+      }
+    }
+
+    lines.push(this.color("red", "Blocking complete:"));
+    if (snapshot.blockingForComplete.length === 0 && allPass(snapshot)) {
+      lines.push(this.color("green", "  Ready to complete"));
+    } else if (snapshot.blockingForComplete.length === 0) {
+      lines.push(this.color("dim", "  No blocking data"));
+    } else {
+      for (const item of snapshot.blockingForComplete) lines.push(this.color("red", `  • ${item}`));
+    }
+
+    lines.push("Plan");
+    for (const milestone of snapshot.planTree) {
+      lines.push(`  ${this.color("bold", milestone.milestoneId)}`);
+      for (const feature of milestone.features) {
+        lines.push(this.featureLine(feature));
+        if (this.allExpanded) {
+          for (const criterion of feature.criteria) lines.push(this.criterionLine(criterion));
+        }
+      }
+    }
+
+    lines.push("Recent evidence");
+    for (const evidence of snapshot.recentEvidence.slice(0, 5)) {
+      lines.push(`${formatTime(evidence.ts)}  ${evidence.criterionId.padEnd(14)}  ${evidence.outcome.padEnd(7)}  ${evidence.recordedBy}`);
+    }
+    return lines;
+  }
+
+  private featureLine(feature: PlanFeatureNode): string {
+    const glyph = feature.status === "completed"
+      ? this.color("green", "✓")
+      : feature.status === "in_progress"
+        ? this.color("cyan", "●")
+        : this.color("dim", "○");
+    const bar = progressBar(feature.passCount, feature.totalCount, 4);
+    return `    ${glyph} ${feature.featureId.padEnd(12)} ${bar} ${feature.passCount}/${feature.totalCount}  ${feature.status}`;
+  }
+
+  private criterionLine(criterion: PlanCriterionNode): string {
+    const glyph = criterion.outcome === "pass"
+      ? this.color("green", "✓")
+      : criterion.outcome === "fail"
+        ? this.color("red", "✗")
+        : this.color("dim", "○");
+    const title = criterion.titleFromH3 ? `  ${criterion.titleFromH3}` : "";
+    return `        ${glyph} ${criterion.criterionId}${title}`;
+  }
+
+  private topBorder(leftWidth: number, rightWidth: number): string {
+    return `╭${"─".repeat(leftWidth)}┬${"─".repeat(rightWidth)}╮`;
+  }
+
+  private bottomBorder(leftWidth: number, rightWidth: number): string {
+    return `╰${"─".repeat(leftWidth)}┴${"─".repeat(rightWidth)}╯`;
+  }
+
+  private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
+    return `│${padRight(left, leftWidth)}│${padRight(right, rightWidth)}│`;
+  }
+
+  private color(color: string, text: string): string {
+    return this.theme.fg(color, text);
+  }
+
+  private clampCursor(): void {
+    this.cursorIndex = clamp(this.cursorIndex, 0, Math.max(0, this.charters.length - 1));
+  }
+
+  private finish(): void {
     if (this.finished) return;
     this.finished = true;
-    this.onDone(result);
+    this.onDone(null);
   }
+}
+
+function isBannedKey(data: string): boolean {
+  return [...BANNED_PRINTABLE].some((key) => matchesPrintable(data, key))
+    || matchesKey(data, "enter")
+    || data === "\r"
+    || data === "\n"
+    || matchesKey(data, "delete");
+}
+
+function matchesPrintable(data: string, key: string): boolean {
+  return data === key || matchesKey(data, key as Parameters<typeof matchesKey>[1]);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function padRight(text: string, width: number): string {
-  const visible = visibleWidth(text);
-  if (visible >= width) return truncateToWidth(text, width);
-  return text + " ".repeat(width - visible);
+  const clipped = visibleWidth(text) > width ? clipText(text, width) : text;
+  const pad = Math.max(0, width - visibleWidth(clipped));
+  return clipped + " ".repeat(pad);
 }
 
-function renderEmptyBox(width: number, theme: ThemeLike): string[] {
-  const inner = Math.max(0, width - 2);
-  const border = (s: string) => theme.fg("dim", s);
-  const top = `${border(BORDER.topLeft)}${border(BORDER.horizontal.repeat(inner))}${border(BORDER.topRight)}`;
-  const bottom = `${border(BORDER.bottomLeft)}${border(BORDER.horizontal.repeat(inner))}${border(BORDER.bottomRight)}`;
-  const text = "No active charters.";
-  const visible = Math.min(text.length, inner);
-  const padCount = Math.max(0, inner - visible);
-  const v = border(BORDER.vertical);
-  const middle = `${v}${theme.fg("dim", truncateToWidth(text, inner))}${" ".repeat(padCount)}${v}`;
-  return [top, middle, bottom];
+function clipText(text: string, width: number): string {
+  if (width <= 0) return "";
+  return Array.from(text).slice(0, width).join("");
 }
+
+function titledRule(title: string, width: number, left: string, right: string): string {
+  if (width <= 1) return clipText(`${left}${right}`, width);
+  const label = `─ ${title} `;
+  const middleWidth = Math.max(0, width - 2);
+  return `${left}${clipText(label + "─".repeat(middleWidth), middleWidth)}${right}`;
+}
+
+function progressBar(passCount: number, totalCount: number, width: number): string {
+  const filled = totalCount > 0 ? Math.floor((passCount / totalCount) * width) : 0;
+  const clamped = clamp(filled, 0, width);
+  return "█".repeat(clamped) + "░".repeat(width - clamped);
+}
+
+function wrapText(text: string, width: number): string[] {
+  const out: string[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const words = rawLine.trim().split(/\s+/).filter(Boolean);
+    if (words.length === 0) {
+      out.push("");
+      continue;
+    }
+    let line = "";
+    for (const word of words) {
+      if (visibleWidth(word) > width) {
+        if (line) {
+          out.push(line);
+          line = "";
+        }
+        out.push(clipText(word, width));
+        continue;
+      }
+      const next = line ? `${line} ${word}` : word;
+      if (visibleWidth(next) > width) {
+        out.push(line);
+        line = word;
+      } else {
+        line = next;
+      }
+    }
+    if (line) out.push(line);
+  }
+  return out.length > 0 ? out : [""];
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+function verdictColor(verdict: string): string {
+  if (verdict === "on_track") return "green";
+  if (verdict === "drifting") return "orange";
+  if (verdict === "blocked") return "red";
+  if (verdict === "done") return "cyan";
+  return "dim";
+}
+
+function allPass(snapshot: PickerSnapshot): boolean {
+  return snapshot.header.totalCount > 0 && snapshot.header.passCount === snapshot.header.totalCount;
+}
+
+function formatTime(ts: string): string {
+  const parsed = new Date(ts);
+  if (Number.isNaN(parsed.getTime())) return "--:--";
+  return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+}
+
+export const PICKER_FOOTERS = {
+  left: LEFT_FOOTER,
+  right: RIGHT_FOOTER,
+} as const;

@@ -1,14 +1,13 @@
 /**
- * Tri-value selection state shared between `registerCharterWidget` (the host
- * that draws `charter-multi` + `charter-detail`) and the `/charters` slash
- * command verbs (`select <id>`, `select none`, picker confirm).
+ * Tri-value selection state shared by the `/charters` slash command verbs
+ * (`select <id>`, `select none`, picker confirm).
  *
  * Why a module-level singleton: the spec (charter.md / VAL-8) keeps selection
  * "in an extension closure variable; persists across turns within the
  * session; cleared on session end". Both `registerCharterCommands` and
  * `registerCharterWidget` need read+write access; a tiny module-scoped store
  * is the simplest path that lets the command surface trigger an immediate
- * widget rebuild without reaching into the widget host.
+ * widget refresh without reaching into the widget host.
  *
  * Refresh: the widget host registers a `requestRefresh` callback at session
  * start; commands invoke it via `requestSelectionRefresh(ctx)` after they
@@ -53,7 +52,8 @@ let refresher: RefreshFn | undefined;
 /**
  * Widget host calls this once at registration time. The command surface
  * invokes the stored fn (when present) so `/charters select foo` immediately
- * rebuilds both widgets instead of waiting for the next `turn_end`.
+ * refreshes the session-bound detail widget instead of waiting for the next
+ * `turn_end`.
  */
 export function registerSelectionRefresher(fn: RefreshFn): void {
   refresher = fn;

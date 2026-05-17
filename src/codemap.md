@@ -268,15 +268,11 @@ Events that trigger widget refresh:
   subagent:async-started/complete → RunningSubagentRegistry updated
 
 refresh():
-  → listActiveCharters(projectDir)
-      → loadCharterIndex() → charter ids
-      → loadCharterListEntry() per id (reads state.json, criterion-state.json, charter.md)
-  → loadCharterSnapshot() × N in parallel (reads state, charter.md, plan/*.md, criterion-state.json, feature-state.json)
+  → ctx.sessionManager.getSessionId()
+  → reconcileSessionBinding({sessionId, homeDir})
+  → loadCharterSnapshot() for the bound charter (reads state, charter.md, plan/*.md, criterion-state.json, feature-state.json)
   → buildViewModel(ReducerInput) → CharterWidgetVM
-  → buildMultiCharterViewModel() → MultiCharterWidgetVM
-  → resolveDetailSnapshot(selection, ...) → detail CharterWidgetVM
-  → ui.setWidget("charter-multi", factory)  ← always when >=1 active charter
-  → ui.setWidget("charter-detail", factory) ← when selection resolves to a snapshot
+  → ui.setWidget("charter-detail", factory) ← when session binding resolves to a snapshot
 ```
 
 ### Reminders Flow

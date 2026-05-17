@@ -28,11 +28,9 @@ import {
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
 import { renderCharterWidget } from "../ui/widget";
-import { renderMultiCharterWidget } from "../ui/multi-charter-widget";
-import { buildMultiCharterViewModel } from "../ui/widget-state";
-import type { CharterWidgetVM } from "../ui/widget-state";
 import { loadCharterSnapshot, RunningSubagentRegistry } from "../ui/widget-service";
 import { CharterPickerComponent } from "../ui/charter-picker";
+import { buildPickerSnapshot, listAllCharters } from "../ui/picker-snapshot";
 import { listActiveCharters, type CharterListEntry } from "./service";
 import {
   clearSelectionRefresher,
@@ -41,7 +39,6 @@ import {
   requestSelectionRefresh,
   resetCharterSelection,
   setCharterSelection,
-  type CharterSelection,
 } from "../ui/charter-selection";
 
 type CharterManageInput = {
@@ -477,7 +474,7 @@ export function formatCharterStatusText(result: {
 }
 
 const CHARTERS_VERBS = ["status", "pause", "resume", "select", "list"] as const;
-const CHARTER_USAGE_HINT = "Usage: /charter <objective> to hand a new objective to the agent, or /charters to inspect/manage active charters.";
+const CHARTER_USAGE_HINT = "Usage: /charter <objective>. pi-charter will read any files, paths, or URLs you reference before creating the charter. Use /charters to inspect or manage active charters.";
 
 export function registerCharterCommands(pi: ExtensionAPI): void {
   pi.registerCommand("charter", {
@@ -500,8 +497,10 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "",
           text,
           "",
-          "Create and execute the charter end-to-end:",
-          "1. Call charter_manage action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; the charterId itself stays an opaque UUID.",
+          "Before calling any charter tool, do this:",
+          "0. Read every file, path, or URL the user referenced above. If the user pointed at a handoff doc, spec, screenshot, or temp file, open it first with normal file tools. Recon is mandatory — pi-charter SKILL.md §2a 'Recon before authoring' explains why brittle charters come from skipping this.",
+          "0b. If the request is ambiguous (short phrase, 'continue from handoff', 'make it better', no measurable outcome, contradictory requirements), ask the user EXACTLY ONE clarifying question before proceeding. Do not invent an objective.",
+          "1. Extract the real objective from the material you read. Derive a short kebab-case 'name' (≤32 chars, no slugified instruction text — e.g. 'oauth-google-signin' not 'continue-handoff'). Then call charter_manage action=create with the extracted objective and derived name.",
           "2. Run charter_status to confirm the planning state and legal nextActions.",
           "3. Author the contract by editing .pi/charters/<id>/charter.md to add VAL-* criteria, scope, and constraints. Do NOT create a charter.md at the repo root.",
           "4. Seed the macro plan by calling charter_plan action=add_feature for each feature (id, milestone, order, fulfills[], body). Do NOT write plan/<featureId>.md files yourself — the tool writes them under .pi/charters/<id>/plan/.",
@@ -685,44 +684,37 @@ async function openPicker(
   }
   setPickerOpen(true);
   try {
-    // Build per-charter snapshots in parallel for the picker right pane.
-    const runningForCharter = new Map<string, never[]>();
+    const charters = await listAllCharters(ctx.cwd);
     const snapshotEntries = await Promise.all(
-      active.map(async (c) => {
+      charters.map(async (c) => {
         try {
-          const vm = await loadCharterSnapshot({
-            projectDir: ctx.cwd,
-            charterId: c.charterId,
-            runningSubagents: runningForCharter.get(c.charterId) ?? [],
-          });
-          return [c.charterId, vm] as const;
+          const snapshot = await buildPickerSnapshot(ctx.cwd, c.charterId);
+          return snapshot ? ([c.charterId, snapshot] as const) : null;
         } catch {
-          return [c.charterId, null] as const;
+          return null;
         }
       }),
     );
-    const snapshots = new Map<string, CharterWidgetVM>();
-    for (const [id, vm] of snapshotEntries) {
-      if (vm) snapshots.set(id, vm);
-    }
-
-    const current = getCharterSelection();
-    const initialId = current.kind === "explicit"
-      ? current.charterId
-      : (active[0]?.charterId);
+    const snapshots = new Map(snapshotEntries.filter((entry): entry is NonNullable<typeof entry> => entry !== null));
+    const sessionId = ctx.sessionManager?.getSessionId?.();
+    const binding = sessionId ? await readSessionBinding({ sessionId }) : null;
+    const boundCharterId = binding?.charterId ?? null;
+    const initialId = boundCharterId ?? charters[0]?.charterId;
 
     const ui = ctx.ui as unknown as {
-      custom<T>(factory: (tui: unknown, theme: { fg(color: string, text: string): string }, keybindings: unknown, done: (result: T) => void) => unknown, options?: { overlay?: boolean; overlayOptions?: unknown }): Promise<T>;
+      custom<T>(factory: (tui: { terminal?: { rows?: number } }, theme: { fg(color: string, text: string): string }, keybindings: unknown, done: (result: T) => void) => unknown, options?: { overlay?: boolean; overlayOptions?: unknown }): Promise<T>;
     };
-    const result = await ui.custom<string | null>((_tui, theme, _kb, done) => new CharterPickerComponent({
-      charters: active,
+    const result = await ui.custom<string | null>((tui, theme, _kb, done) => new CharterPickerComponent({
+      charters,
       snapshots,
       theme,
-      ...(initialId !== undefined ? { initialSelectedCharterId: initialId } : {}),
-      onDone: (id) => done(id),
+      heightProvider: () => tui.terminal?.rows ?? 24,
+      ...(initialId !== undefined ? { initialCursorCharterId: initialId } : {}),
+      boundCharterId,
+      onDone: done,
     }), {
       overlay: true,
-      overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" },
+      overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
     });
     if (result !== null) {
       setCharterSelection({ kind: "explicit", charterId: result });
@@ -1180,12 +1172,7 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
 // hides itself when no charter is bound.
 // ---------------------------------------------------------------------------
 
-/**
- * VM keys for `ctx.ui.setWidget`. The multi-charter row is always shown
- * (when there is >=1 active charter); the detail key is shown for whichever
- * charter the picker / `select` verb chose (or auto-picked).
- */
-const MULTI_WIDGET_KEY = "charter-multi";
+/** VM key for `ctx.ui.setWidget` while a charter is bound to this session. */
 const DETAIL_WIDGET_KEY = "charter-detail";
 
 interface WidgetTuiLike {
@@ -1205,119 +1192,30 @@ interface WidgetUiLike {
   ): void;
 }
 
-/**
- * Apply the tri-value selection rule to the current active list:
- *   - `unset` -> first active (auto-select), selection state STAYS `unset`
- *     so a later `select none` still works.
- *   - `explicit-clear` -> undefined (no detail rendered).
- *   - `explicit` with id present -> that snapshot.
- *   - `explicit` with id NOT present -> downgrade selection to `unset`, render
- *     first active for this refresh.
- *   - empty snapshots is handled by the caller (both widgets cleared).
- */
-export function resolveDetailSnapshot(
-  selection: CharterSelection,
-  snapshots: CharterWidgetVM[],
-  snapshotsById: Map<string, CharterWidgetVM>,
-): CharterWidgetVM | undefined {
-  if (snapshots.length === 0) return undefined;
-  if (selection.kind === "explicit-clear") return undefined;
-  if (selection.kind === "explicit") {
-    const hit = snapshotsById.get(selection.charterId);
-    if (hit) return hit;
-    // Pinned charter no longer in the active list: downgrade so the next
-    // refresh auto-selects, then render the first active for THIS refresh.
-    setCharterSelection({ kind: "unset" });
-    return snapshots[0];
-  }
-  // kind === "unset" -> auto-select first.
-  return snapshots[0];
+interface RegisterCharterWidgetOptions {
+  /** Test seam: keep production bound to the normal home directory. */
+  homeDir?: string;
 }
 
-export function registerCharterWidget(pi: ExtensionAPI): void {
+export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharterWidgetOptions = {}): void {
   const runningSubagents = new RunningSubagentRegistry();
 
-  const refresh = async (ctx: { hasUI: boolean; cwd: string; ui: unknown }): Promise<void> => {
+  const refresh = async (ctx: { hasUI: boolean; cwd: string; ui: unknown; sessionManager?: { getSessionId?(): string | undefined } }): Promise<void> => {
     if (!ctx.hasUI) return;
     const ui = ctx.ui as WidgetUiLike;
 
-    let active: CharterListEntry[];
-    try {
-      active = await listActiveCharters(ctx.cwd);
-    } catch {
-      // listActiveCharters already swallows per-charter errors; an outer
-      // failure (e.g. missing project dir) means "nothing to show".
-      active = [];
-    }
-
-    if (active.length === 0) {
-      ui.setWidget(MULTI_WIDGET_KEY, undefined);
-      ui.setWidget(DETAIL_WIDGET_KEY, undefined);
-      return;
-    }
-
-    // Load every per-charter snapshot in parallel so a slow charter doesn't
-    // block the rest. Failures collapse to `null` and that charter is
-    // dropped from both widgets.
-    const snapshotEntries = await Promise.all(
-      active.map(async (c) => {
-        try {
-          const vm = await loadCharterSnapshot({
-            projectDir: ctx.cwd,
-            charterId: c.charterId,
-            runningSubagents: runningSubagents.forCharter(c.charterId),
-          });
-          return [c.charterId, vm] as const;
-        } catch {
-          return [c.charterId, null] as const;
-        }
-      }),
-    );
-    const snapshotsById = new Map<string, CharterWidgetVM>();
-    const snapshots: CharterWidgetVM[] = [];
-    for (const [id, vm] of snapshotEntries) {
-      if (vm) {
-        snapshotsById.set(id, vm);
-        snapshots.push(vm);
-      }
-    }
-    if (snapshots.length === 0) {
-      ui.setWidget(MULTI_WIDGET_KEY, undefined);
-      ui.setWidget(DETAIL_WIDGET_KEY, undefined);
-      return;
-    }
-
-    // Resolve tri-value selection -> the detail snapshot (or null).
-    const selection = getCharterSelection();
-    const detailVm = resolveDetailSnapshot(selection, snapshots, snapshotsById);
-
-    const runningByCharter = new Map<string, ReturnType<RunningSubagentRegistry["forCharter"]>>();
-    for (const c of active) runningByCharter.set(c.charterId, runningSubagents.forCharter(c.charterId));
-
-    const multiVm = buildMultiCharterViewModel({
-      snapshots,
-      selectedCharterId: detailVm?.charterId ?? null,
-      runningSubagentsByCharter: runningByCharter,
-    });
-
-    ui.setWidget(
-      MULTI_WIDGET_KEY,
-      (tui, theme) => ({
-        render: () => renderMultiCharterWidget(multiVm, theme, tui.terminal?.columns ?? 100),
-        invalidate: () => {},
-      }),
-      { placement: "aboveEditor" },
-    );
-
-    if (detailVm === undefined) {
-      ui.setWidget(DETAIL_WIDGET_KEY, undefined);
-      return;
-    }
+    const sessionId = ctx.sessionManager?.getSessionId?.();
+    if (!sessionId) { ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    const binding = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
+    if (!binding) { ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    const charterId = binding.charterId;
+    const snapshot = await loadCharterSnapshot({ projectDir: ctx.cwd, charterId, runningSubagents: runningSubagents.forCharter(charterId) });
+    if (!snapshot) { ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
 
     ui.setWidget(
       DETAIL_WIDGET_KEY,
       (tui, theme) => ({
-        render: () => renderCharterWidget({ width: tui.terminal?.columns ?? 100, theme, vm: detailVm }),
+        render: () => renderCharterWidget({ width: tui.terminal?.columns ?? 100, theme, vm: snapshot }),
         invalidate: () => {},
       }),
       { placement: "aboveEditor" },
@@ -1325,7 +1223,7 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
   };
 
   registerSelectionRefresher(async (ctx) => {
-    await refresh(ctx as { hasUI: boolean; cwd: string; ui: unknown });
+    await refresh(ctx as { hasUI: boolean; cwd: string; ui: unknown; sessionManager?: { getSessionId?(): string | undefined } });
   });
 
   pi.on("session_start", async (_event, ctx) => {

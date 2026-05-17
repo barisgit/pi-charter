@@ -138,7 +138,7 @@ describe("VAL-6: /charters command", () => {
       expect(customCalls).toHaveLength(1);
       expect(customCalls[0]!.options).toMatchObject({
         overlay: true,
-        overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" },
+        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
       });
       expect(getCharterSelection()).toEqual({ kind: "explicit", charterId: idA });
       // sanity: idB exists, ensures we actually had a multi-charter project

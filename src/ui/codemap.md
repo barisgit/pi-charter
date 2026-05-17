@@ -7,7 +7,6 @@
 | `widget-state.ts` | Pure view-model reducer: disk inputs → `CharterWidgetVM` |
 | `widget-service.ts` | I/O bridge: disk reads → reducer input → `loadCharterSnapshot()` |
 | `widget.ts` | Stateful host (`CharterWidget`) + pure render functions |
-| `multi-charter-widget.ts` | Pure renderer for the multi-charter list widget |
 | `charter-picker.ts` | Master-detail overlay (`CharterPickerComponent` implements `pi-tui Component`) |
 | `charter-selection.ts` | Module-level session singleton for active-charter selection |
 
@@ -21,9 +20,8 @@
 
 **Public API:**
 - `buildViewModel(input: ReducerInput): CharterWidgetVM` — single-charter VM.
-- `buildMultiCharterViewModel(input: MultiReducerInput): MultiCharterWidgetVM` — multi-charter VM projection.
 - `RunningSubagentRegistry` class — in-memory tracker for in-flight subagents, keyed by `runId`. Persists for process lifetime; seeded by async-bridge events.
-- Type exports: `CharterWidgetVM`, `FeatureRowVM`, `FeatureSummaryVM`, `MultiCharterWidgetVM`, `PerCharterRowVM`, `PlanningVM`, `PlanningStep`, `ValState`, `ReducerInput`, `RunningSubagent`, `MultiReducerInput`, `CharterSnapshotLike`.
+- Type exports: `CharterWidgetVM`, `FeatureRowVM`, `FeatureSummaryVM`, `PlanningVM`, `PlanningStep`, `ValState`, `ReducerInput`, `RunningSubagent`.
 
 **Key logic:**
 - VAL bar counters: `pass` = `outcome === "pass"` in `criterion-state.json`; `running` = any criterion with a live verifier subagent **or** belonging to a feature with `feature-state.status === in_progress` or a live subagent.
@@ -33,7 +31,7 @@
 - Precondition resolution: empty `preconditions[]` means always ready.
 - Planning VM: derived entirely from already-loaded `criteria` + `features` arrays; no extra I/O.
 
-**Constants:** `MAX_ROWS = 6` (visible slots; last slot reserved for overflow line), `MAX_MULTI_ROWS = 5` (visible charters before overflow).
+**Constants:** `MAX_ROWS = 6` (visible slots; last slot reserved for overflow line).
 
 ---
 
@@ -106,25 +104,6 @@ constructor: ui = undefined
 - If `budget >= n`: one glyph per VAL (full resolution).
 - If `budget < BEAD_MIN_BUDGET (4)`: compressed to `passCount/n` text fallback.
 - Else: bucket `ceil(n/budget)` VALs per bead; worst-state-wins per bucket.
-
----
-
-### `multi-charter-widget.ts`
-
-**Responsibility:** Pure renderer for the multi-charter list widget (`charter-multi` in the pi-tui widget slot). One row per `PerCharterRowVM`. No I/O, no globals.
-
-**Public API:**
-- `renderMultiCharterWidget(vm: MultiCharterWidgetVM, theme, width): string[]` — empty VM returns `[]` (host clears the slot).
-
-**Row composition per `PerCharterRowVM`:**
-```
-<sel-mark><dot> <displayName>  <status>  <pass>/<total>  <bar>
-```
-- `sel-mark`: `*` accent if selected, ` ` otherwise.
-- `dot`: `●` accent if `hasLiveSubagent`, `○` dim otherwise.
-- Status color: `completed → success`, `abandoned → error`, `paused|budget_limited|planning → warning`, else `accent`.
-
-**Bar segments:** proportional allocation (same `barSegments` algorithm as `widget.ts`). Overflow row: `+N more` when `vm.hiddenCount > 0`. `MIN_WIDTH = 20`.
 
 ---
 
@@ -201,26 +180,22 @@ constructor: ui = undefined
                            ▼
               ┌───────────────────────────┐
               │   CharterWidgetVM         │
-              │   CharterSnapshotLike     │
               └────────────┬──────────────┘
                            │
-           ┌───────────────┼───────────────┐
-           │               │               │
-           ▼               ▼               ▼
-   renderCharterWidget  buildMultiCharter  (used by
-   (widget.ts)          ViewModel         charter-picker
-                        (widget-state.ts)  right pane)
-           │               │               │
-           ▼               ▼               ▼
-   CharterWidget host   renderMultiCharter  renderCharterWidget
-   (setWidget aboveEditor) Widget()        (same pure fn)
-           │               │               │
-           └───────────────┼───────────────┘
-                           │
-                           ▼
+           ┌───────────────┴───────────────┐
+           │                               │
+           ▼                               ▼
+   renderCharterWidget              renderCharterWidget
+   (widget.ts)                      (charter-picker right pane)
+           │
+           ▼
+   CharterWidget host
+   (setWidget aboveEditor)
+           │
+           ▼
               ┌───────────────────────────┐
               │  pi-tui setWidget slot    │
-              │  "pi-charter" / "charter-multi"
+              │  "charter-detail"         │
               └───────────────────────────┘
 
 ┌─ async-bridge events ──────────────────────────────────────────┐
