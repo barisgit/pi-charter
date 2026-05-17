@@ -114,7 +114,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     const picker = makePicker({ charters, boundCharterId: "bound", initialCursorCharterId: "cursor" });
     const lines = picker.render(120);
     const left = lines.slice(1, -1).map((line) => leftCell(line, 120)).join("\n");
-    expect(left).toContain("├─ done");
+    expect(left).toMatch(/── done ─+/);
     expect(left.split("\n").find((line) => line.includes("bound"))).toContain("*");
     expect(left.split("\n").find((line) => line.includes("cursor"))).toContain("►");
   });

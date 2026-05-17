@@ -76,7 +76,7 @@ export class CharterPickerComponent implements Component {
     this.lastRightMaxScroll = Math.max(0, rightContent.length - contentHeight);
     this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
     const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + contentHeight);
-    const infoDivider = this.color("borderMuted", titledRule("info", leftWidth, "\u251c", "\u2524"));
+    const infoDivider = this.color("borderMuted", flatRule("info", leftWidth));
 
     const rows = [this.topBorder(leftWidth, rightWidth)];
     for (let i = 0; i < bodyHeight; i++) {
@@ -155,11 +155,11 @@ export class CharterPickerComponent implements Component {
     const terminal = this.charters
       .map((row, index) => ({ row, index }))
       .filter(({ row }) => TERMINAL_STATUSES.has(row.status));
-    const headerTitle = this.focus === "left" ? "▶ Charters ◀" : "Charters";
-    const headerColor: ThemeColorName = this.focus === "left" ? "borderAccent" : "borderMuted";
-    const lines: string[] = [this.color(headerColor, titledRule(headerTitle, width, "╭", "╮"))];
+    const headerColor: ThemeColorName = this.focus === "left" ? "accent" : "muted";
+    const headerLabel = this.focus === "left" ? " ▶ Charters ◀ " : " Charters ";
+    const lines: string[] = [this.color(headerColor, this.theme.bold(padRight(headerLabel, width)))];
     for (const entry of nonTerminal) lines.push(this.leftRow(entry.row, entry.index, width, false));
-    if (terminal.length > 0) lines.push(this.color("borderMuted", titledRule("done", width, "├", "┤")));
+    if (terminal.length > 0) lines.push(this.color("borderMuted", flatRule("done", width)));
     for (const entry of terminal) lines.push(this.leftRow(entry.row, entry.index, width, true));
     return lines;
   }
@@ -202,7 +202,7 @@ export class CharterPickerComponent implements Component {
     const COUNT_W = 7; // fits up to "999/999"
     const GAP_BAR_COUNT = 1;
     const GAP_COUNT_STATUS = 2;
-    const STATUS_W = Math.max(6, Math.min(14, Math.max(...this.charters.map((r) => r.status.length))));
+    const STATUS_W = Math.max(6, Math.min(10, Math.max(...this.charters.map((r) => r.status.length))));
     let nameWidth = width - PREFIX_W - BAR_W - GAP_BAR_COUNT - COUNT_W - GAP_COUNT_STATUS - STATUS_W;
     if (nameWidth < 4) nameWidth = Math.max(0, width - PREFIX_W - BAR_W - GAP_BAR_COUNT - COUNT_W - GAP_COUNT_STATUS);
     const nameText = row.name.length > nameWidth
@@ -215,8 +215,7 @@ export class CharterPickerComponent implements Component {
     const countPadded = countText.padStart(COUNT_W);
     const count = this.color(this.passCountColor(row.passCount, row.totalCount), countPadded);
     const statusRaw = clipText(row.status, STATUS_W);
-    const statusPart = padRight(statusRaw, STATUS_W);
-    const status = this.color(statusColor(row.status), statusPart);
+    const status = this.color(statusColor(row.status), statusRaw);
     return `${prefix}${styledName}${bar} ${count}  ${status}`;
   }
 
@@ -229,12 +228,14 @@ export class CharterPickerComponent implements Component {
 
     const lines: string[] = [];
     const focusedRight = this.focus === "right";
-    const rightTitle = focusedRight ? `▶ ${snapshot.header.name} ◀` : snapshot.header.name;
+    const rightTitle = focusedRight ? ` ▶ ${snapshot.header.name} ◀ ` : ` ${snapshot.header.name} `;
+    const headerColor: ThemeColorName = focusedRight ? "accent" : "muted";
+    lines.push(this.color(headerColor, this.theme.bold(padRight(rightTitle, width))));
     const statusBadge = this.color(statusColor(snapshot.header.status), `[${snapshot.header.status}]`);
     const passColor = this.passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
     const counter = this.color(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`);
-    const header = `${focusedRight ? this.theme.bold(rightTitle) : rightTitle}  ${statusBadge}  ${counter}  ${this.color("muted", formatElapsed(snapshot.header.elapsedMs))}`;
-    lines.push(header);
+    const meta = `${statusBadge}  ${counter}  ${this.color("muted", formatElapsed(snapshot.header.elapsedMs))}`;
+    lines.push(meta);
     lines.push(progressBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
     lines.push(this.color("warning", "Objective"));
     const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
@@ -376,6 +377,18 @@ function titledRule(title: string, width: number, left: string, right: string): 
   const label = `─ ${title} `;
   const middleWidth = Math.max(0, width - 2);
   return `${left}${clipText(label + "─".repeat(middleWidth), middleWidth)}${right}`;
+}
+
+// Inline horizontal rule with a label, NO corner/tee glyphs — used inside
+// a pane to subdivide sections without faking a second box border.
+function flatRule(title: string, width: number): string {
+  if (width <= 0) return "";
+  const label = ` ${title} `;
+  const labelW = visibleWidth(label);
+  if (labelW + 4 >= width) return "─".repeat(width);
+  const left = "─".repeat(2);
+  const right = "─".repeat(Math.max(0, width - labelW - 2));
+  return `${left}${label}${right}`;
 }
 
 function progressBar(passCount: number, totalCount: number, width: number): string {
