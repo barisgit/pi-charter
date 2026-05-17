@@ -205,7 +205,9 @@ export class CharterPickerComponent implements Component {
       : row.name;
     const namePart = padRight(nameText, nameWidth);
     const styledName = dim ? this.color("dim", namePart) : (isCursor ? this.theme.bold(namePart) : namePart);
-    const bar = progressBar(row.passCount, row.totalCount, BAR_W);
+    const bar = dim
+      ? this.color("dim", progressBar(row.passCount, row.totalCount, BAR_W))
+      : this.coloredBar(row.passCount, row.totalCount, BAR_W);
     const countText = `${row.passCount}/${row.totalCount}`;
     const countPadded = countText.padStart(COUNT_W);
     const count = this.color(this.passCountColor(row.passCount, row.totalCount), countPadded);
@@ -222,38 +224,51 @@ export class CharterPickerComponent implements Component {
     if (!snapshot) return [this.color("dim", "No snapshot for this charter.")];
 
     const lines: string[] = [];
-    // Name + status + counter + elapsed all live in the top-border title (rendered by topBorder).
-    // Inside the pane: progress bar then sections.
-    lines.push(progressBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
+    const sectionHeading = (label: string, color: ThemeColorName = "accent") =>
+      this.theme.bold(this.color(color, label));
+
+    // Top: colored progress bar straight under the embedded title.
+    lines.push(this.coloredBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
+
+    // Objective section.
     lines.push("");
-    lines.push(this.color("warning", "Objective"));
+    lines.push(sectionHeading("Objective", "warning"));
     const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
     if (!this.objectiveExpanded && objectiveLines.length > 2) {
       lines.push(...objectiveLines.slice(0, 2).map((line) => `  ${line}`));
-      lines.push("  [o for full]");
+      lines.push(this.color("dim", "  [o for full]"));
     } else {
       lines.push(...objectiveLines.map((line) => `  ${line}`));
     }
 
+    // Evaluator section.
     if (snapshot.evaluatorVerdict) {
-      lines.push(this.color(verdictColor(snapshot.evaluatorVerdict.verdict), `Evaluator: ${snapshot.evaluatorVerdict.verdict}`));
+      const vColor = verdictColor(snapshot.evaluatorVerdict.verdict);
+      lines.push("");
+      lines.push(`${sectionHeading("Evaluator", vColor)}  ${this.color(vColor, snapshot.evaluatorVerdict.verdict)}`);
       for (const line of wrapText(snapshot.evaluatorVerdict.steer, Math.max(1, width - 2))) {
-        lines.push(`  ${line}`);
+        lines.push(this.color("muted", `  ${line}`));
       }
     }
 
-    lines.push(this.color("error", "Blocking complete:"));
+    // Blocking-complete section.
+    lines.push("");
     if (snapshot.blockingForComplete.length === 0 && allPass(snapshot)) {
-      lines.push(this.color("success", "  Ready to complete"));
-    } else if (snapshot.blockingForComplete.length === 0) {
-      lines.push(this.color("dim", "  No blocking data"));
+      lines.push(sectionHeading("Ready to complete", "success"));
     } else {
-      for (const item of snapshot.blockingForComplete) lines.push(this.color("error", `  • ${item}`));
+      lines.push(sectionHeading("Blocking complete", "error"));
+      if (snapshot.blockingForComplete.length === 0) {
+        lines.push(this.color("dim", "  No blocking data"));
+      } else {
+        for (const item of snapshot.blockingForComplete) lines.push(this.color("error", `  • ${item}`));
+      }
     }
 
-    lines.push("Plan");
+    // Plan section.
+    lines.push("");
+    lines.push(sectionHeading("Plan"));
     for (const milestone of snapshot.planTree) {
-      lines.push(`  ${this.theme.bold(milestone.milestoneId)}`);
+      lines.push(`  ${this.theme.bold(this.color("text", milestone.milestoneId))}`);
       for (const feature of milestone.features) {
         lines.push(this.featureLine(feature));
         if (this.allExpanded) {
@@ -262,7 +277,9 @@ export class CharterPickerComponent implements Component {
       }
     }
 
-    lines.push(this.theme.bold("Recent evidence"));
+    // Recent evidence section.
+    lines.push("");
+    lines.push(sectionHeading("Recent evidence"));
     for (const evidence of snapshot.recentEvidence.slice(0, 5)) {
       const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
       const outcome = this.color(outcomeColor, evidence.outcome.padEnd(7));
@@ -271,13 +288,21 @@ export class CharterPickerComponent implements Component {
     return lines;
   }
 
+  // Render a progress bar with colored filled portion (success/accent/muted) and dim empty portion.
+  private coloredBar(pass: number, total: number, width: number): string {
+    const filled = total > 0 ? clamp(Math.floor((pass / total) * width), 0, width) : 0;
+    const empty = width - filled;
+    const filledColor = this.passCountColor(pass, total);
+    return this.color(filledColor, "█".repeat(filled)) + this.color("dim", "░".repeat(empty));
+  }
+
   private featureLine(feature: PlanFeatureNode): string {
     const glyph = feature.status === "completed"
       ? this.color("success", "✓")
       : feature.status === "in_progress"
         ? this.color("accent", "●")
         : this.color("dim", "○");
-    const bar = progressBar(feature.passCount, feature.totalCount, 4);
+    const bar = this.coloredBar(feature.passCount, feature.totalCount, 4);
     const statusWord = this.color(featureStatusColor(feature.status), feature.status);
     const counter = this.color(this.passCountColor(feature.passCount, feature.totalCount), `${feature.passCount}/${feature.totalCount}`);
     return `    ${glyph} ${feature.featureId.padEnd(12)} ${bar} ${counter}  ${statusWord}`;
@@ -333,7 +358,8 @@ export class CharterPickerComponent implements Component {
         tailColor: "dim",
       });
     }
-    return `╭${leftSegment}┬${rightSegment}╮`;
+    const corner = (s: string) => this.color("dim", s);
+    return `${corner("╭")}${leftSegment}${corner("┬")}${rightSegment}${corner("╮")}`;
   }
 
   private bottomBorder(leftWidth: number, rightWidth: number): string {
@@ -341,7 +367,8 @@ export class CharterPickerComponent implements Component {
     const rightFocused = this.focus === "right";
     const leftSegment = this.titledBottomSegment(leftWidth, LEFT_FOOTER, leftFocused);
     const rightSegment = this.titledBottomSegment(rightWidth, RIGHT_FOOTER, rightFocused);
-    return `╰${leftSegment}┴${rightSegment}╯`;
+    const corner = (s: string) => this.color("dim", s);
+    return `${corner("╰")}${leftSegment}${corner("┴")}${rightSegment}${corner("╯")}`;
   }
 
   private titledTopSegment(opts: {
@@ -384,9 +411,9 @@ export class CharterPickerComponent implements Component {
   }
 
   private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
-    // Leave border chars uncolored so they inherit the default text color and stay visible.
-    // (Previously coloring with 'dim' made them invisible in some terminal themes.)
-    return `│${padRight(left, leftWidth)}│${padRight(right, rightWidth)}│`;
+    // All borders are uniformly dim to match the embedded title dashes + the glance widget.
+    const v = this.color("dim", "│");
+    return `${v}${padRight(left, leftWidth)}${v}${padRight(right, rightWidth)}${v}`;
   }
 
   private color(color: ThemeColorName, text: string): string {

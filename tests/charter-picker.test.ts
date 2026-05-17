@@ -122,10 +122,11 @@ describe("CharterPickerComponent f5-picker-render", () => {
   test("VAL-PICKER-RENDER-003: right pane sections render in order", () => {
     const picker = makePicker();
     const right = picker.render(160).slice(1, -1).map((line) => rightCell(line, 160)).join("\n");
-    const labels = ["Objective", "Evaluator", "Blocking complete", "Plan", "Recent evidence"];
+    // Picker renders either "Blocking complete" or "Ready to complete" depending on state.
+    const labels = ["Objective", "Evaluator", /Blocking complete|Ready to complete/, "Plan", "Recent evidence"];
     let last = -1;
     for (const label of labels) {
-      const index = right.indexOf(label);
+      const index = typeof label === "string" ? right.indexOf(label) : right.search(label);
       expect(index).toBeGreaterThan(last);
       last = index;
     }
