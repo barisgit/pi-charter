@@ -27,6 +27,61 @@ describe("parseCharterMarkdown warnings", () => {
     ]);
   });
 
+  test("manual criterion without Because: emits a missing-because warning", () => {
+    const md = [
+      "# Charter",
+      "",
+      "## Objective",
+      "",
+      "weak.",
+      "",
+      "## Criteria",
+      "",
+      "### VAL-W-001 — Weak manual",
+      "Verifier: manual",
+      "",
+      "### VAL-W-002 — Strong manual",
+      "Verifier: manual",
+      "Because: author note",
+      "",
+    ].join("\n");
+
+    const parsed = parseCharterMarkdown(md);
+
+    expect(parsed.criteria).toHaveLength(2);
+    expect(parsed.criteria[1].because).toBe("author note");
+    expect(parsed.warnings).toEqual([
+      { criterionId: "VAL-W-001", reason: "missing-because" },
+    ]);
+  });
+
+  test("legacy charter parses under legacy: true without throwing; warnings include missing-verifier", () => {
+    const md = [
+      "# Charter",
+      "",
+      "## Objective",
+      "",
+      "legacy.",
+      "",
+      "## Criteria",
+      "",
+      "### VAL-LEG-001 — Legacy 1",
+      "Description: old style",
+      "",
+      "### VAL-LEG-002 — Legacy 2",
+      "Description: also old style",
+      "",
+    ].join("\n");
+
+    const parsed = parseCharterMarkdown(md, { legacy: true });
+    expect(parsed.criteria).toHaveLength(2);
+    const reasons = parsed.warnings.map((w) => `${w.criterionId}:${w.reason}`).sort();
+    expect(reasons).toEqual([
+      "VAL-LEG-001:missing-verifier",
+      "VAL-LEG-002:missing-verifier",
+    ]);
+  });
+
   test("modern criteria with explicit Verifier: emit zero warnings", () => {
     const md = [
       "# Charter",
@@ -45,6 +100,7 @@ describe("parseCharterMarkdown warnings", () => {
       "### VAL-MOD-002 — Another modern criterion",
       "Description: Also has a verifier.",
       "Verifier: manual",
+      "Because: author note",
       "",
     ].join("\n");
 

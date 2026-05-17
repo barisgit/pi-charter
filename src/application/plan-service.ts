@@ -92,7 +92,7 @@ export interface LockPlanResult {
 
 export async function lockPlan(
   projectDir: string,
-  input: { charterId: string; now?: string },
+  input: { charterId: string; now?: string; legacy?: boolean },
 ): Promise<LockPlanResult> {
   const state = await loadCharterState(projectDir, input.charterId);
   if (state.status !== "planning") throw new Error(`Cannot lock_plan from status ${state.status}; only planning is eligible.`);
@@ -108,6 +108,15 @@ export async function lockPlan(
   }
   const cycle = detectPreconditionCycle(plan.features);
   if (cycle) failures.push(`precondition cycle: ${cycle.join(" -> ")}`);
+  // Weak verifier BLOCK: manual + no criterion-level Because: is the most
+  // common foot-gun for new charters. Legacy charters defer this BLOCK to
+  // completeCharter so existing in-flight work keeps loading.
+  if (!input.legacy) {
+    const weak = plan.criteria.filter((criterion) => criterion.verifier === "manual" && !criterion.because);
+    if (weak.length) {
+      failures.push(`weak verifier (manual + no Because): ${weak.map((c) => c.id).join(", ")}`);
+    }
+  }
   if (failures.length) throw new Error(`Cannot lock plan because of drift:\n - ${failures.join("\n - ")}`);
 
   const planDigest = digestFeatures(plan.features);

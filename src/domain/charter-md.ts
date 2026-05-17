@@ -46,7 +46,20 @@ export function renderInitialCharterMarkdown(objective: string): string {
   ].join("\n");
 }
 
-export function parseCharterMarkdown(markdown: string): ParsedCharterMarkdown {
+export interface ParseCharterOptions {
+  /**
+   * When true, criteria missing a `Verifier:` line still parse but the
+   * resulting warning is non-fatal at lock_plan time. Defaults to false.
+   * The legacy flag does not suppress the warning itself — callers that
+   * care (lock_plan) read `parseOptions.legacy` to decide whether to BLOCK.
+   */
+  legacy?: boolean;
+}
+
+export function parseCharterMarkdown(markdown: string, _options: ParseCharterOptions = {}): ParsedCharterMarkdown {
+  // `_options.legacy` is currently a marker for downstream consumers (lock_plan);
+  // the parser itself always emits the same warning set so the caller can decide.
+  void _options;
   const sections = splitH2Sections(markdown);
   const objective = cleanBlock(sections.get("objective") ?? "");
   const warnings: ParseWarning[] = [];
@@ -110,6 +123,13 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
   if (verifierRaw === undefined) {
     warnings.push({ criterionId: headingMatch[1], reason: "missing-verifier" });
   }
+  const becauseRaw = fields.get("because");
+  const because = becauseRaw?.trim() ? becauseRaw.trim() : undefined;
+  // Author-time rationale is required for manual verifiers; the lock_plan
+  // weak-verifier check uses this warning as the BLOCK signal.
+  if (verifierRaw === "manual" && !because) {
+    warnings.push({ criterionId: headingMatch[1], reason: "missing-because" });
+  }
   return {
     id: headingMatch[1],
     title: headingMatch[2]?.trim() || headingMatch[1],
@@ -124,6 +144,7 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
       fields.get("review subagent required") ?? fields.get("require review subagent"),
       false,
     ),
+    because,
   };
 }
 

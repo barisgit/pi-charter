@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, writeCharterState } from "../infrastructure/store";
-import { loadCriterionState } from "./record-service";
+import { loadCriterionState, type CriterionStateFile, type CriterionStateRecord } from "./record-service";
 import { computeDrift } from "./drift-service";
 import { dispatchHook } from "./hooks";
 import { parseCharterMarkdown } from "../domain/charter-md";
-import type { Budget, CharterCriterion, CharterState, CharterStatus } from "../domain/types";
+import { trustRank } from "../domain/trust-rank";
+import type { Budget, CharterCriterion, CharterState, CharterStatus, EvidenceSource } from "../domain/types";
 
 export interface NextAction {
   tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status";
@@ -20,6 +21,23 @@ export interface CharterServiceResult<T = unknown> {
   message: string;
   data?: T;
   nextActions: NextAction[];
+}
+
+export interface BlockingForCompleteEntry {
+  criterionId: string;
+  /** Short human-readable reason consumed by `formatCharterStatusText`. */
+  reason: string;
+}
+
+export interface CharterStatusDetails {
+  /**
+   * Per-criterion view of pass evidence the completion gate considers too
+   * low-trust to accept. A criterion only appears here when it HAS pass
+   * evidence but that evidence fails the trust rule (manual+because from
+   * a non-charter-verifier writer). Missing-evidence gaps are still surfaced
+   * by completeCharter's existing "no pass evidence yet" error and by drift.
+   */
+  blockingForComplete: BlockingForCompleteEntry[];
 }
 
 export interface CharterStatusResult {
@@ -38,6 +56,7 @@ export interface CharterStatusResult {
   };
   guidelines: string[];
   nextActions: NextAction[];
+  details?: CharterStatusDetails;
 }
 
 export async function createCharter(
@@ -64,8 +83,10 @@ export async function getCharterStatus(
   input: { charterId?: string } = {},
 ): Promise<CharterStatusResult> {
   const charterId = await resolveCharterId(projectDir, input.charterId);
-  const state = await loadCharterState(charterDir(projectDir, charterId));
+  const dir = charterDir(projectDir, charterId);
+  const state = await loadCharterState(dir);
   const drift = await computeDrift(projectDir, { charterId });
+  const blockingForComplete = await computeBlockingForCompleteSafely(dir, charterId);
   return {
     charterId: state.charterId,
     name: state.name,
@@ -77,7 +98,18 @@ export async function getCharterStatus(
     drift,
     guidelines: guidelinesForStatus(state.status),
     nextActions: nextActionsForStatus(state.status),
+    details: { blockingForComplete },
   };
+}
+
+async function computeBlockingForCompleteSafely(dir: string, charterId: string): Promise<BlockingForCompleteEntry[]> {
+  try {
+    const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+    const criterionState = await loadCriterionState(dir, charterId);
+    return computeBlockingForComplete(charter.criteria, criterionState);
+  } catch {
+    return [];
+  }
 }
 
 export async function pauseCharter(
@@ -117,8 +149,20 @@ export async function completeCharter(
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const criterionState = await loadCriterionState(dir, charterId);
   const failures = checkCompletionGate(charter.criteria, criterionState, state);
+  const blocking = computeBlockingForComplete(charter.criteria, criterionState);
+  if (blocking.length > 0) {
+    const ids = blocking.map((entry) => entry.criterionId).join(", ");
+    failures.push(`low-trust evidence for ${blocking.length} VAL(s): ${ids}`);
+  }
   if (failures.length > 0) {
-    throw new Error(`Cannot complete charter:\n - ${failures.join("\n - ")}`);
+    const message = [
+      `Cannot complete charter:`,
+      ` - ${failures.join("\n - ")}`,
+      ...(blocking.length > 0
+        ? ["Fix: add Because: rationale and run charter-verifier (subagent({agent:'charter-verifier'})) for the listed VALs."]
+        : []),
+    ].join("\n");
+    throw new Error(message);
   }
   const now = input.now ?? new Date().toISOString();
   await dispatchHook("charter:before_complete", {
@@ -230,6 +274,44 @@ export async function amendCharter(
     data: state,
     nextActions: nextActionsForStatus(state.status),
   };
+}
+
+/**
+ * Shared trust-gate computation used by both `completeCharter` (to block) and
+ * `getCharterStatus` (to surface). A criterion shows up here only when it
+ * already has pass evidence AND that evidence is low-trust (manual or
+ * manual+because) AND the writer isn't a charter-verifier subagent. Criteria
+ * with no pass evidence are surfaced separately by `checkCompletionGate`.
+ */
+export function computeBlockingForComplete(
+  criteria: CharterCriterion[],
+  criterionState: CriterionStateFile,
+): BlockingForCompleteEntry[] {
+  const blocking: BlockingForCompleteEntry[] = [];
+  for (const criterion of criteria) {
+    const record = criterionState.criteria[criterion.id];
+    if (!record || record.outcome !== "pass") continue;
+    const reason = blockingReason(record);
+    if (reason) blocking.push({ criterionId: criterion.id, reason });
+  }
+  return blocking;
+}
+
+function blockingReason(record: CriterionStateRecord): string | undefined {
+  const recordedBy = record.recordedBy ?? "agent:root";
+  // A charter-verifier subagent always clears the trust gate, regardless of
+  // declared source. The string-prefix match keeps the persona name authoritative.
+  if (recordedBy.startsWith("subagent:charter-verifier:")) return undefined;
+  const source: EvidenceSource = record.source ?? "manual";
+  const hasBecause = Boolean(record.because && record.because.trim());
+  const rank = trustRank({ recordedBy, source, hasBecause });
+  if (rank > 1) return undefined;
+  if (source !== "manual") {
+    // High-trust source (verifier/hook/subagent) recorded by a non-charter-verifier
+    // writer is rare but still passes the gate; only manual lands here.
+    return undefined;
+  }
+  return hasBecause ? "manual+because" : "manual";
 }
 
 function checkCompletionGate(

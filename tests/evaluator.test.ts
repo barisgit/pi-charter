@@ -44,7 +44,7 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
     join(dir, "plan/f2.md"),
     `---\nid: f2\nmilestone: m1\norder: 2\nfulfills: [VAL-EVAL-002]\npreconditions: []\n---\nbody\n`,
   );
-  await lockPlan(projectDir, { charterId: charter.charterId });
+  await lockPlan(projectDir, { charterId: charter.charterId, legacy: true });
   return charter.charterId;
 }
 

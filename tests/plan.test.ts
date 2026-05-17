@@ -69,7 +69,7 @@ describe("charter plan view", () => {
       await writeFile(join(dir, "plan", "f1-state.md"), `---\nid: f1-state\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-AUTH-001\npreconditions: []\n---\n\n# State\n`, "utf8");
       await writeFile(join(dir, "plan", "f2-tokens.md"), `---\nid: f2-tokens\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-AUTH-002\npreconditions:\n  - f1-state\n---\n\n# Tokens\n`, "utf8");
 
-      const result = await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T02:30:00.000Z" });
+      const result = await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
       expect(result.status).toBe("active");
       expect(result.planDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
       const state = await loadCharterState(projectDir, created.charterId);

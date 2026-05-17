@@ -45,6 +45,13 @@ export interface CharterCriterion {
   command?: string;
   requireFreshEvidence: boolean;
   requireReviewSubagent: boolean;
+  /**
+   * Criterion-level author note ("why this verifier is sufficient"). Distinct
+   * from the per-evidence `because` on EvidenceRecord: this annotation is set
+   * once at charter-authoring time and read by the lock_plan weak-verifier
+   * check (manual+no-because BLOCKs unless the charter is loaded as legacy).
+   */
+  because?: string;
 }
 
 export type ParseWarningReason = "missing-verifier" | "missing-because";

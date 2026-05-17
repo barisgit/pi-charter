@@ -39,7 +39,7 @@ describe("charter hook bus", () => {
       await writeCharter(
         projectDir,
         charter.charterId,
-        `# Charter\n## Objective\nShip hook bus\n## Criteria\n### VAL-HOOK-001 — covered\nVerifier: manual\n## Scope and constraints\n- none\n`,
+        `# Charter\n## Objective\nShip hook bus\n## Criteria\n### VAL-HOOK-001 — covered\nVerifier: manual\nBecause: hook bus probe is exercised by hand\n## Scope and constraints\n- none\n`,
       );
       await writeFeature(
         projectDir,
@@ -63,7 +63,7 @@ describe("charter hook bus", () => {
       await writeCharter(
         projectDir,
         charter.charterId,
-        `# Charter\n## Objective\nShip hook bus\n## Criteria\n### VAL-HOOK-001 — covered\nVerifier: manual\n## Scope and constraints\n- none\n`,
+        `# Charter\n## Objective\nShip hook bus\n## Criteria\n### VAL-HOOK-001 — covered\nVerifier: manual\nBecause: hook bus probe is exercised by hand\n## Scope and constraints\n- none\n`,
       );
       await writeFeature(
         projectDir,
@@ -93,7 +93,7 @@ describe("charter hook bus", () => {
       await writeCharter(
         projectDir,
         charter.charterId,
-        `# Charter\n## Objective\nShip hook bus\n## Criteria\n### VAL-HOOK-001 — covered\nVerifier: manual\n## Scope and constraints\n- none\n`,
+        `# Charter\n## Objective\nShip hook bus\n## Criteria\n### VAL-HOOK-001 — covered\nVerifier: manual\nBecause: hook bus probe is exercised by hand\n## Scope and constraints\n- none\n`,
       );
       await writeFeature(
         projectDir,
@@ -106,8 +106,9 @@ describe("charter hook bus", () => {
         charterId: charter.charterId,
         criterionId: "VAL-HOOK-001",
         outcome: "pass",
-        summary: "manual sign-off",
-        because: "manual sign-off for hook bus probe",
+        summary: "reviewed by subagent",
+        source: "subagent",
+        recordedBy: "subagent:charter-verifier:sess-hook",
         now: "2026-05-15T01:00:00.000Z",
       });
 

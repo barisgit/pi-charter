@@ -55,7 +55,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-handoff-1"
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(join(dir, "plan", "f1.md"), feature("f1", ["VAL-H-001"]), "utf8");
   await writeFile(join(dir, "plan", "f2.md"), feature("f2", ["VAL-H-002"]), "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z", legacy: true });
 }
 
 describe("charter_record handoff_apply", () => {

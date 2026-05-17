@@ -335,7 +335,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
  * channel. The full structured `result` still rides along in `toolResult`'s
  * details arg — this string is what the agent actually reads when reasoning.
  */
-function formatCharterStatusText(result: {
+export function formatCharterStatusText(result: {
   charterId: string;
   name?: string;
   status: string;
@@ -344,6 +344,7 @@ function formatCharterStatusText(result: {
   drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[] }[] };
   nextActions: { tool: string; action?: string; hint: string }[];
   guidelines: string[];
+  details?: { blockingForComplete?: { criterionId: string; reason: string }[] };
 }): string {
   const lines: string[] = [];
   const firstObjectiveLine = result.objective.split("\n", 1)[0] ?? "";
@@ -356,6 +357,11 @@ function formatCharterStatusText(result: {
   lines.push(
     `  drift: uncovered=${result.drift.uncovered.length} stuck=${result.drift.stuck.length} stale=${result.drift.stale.length} readyNext=${result.drift.readyNext.length}`,
   );
+  const blocking = result.details?.blockingForComplete ?? [];
+  if (blocking.length > 0) {
+    const preview = blocking.map((row) => `${row.criterionId}(${row.reason})`).join(", ");
+    lines.push(`  blocking-for-complete: ${blocking.length} VAL(s): ${preview}`);
+  }
   if (result.drift.readyNext.length > 0) {
     const preview = result.drift.readyNext
       .slice(0, 3)

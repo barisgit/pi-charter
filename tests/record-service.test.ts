@@ -57,7 +57,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: f2\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\n# F2\n`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
   return dir;
 }
 

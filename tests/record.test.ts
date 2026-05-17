@@ -39,7 +39,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: f2-tokens\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-AUTH-002\npreconditions:\n  - f1-state\n---\n\n# Tokens\n`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
   return dir;
 }
 
@@ -128,7 +128,7 @@ describe("charter_record verify (command verifier)", () => {
       `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\n# F1\n`,
       "utf8",
     );
-    await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
+    await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
     return dir;
   }
 
@@ -178,7 +178,7 @@ describe("charter_record verify (command verifier)", () => {
       );
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "f1.md"), `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\nx\n`, "utf8");
-      await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
+      await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
       await expect(
         verifyCriterion(projectDir, { charterId, criterionId: "VAL-CMD-001" }),
       ).rejects.toThrow(/not implemented|command verifier/i);

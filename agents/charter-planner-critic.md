@@ -80,6 +80,15 @@ The charter, plan, and any prior evidence live under
    pages, flag it as "too coarse for one charter — consider splitting".
    This is advisory, not blocking.
 
+   ### Weak verifier
+   Inspect every criterion's `Verifier:` kind alongside its criterion-level
+   `Because:` annotation. BLOCK any criterion that combines `Verifier:
+   manual` with no `Because:` author note (`manual + no Because`); the
+   completion gate will reject it later, so flag it now. ADVISORY any
+   criterion with `Verifier: prompt` because prompt verifiers are model-
+   judged and weaker than command/hook verifiers; the plan can still lock
+   but the host should know.
+
 3. **Report.**
 
    Emit a single structured report. No prose intro, no recap of the plan.

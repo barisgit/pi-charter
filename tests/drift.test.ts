@@ -59,7 +59,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-drift-1") 
   await writeFile(join(dir, "plan", "f1-callback.md"), feature("f1-callback", ["VAL-D-001"]), "utf8");
   await writeFile(join(dir, "plan", "f2-tokens.md"), feature("f2-tokens", ["VAL-D-002"], ["f1-callback"]), "utf8");
   await writeFile(join(dir, "plan", "f3-logging.md"), feature("f3-logging", ["VAL-D-003"]), "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z", legacy: true });
 }
 
 describe("charter_status drift views", () => {
