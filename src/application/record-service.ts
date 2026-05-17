@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
@@ -35,6 +35,37 @@ export interface RecordEvidenceInput {
   /** Rationale; REQUIRED when source === 'manual'. */
   because?: string;
   now?: string;
+}
+
+/**
+ * A single evidence entry inside a `recordEvidenceBatch` call. Shape mirrors
+ * `RecordEvidenceInput` minus the per-call fields (`charterId`, `now`) that
+ * apply to the whole batch.
+ */
+export interface EvidenceEntry {
+  criterionId: string;
+  featureId?: string;
+  outcome: EvidenceOutcome;
+  summary: string;
+  because?: string;
+  artifacts?: string[];
+  details?: Record<string, unknown>;
+  /** Narrowed to match `RecordEvidenceInput.source`; "hook" sources do not
+   * flow through the user-facing tool surface. */
+  source?: "manual" | "verifier" | "subagent";
+  recordedBy?: RecordedBy;
+}
+
+export interface RecordEvidenceBatchInput {
+  charterId: string;
+  entries: EvidenceEntry[];
+  now?: string;
+}
+
+export interface RecordEvidenceBatchResult {
+  charterId: string;
+  entries: Array<{ criterionId: string; featureId?: string; outcome: EvidenceOutcome; path: string; ts: string }>;
+  nextActions: NextAction[];
 }
 
 export interface RecordEvidenceResult {
@@ -145,6 +176,189 @@ export async function recordEvidence(
     path: relativePath,
     ts: now,
     nextActions: nextActionsForEvidence(criterion, input.outcome, state.status),
+  };
+}
+
+/**
+ * Atomic-within-call batch evidence record. Validates all entries up front,
+ * stages every per-entry evidence file, then commits with a SINGLE
+ * `writeJsonAtomic(criterion-state.json)` regardless of N. On any validation
+ * or staged-write failure, criterion-state.json is left untouched and any
+ * partially-written evidence files are unlinked (best effort).
+ *
+ * Out of scope: concurrent-writer race elimination (tracked separately).
+ */
+export async function recordEvidenceBatch(
+  projectDir: string,
+  input: RecordEvidenceBatchInput,
+): Promise<RecordEvidenceBatchResult> {
+  if (!input.entries || input.entries.length === 0) {
+    throw new Error("recordEvidenceBatch requires at least one entry.");
+  }
+  const dir = charterDir(projectDir, input.charterId);
+  const state = await loadCharterState(dir);
+  if (state.status !== "active" && state.status !== "review") {
+    throw new Error(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`);
+  }
+
+  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const criteriaById = new Map(charter.criteria.map((entry) => [entry.id, entry]));
+
+  // ---- Phase 1: validate every entry up front (no I/O after this fails). ----
+  type BatchEvidenceSource = NonNullable<EvidenceEntry["source"]>;
+  interface Prepared {
+    entry: EvidenceEntry;
+    criterion: CharterCriterion;
+    source: BatchEvidenceSource;
+    because?: string;
+    recordedBy: RecordedBy;
+    relativePath: string;
+    absolutePath: string;
+    record: Record<string, unknown>;
+    payload: string;
+  }
+
+  const now = input.now ?? new Date().toISOString();
+  const stamp = now.replace(/[:.]/g, "-");
+  const prepared: Prepared[] = [];
+
+  for (let index = 0; index < input.entries.length; index += 1) {
+    const entry = input.entries[index]!;
+    if (!entry.summary?.trim()) {
+      throw new Error(`recordEvidenceBatch entry ${index} (${entry.criterionId ?? "<unknown>"}): summary is required.`);
+    }
+    if (!entry.criterionId?.trim()) {
+      throw new Error(`recordEvidenceBatch entry ${index}: criterionId is required.`);
+    }
+    if (!entry.outcome) {
+      throw new Error(`recordEvidenceBatch entry ${index} (${entry.criterionId}): outcome is required.`);
+    }
+    const criterion = criteriaById.get(entry.criterionId);
+    if (!criterion) {
+      throw new Error(`recordEvidenceBatch entry ${index}: unknown criterion ${entry.criterionId} in charter ${input.charterId}.`);
+    }
+    const source: BatchEvidenceSource = entry.source ?? "manual";
+    const because = entry.because?.trim() || undefined;
+    if (source === "manual" && !because) {
+      throw new Error(`recordEvidenceBatch entry ${index} (${criterion.id}): manual evidence requires a non-empty 'because' rationale.`);
+    }
+    const recordedBy: RecordedBy = entry.recordedBy ?? DEFAULT_RECORDED_BY;
+    const featureSegment = entry.featureId?.trim() || "_charter";
+    // Per-entry index suffix prevents same-`now` filename collisions when the
+    // caller passes a fixed `now` (test fixtures, deterministic replays) or
+    // when the system clock yields identical ISO strings for sub-ms calls.
+    const indexSuffix = String(index).padStart(3, "0");
+    const relativePath = join("work", featureSegment, "evidence", `${criterion.id}__${stamp}_${indexSuffix}.json`);
+    const absolutePath = join(dir, relativePath);
+    const record: Record<string, unknown> = {
+      charterId: input.charterId,
+      criterionId: criterion.id,
+      featureId: entry.featureId,
+      outcome: entry.outcome,
+      summary: entry.summary.trim(),
+      artifacts: entry.artifacts ?? [],
+      details: entry.details ?? {},
+      source,
+      recordedBy,
+      ...(because ? { because } : {}),
+      verifier: criterion.verifier,
+      ts: now,
+    };
+    prepared.push({
+      entry,
+      criterion,
+      source,
+      because,
+      recordedBy,
+      relativePath,
+      absolutePath,
+      record,
+      payload: `${JSON.stringify(record, null, 2)}\n`,
+    });
+  }
+
+  // ---- Phase 2: write each evidence file (writeTextAtomic is per-file atomic). ----
+  // On any failure here, unlink already-written files and re-throw BEFORE the
+  // single criterion-state.json write so partial state never lands.
+  const writtenPaths: string[] = [];
+  try {
+    for (const item of prepared) {
+      await writeTextAtomic(item.absolutePath, item.payload);
+      writtenPaths.push(item.absolutePath);
+    }
+  } catch (error) {
+    for (const path of writtenPaths) {
+      await unlink(path).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  // ---- Phase 3: ONE criterion-state.json write covering all entries. ----
+  // Last entry per criterionId wins, matching single-entry semantics if the
+  // caller repeats a criterion in the same batch.
+  const stateFile = await loadCriterionState(dir, input.charterId);
+  for (const item of prepared) {
+    stateFile.criteria[item.criterion.id] = {
+      outcome: item.entry.outcome,
+      lastEvidencePath: item.relativePath,
+      lastTs: now,
+      lastSummary: String(item.record.summary),
+      lastFeatureId: item.entry.featureId,
+      source: item.source,
+      recordedBy: item.recordedBy,
+      ...(item.because ? { because: item.because } : {}),
+    };
+  }
+  await writeJsonAtomic(join(dir, "criterion-state.json"), stateFile);
+
+  // ---- Phase 4: per-entry events (preserves existing evidence_recorded semantics). ----
+  for (const item of prepared) {
+    await appendEvent(dir, {
+      type: "evidence_recorded",
+      ts: now,
+      charterId: input.charterId,
+      criterionId: item.criterion.id,
+      featureId: item.entry.featureId,
+      outcome: item.entry.outcome,
+      source: item.source,
+    });
+  }
+
+  // ---- Phase 5: project feature completion once per touched featureId. ----
+  const touchedFeatureIds: string[] = [];
+  const seenFeatures = new Set<string>();
+  for (const item of prepared) {
+    const fid = item.entry.featureId;
+    if (fid && !seenFeatures.has(fid)) {
+      seenFeatures.add(fid);
+      touchedFeatureIds.push(fid);
+    }
+  }
+  for (const featureId of touchedFeatureIds) {
+    await projectFeatureCompletionFromEvidence(dir, featureId, input.charterId, now);
+  }
+  // projectMilestoneReadyForReview dedupes internally per (milestoneId, planDigest);
+  // calling once is sufficient — it sweeps the whole milestone of the triggering feature.
+  if (touchedFeatureIds.length > 0) {
+    await projectMilestoneReadyForReview(dir, input.charterId, touchedFeatureIds[0]!, now);
+  }
+
+  // ---- Response: preserve request order. ----
+  const responseEntries = prepared.map((item) => ({
+    criterionId: item.criterion.id,
+    featureId: item.entry.featureId,
+    outcome: item.entry.outcome,
+    path: item.relativePath,
+    ts: now,
+  }));
+
+  // Build nextActions from the LAST entry's outcome to mirror single-call shape;
+  // batch callers can inspect per-entry outcomes via response.entries.
+  const last = prepared[prepared.length - 1]!;
+  return {
+    charterId: input.charterId,
+    entries: responseEntries,
+    nextActions: nextActionsForEvidence(last.criterion, last.entry.outcome, state.status),
   };
 }
 

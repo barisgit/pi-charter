@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import type { CharterCriterion, CharterStatus, ParseWarning } from "../domain/types";
@@ -210,6 +210,189 @@ export async function addFeature(projectDir: string, input: AddFeatureInput): Pr
     message: `Added feature ${input.id} (milestone=${input.milestone}, fulfills=[${input.fulfills.join(", ")}]).`,
     nextActions: [
       { tool: "charter_plan", action: "view", hint: "Re-read plan coverage after adding the feature." },
+      { tool: "charter_plan", action: "add_feature", hint: "Add the next feature, or move to lock_plan when coverage is complete." },
+      { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan once every criterion has a fulfilling feature." },
+    ],
+  };
+}
+
+export interface FeatureEntry {
+  id: string;
+  milestone: string;
+  order: number;
+  fulfills: string[];
+  preconditions?: string[];
+  body: string;
+}
+
+export interface AddFeatureBatchInput {
+  charterId: string;
+  features: FeatureEntry[];
+  now?: string;
+}
+
+export interface AddFeatureBatchResult {
+  charterId: string;
+  features: Array<{ featureId: string; order: number; path: string }>;
+  message: string;
+  nextActions: NextAction[];
+}
+
+/**
+ * Atomic, order-preserving batch add_feature.
+ *
+ * Validates every entry up front, scans `plan/` once for id collisions, then
+ * stages each `plan/<id>.md` to a temp path (`<final>.<pid>.<now>.<rand>.tmp`)
+ * and commits via rename in request order. On any commit failure we unlink the
+ * files we already renamed plus any leftover temps and re-throw. Events are
+ * appended one `feature_added` per entry (matches the single-add tooling) only
+ * after every rename succeeds; a failed batch leaves no events behind.
+ *
+ * VAL-6 carve-out applies symmetrically: this only proves within-call
+ * atomicity. Concurrent-writer race elimination is out of scope.
+ */
+export async function addFeatureBatch(
+  projectDir: string,
+  input: AddFeatureBatchInput,
+): Promise<AddFeatureBatchResult> {
+  if (!Array.isArray(input.features) || input.features.length === 0) {
+    throw new Error("addFeatureBatch requires a non-empty features array");
+  }
+
+  // 1. Validate every entry up front. Collect per-index failures so the
+  //    aggregate error tells the caller which slot(s) were malformed.
+  const failures: Array<{ index: number; reason: string }> = [];
+  for (let i = 0; i < input.features.length; i++) {
+    const entry = input.features[i];
+    try {
+      validateFeatureInput({
+        charterId: input.charterId,
+        id: entry?.id,
+        milestone: entry?.milestone,
+        order: entry?.order,
+        fulfills: entry?.fulfills,
+        preconditions: entry?.preconditions,
+        body: entry?.body,
+      } as AddFeatureInput);
+    } catch (err) {
+      failures.push({ index: i, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  // Duplicate ids within the same batch would silently overwrite each other
+  // during the rename phase; treat as a validation failure on the duplicate.
+  const seen = new Map<string, number>();
+  for (let i = 0; i < input.features.length; i++) {
+    const id = input.features[i]?.id;
+    if (typeof id !== "string" || !id) continue;
+    if (seen.has(id)) {
+      failures.push({ index: i, reason: `duplicate id "${id}" in batch (first seen at index ${seen.get(id)})` });
+    } else {
+      seen.set(id, i);
+    }
+  }
+  if (failures.length > 0) {
+    const detail = failures.map((f) => `index ${f.index}: ${f.reason}`).join("; ");
+    throw new Error(`add_feature batch validation failed: ${detail}`);
+  }
+
+  const state = await loadCharterState(projectDir, input.charterId);
+  if (state.status !== "planning") {
+    throw new Error(`Cannot add_feature from status ${state.status}; only planning is eligible.`);
+  }
+
+  const dir = charterDir(projectDir, input.charterId);
+  const planDir = join(dir, "plan");
+  await mkdir(planDir, { recursive: true });
+
+  // 2. Single scan of plan/ for id collisions; report ALL of them in one error.
+  const existing = new Set<string>();
+  try {
+    for (const entry of await readdir(planDir)) {
+      if (entry.endsWith(".md")) existing.add(entry.slice(0, -3));
+    }
+  } catch {
+    // planDir was just mkdir'd; readdir failure means empty plan/.
+  }
+  const collisions = input.features
+    .map((e, i) => ({ index: i, id: e.id }))
+    .filter((row) => existing.has(row.id));
+  if (collisions.length > 0) {
+    const detail = collisions.map((c) => `index ${c.index}: feature ${c.id} already exists`).join("; ");
+    throw new Error(`add_feature batch id collision(s): ${detail}; use charter_plan action=update_feature instead.`);
+  }
+
+  // 3. Stage every write to a temp path so the visible plan/ stays untouched
+  //    until we commit.
+  const staged: Array<{ tempPath: string; finalPath: string; entry: FeatureEntry }> = [];
+  try {
+    for (const entry of input.features) {
+      const finalPath = join(planDir, `${entry.id}.md`);
+      const tempPath = `${finalPath}.${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}.tmp`;
+      const markdown = renderFeatureMarkdown({
+        charterId: input.charterId,
+        id: entry.id,
+        milestone: entry.milestone,
+        order: entry.order,
+        fulfills: entry.fulfills,
+        preconditions: entry.preconditions,
+        body: entry.body,
+      });
+      await writeFile(tempPath, markdown, "utf8");
+      staged.push({ tempPath, finalPath, entry });
+    }
+  } catch (err) {
+    // Staging failure (e.g. ENOSPC): best-effort unlink whatever temps landed,
+    // then re-throw. No final files exist yet so plan.json is unaffected.
+    for (const s of staged) {
+      try { await unlink(s.tempPath); } catch { /* ignore */ }
+    }
+    throw err;
+  }
+
+  // 4. Commit phase: rename each temp -> final in REQUEST ORDER. On any
+  //    failure roll back the renames we already did plus the leftover temps.
+  const committed: Array<{ finalPath: string }> = [];
+  try {
+    for (const s of staged) {
+      await rename(s.tempPath, s.finalPath);
+      committed.push({ finalPath: s.finalPath });
+    }
+  } catch (err) {
+    for (const c of committed) {
+      try { await unlink(c.finalPath); } catch { /* ignore */ }
+    }
+    for (const s of staged) {
+      try { await unlink(s.tempPath); } catch { /* ignore */ }
+    }
+    throw err;
+  }
+
+  // 5. Append events only after commit succeeds. One feature_added per entry
+  //    keeps parity with the single-add path so log consumers (audit, widget)
+  //    don't need to learn a batch shape.
+  const now = input.now ?? new Date().toISOString();
+  for (const entry of input.features) {
+    await appendEvent(dir, {
+      type: "feature_added",
+      ts: now,
+      charterId: input.charterId,
+      featureId: entry.id,
+      milestone: entry.milestone,
+      fulfills: entry.fulfills,
+    });
+  }
+
+  const ids = input.features.map((entry) => entry.id);
+  return {
+    charterId: input.charterId,
+    features: input.features.map((entry) => ({
+      featureId: entry.id,
+      order: entry.order,
+      path: join(planDir, `${entry.id}.md`),
+    })),
+    message: `Added ${input.features.length} feature(s): ${ids.join(", ")}.`,
+    nextActions: [
+      { tool: "charter_plan", action: "view", hint: "Re-read plan coverage after adding the features." },
       { tool: "charter_plan", action: "add_feature", hint: "Add the next feature, or move to lock_plan when coverage is complete." },
       { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan once every criterion has a fulfilling feature." },
     ],
