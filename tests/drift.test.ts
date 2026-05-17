@@ -73,6 +73,7 @@ describe("charter_status drift views", () => {
         featureId: "f2-tokens",
         outcome: "pass",
         summary: "tokens persisted (long ago)",
+        because: "manual sign-off (stale on purpose)",
         now: "2024-01-01T00:00:00.000Z",
       });
       const status = await getCharterStatus(projectDir, { charterId: "cha-drift-1" });

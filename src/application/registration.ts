@@ -7,7 +7,8 @@ import { addFeature, lockPlan, updateFeature, viewPlan } from "./plan-service";
 import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
-import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorVerdict } from "./evaluator-service";
+import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
+import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import {
   PI_CHARTER_EXTENSION_ID,
@@ -63,6 +64,7 @@ type CharterRecordInput = {
   featureId?: string;
   outcome?: "pass" | "fail" | "partial";
   summary?: string;
+  because?: string;
   artifacts?: string[];
   details?: Record<string, unknown>;
   timeoutMs?: number;
@@ -110,6 +112,7 @@ const CharterRecordParams = Type.Object({
   featureId: Type.Optional(Type.String({ description: "Feature id this evidence/verification belongs to." })),
   outcome: Type.Optional(StringEnum(["pass", "fail", "partial"] as const)),
   summary: Type.Optional(Type.String({ description: "Short manual summary for action=evidence." })),
+  because: Type.Optional(Type.String({ description: "Rationale for the evidence record. Required when action=evidence and source is manual; explains why this outcome is correct so the completion gate can distinguish drive-by approvals from real review." })),
   artifacts: Type.Optional(Type.Array(Type.String())),
   details: Type.Optional(Type.Object({}, { additionalProperties: true })),
   timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for verify (default 120000)." })),
@@ -150,10 +153,12 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           if (sessionId) {
             await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId });
           }
+          await tryUpsertCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "pause": {
           const result = await pauseCharter(ctx.cwd, { charterId: params.charterId, reason: params.reason });
+          await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "resume": {
@@ -162,10 +167,12 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           if (sessionId) {
             await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId });
           }
+          await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "complete": {
           const result = await completeCharter(ctx.cwd, { charterId: params.charterId, completionNote: params.completionNote });
+          tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
         case "force_complete": {
@@ -175,6 +182,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
             reason: params.reason ?? "",
             target,
           });
+          tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
         case "amend_charter": {
@@ -208,6 +216,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
       }
       if (params.action === "lock_plan") {
         const result = await lockPlan(ctx.cwd, { charterId: status.charterId });
+        await tryUpsertCharterReminder(pi, ctx.cwd, result.charterId);
         return toolResult(result.message, result);
       }
       if (params.action === "add_feature") {
@@ -266,9 +275,11 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           featureId: params.featureId,
           outcome: params.outcome,
           summary: params.summary,
+          because: params.because,
           artifacts: params.artifacts,
           details: params.details,
         });
+        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Recorded ${result.outcome} evidence for ${result.criterionId}.`, result);
       }
       if (params.action === "verify") {
@@ -280,6 +291,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           timeoutMs: params.timeoutMs,
           cwd: ctx.cwd,
         });
+        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
       }
       if (params.action === "handoff_apply") {
@@ -294,6 +306,7 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           handoffNote: params.handoffNote,
           completedCriteria: params.completedCriteria,
         });
+        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Applied handoff from ${result.subagentSessionId} for feature ${result.featureId} (${result.appliedCount} criteria).`, result);
       }
       throw new Error(`charter_record action=${params.action} is not implemented yet`);
@@ -419,7 +432,12 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
   });
 }
 
-export function registerCharterFlags(pi: ExtensionAPI): void {
+interface RegisterCharterFlagsOptions {
+  /** Test seam: keep production bound to the normal home directory. */
+  homeDir?: string;
+}
+
+export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterFlagsOptions = {}): void {
   pi.registerFlag("charter-objective", {
     description: "Create and bind a pi-charter before the first turn with this objective.",
     type: "string",
@@ -438,9 +456,10 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
     // charter (e.g. after compaction or process restart), restore the forward
     // pointer in state.json before any other action.
     if (sessionId) {
-      const reconciled = await reconcileSessionBinding({ sessionId });
+      const reconciled = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
       if (reconciled) {
         ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
+        await trySyncCharterReminder(pi, reconciled.projectDir, reconciled.charterId);
       }
     }
 
@@ -448,8 +467,9 @@ export function registerCharterFlags(pi: ExtensionAPI): void {
     if (resumeId) {
       const result = await resumeCharter(ctx.cwd, { charterId: resumeId });
       if (sessionId) {
-        await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId });
+        await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
       }
+      await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
       ctx.ui.notify(result.message, "info");
       return;
     }
@@ -519,13 +539,25 @@ const EVALUATOR_SKIP_STATUSES = new Set([
 // was emitted within this window, skip. Prevents the same nudge firing every
 // turn while the agent is mid-task.
 const EVALUATOR_DEDUP_MS = 120_000;
+const EVALUATOR_TRIGGER_VERDICTS = new Set<EvaluatorVerdict>([
+  "blocked",
+  "drifting",
+  "ready_to_complete",
+]);
 
-export function registerCharterEvaluator(pi: ExtensionAPI): void {
+interface RegisterCharterEvaluatorOptions {
+  /** Test seam: keep production bound to the normal home directory. */
+  homeDir?: string;
+  /** Test seam: avoid real model calls while exercising registration wiring. */
+  modelFn?: EvaluatorModelFn;
+}
+
+export function registerCharterEvaluator(pi: ExtensionAPI, options: RegisterCharterEvaluatorOptions = {}): void {
   pi.on("turn_end", async (_event, ctx) => {
     try {
       const sessionId = ctx.sessionManager.getSessionId?.();
       if (!sessionId) return;
-      const binding = await readSessionBinding({ sessionId });
+      const binding = await readSessionBinding({ sessionId, homeDir: options.homeDir });
       if (!binding) return;
       const projectDir = binding.projectDir;
       const charterId = binding.charterId;
@@ -538,7 +570,7 @@ export function registerCharterEvaluator(pi: ExtensionAPI): void {
       const recentUserMessages = extractRecentUserMessages(ctx, 2);
       const recentToolNames = extractRecentToolNames(ctx, 8);
 
-      const modelFn = buildEvaluatorModelFn(ctx);
+      const modelFn = options.modelFn ?? buildEvaluatorModelFn(ctx);
       if (!modelFn) {
         if (!evaluatorMisconfigNotified && ctx.hasUI) {
           const provider = process.env.PI_CHARTER_EVAL_PROVIDER ?? DEFAULT_EVAL_PROVIDER;
@@ -581,7 +613,7 @@ export function registerCharterEvaluator(pi: ExtensionAPI): void {
           display: true,
           details: entry,
         },
-        { deliverAs: "steer", triggerTurn: false },
+        { deliverAs: "steer", triggerTurn: EVALUATOR_TRIGGER_VERDICTS.has(entry.verdict) },
       );
     } catch (error) {
       // Never block the agent loop on evaluator failures.
@@ -911,6 +943,36 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
     if (!payload) return;
     runningSubagents.complete(payload.runId);
   });
+}
+
+async function tryUpsertCharterReminder(pi: ExtensionAPI, projectDir: string, charterId: string): Promise<void> {
+  try {
+    await upsertCharterReminder(pi, projectDir, charterId);
+  } catch {
+    // Reminder bridge is ambient; lifecycle tools must still succeed if a
+    // subscriber or sidecar read fails after the primary state transition.
+  }
+}
+
+function tryRemoveCharterReminder(pi: ExtensionAPI, charterId: string): void {
+  try {
+    removeCharterReminder(pi, charterId);
+  } catch {
+    // Reminder bridge is ambient; terminal transitions must not depend on it.
+  }
+}
+
+async function trySyncCharterReminder(pi: ExtensionAPI, projectDir: string, charterId: string): Promise<void> {
+  try {
+    const state = await loadCharterState(charterDir(projectDir, charterId));
+    if (state.status === "paused" || state.status === "completed" || state.status === "abandoned" || state.status === "budget_limited") {
+      removeCharterReminder(pi, charterId);
+      return;
+    }
+    await upsertCharterReminder(pi, projectDir, charterId);
+  } catch {
+    // Reminder bridge is ambient; status refresh must not break the primary flow.
+  }
 }
 
 function toolResult(text: string, details: unknown) {

@@ -17,7 +17,7 @@
  * The actual model call is injected so the test suite can use a fake.
  */
 
-import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { charterDir, loadCharterState } from "../infrastructure/store";
@@ -45,6 +45,7 @@ export interface EvaluatorContext {
   objective: string;
   status: string;
   criteria: { id: string; title: string; outcome?: string; lastTs?: string }[];
+  featureCount: number;
   drift: {
     uncovered: { criterionId: string; reason: string }[];
     stuck: { featureId: string }[];
@@ -75,6 +76,7 @@ export async function buildEvaluatorContext(
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const criterionState = await loadCriterionState(dir, charterId);
   const drift = await computeDrift(projectDir, { charterId });
+  const featureCount = await countPlanFeatureFiles(join(dir, "plan"));
   return {
     charterId,
     objective: state.objective,
@@ -85,6 +87,7 @@ export async function buildEvaluatorContext(
       outcome: criterionState.criteria[c.id]?.outcome,
       lastTs: criterionState.criteria[c.id]?.lastTs,
     })),
+    featureCount,
     drift: {
       uncovered: drift.uncovered,
       stuck: drift.stuck.map((s) => ({ featureId: s.featureId })),
@@ -120,6 +123,7 @@ export function buildEvaluatorPrompt(context: EvaluatorContext): string {
         objective: context.objective,
         status: context.status,
         criteria: context.criteria,
+        featureCount: context.featureCount,
         drift: context.drift,
         recentUserMessages: context.recentUserMessages.slice(-5),
         recentToolNames: context.recentToolNames.slice(-12),
@@ -145,6 +149,19 @@ export async function runEvaluator(
     recentUserMessages: input.recentUserMessages,
     recentToolNames: input.recentToolNames,
   });
+  if (shouldSkipPlanningEvaluation(context)) {
+    const entry: EvaluatorEntry = {
+      ts: input.now ?? new Date().toISOString(),
+      charterId: input.charterId,
+      trigger: input.trigger,
+      verdict: "on_track",
+      confidence: 1,
+      reason: planningSkipReason(context),
+      cites: [],
+    };
+    await appendEvaluatorEntry(projectDir, input.charterId, entry);
+    return entry;
+  }
   const prompt = buildEvaluatorPrompt(context);
   const assessment = await input.modelFn({ context, prompt });
   const entry: EvaluatorEntry = {
@@ -202,6 +219,27 @@ async function appendEvaluatorEntry(
   lines.push(JSON.stringify(entry));
   const kept = lines.slice(-HISTORY_LIMIT);
   await writeFile(path, `${kept.join("\n")}\n`);
+}
+
+async function countPlanFeatureFiles(planDir: string): Promise<number> {
+  try {
+    const entries = await readdir(planDir);
+    return entries.filter((entry) => entry.endsWith(".md")).length;
+  } catch {
+    return 0;
+  }
+}
+
+function shouldSkipPlanningEvaluation(context: EvaluatorContext): boolean {
+  if (context.status !== "planning") return false;
+  if (context.criteria.length === 0) return true;
+  const hasEvidence = context.criteria.some((criterion) => criterion.outcome !== undefined || criterion.lastTs !== undefined);
+  return context.featureCount === 0 && !hasEvidence;
+}
+
+function planningSkipReason(context: EvaluatorContext): string {
+  if (context.criteria.length === 0) return "Planning charter has no parsed criteria yet; skipping evaluator model.";
+  return "Planning charter has criteria but no feature plan or evidence yet; skipping evaluator model.";
 }
 
 function clampConfidence(value: number): number {

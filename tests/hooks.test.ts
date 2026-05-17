@@ -107,6 +107,7 @@ describe("charter hook bus", () => {
         criterionId: "VAL-HOOK-001",
         outcome: "pass",
         summary: "manual sign-off",
+        because: "manual sign-off for hook bus probe",
         now: "2026-05-15T01:00:00.000Z",
       });
 

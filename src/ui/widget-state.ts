@@ -104,13 +104,35 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
     if (sub.criterionId) verifyingCriteria.add(sub.criterionId);
   }
 
-  // Charter-wide bar counters. Source of truth = criterion-state.json outcome.
+  // Charter-wide bar counters. `pass` is criterion-state outcome=pass.
+  // `running` is any non-pass criterion that is currently being worked on,
+  // either via a live verifier subagent pinned to it OR by belonging to a
+  // feature whose row is in flight (live subagent on the feature, or
+  // feature-state.status === in_progress). This keeps the bar honest when
+  // a feature is in progress without a live verifier subagent.
+  const featureIdsWithLiveSubagent = new Set<string>();
+  for (const sub of input.runningSubagents) {
+    if (sub.featureId) featureIdsWithLiveSubagent.add(sub.featureId);
+  }
+  const inProgressFeatureIds = new Set<string>(
+    Object.entries(input.featureStates)
+      .filter(([, record]) => record?.status === "in_progress")
+      .map(([id]) => id),
+  );
+  const runningCriterionIds = new Set<string>(verifyingCriteria);
+  for (const feature of input.features) {
+    if (!featureIdsWithLiveSubagent.has(feature.id) && !inProgressFeatureIds.has(feature.id)) continue;
+    for (const criterionId of feature.fulfills) {
+      if (input.criterionOutcomes[criterionId]?.outcome === "pass") continue;
+      runningCriterionIds.add(criterionId);
+    }
+  }
   let pass = 0;
   let running = 0;
   for (const criterion of input.criteria) {
     const outcome = input.criterionOutcomes[criterion.id]?.outcome;
     if (outcome === "pass") pass++;
-    else if (verifyingCriteria.has(criterion.id)) running++;
+    else if (runningCriterionIds.has(criterion.id)) running++;
   }
   const bar = { pass, running, total: input.criteria.length };
 
@@ -147,10 +169,17 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
     runningByFeature.set(sub.featureId, list);
   }
 
-  // Feature completion lookup: feature-state.status === "done" treats as done.
+  // Feature completion lookup. Treat a feature as done when feature-state
+  // says so, OR when every fulfilled criterion already has pass evidence.
+  // The sidecar projection can lag a multi-criterion handoff; deriving from
+  // criterion outcomes keeps the widget honest in the meantime.
+  const featuresById = new Map(input.features.map((feature) => [feature.id, feature]));
   const isFeatureDone = (id: string) => {
     const status = input.featureStates[id]?.status;
-    return status === "done" || status === "completed";
+    if (status === "done" || status === "completed") return true;
+    const feature = featuresById.get(id);
+    if (!feature || feature.fulfills.length === 0) return false;
+    return feature.fulfills.every((criterionId) => input.criterionOutcomes[criterionId]?.outcome === "pass");
   };
 
   // Precondition resolution: a feature is ready iff every precondition feature
@@ -240,7 +269,7 @@ function buildRow(opts: {
   const valStates = opts.feature.fulfills.map<ValState>((criterionId) => {
     const outcome = opts.criterionOutcomes[criterionId]?.outcome;
     if (outcome === "pass") return "pass";
-    if (opts.verifyingCriteria.has(criterionId)) return "running";
+    if (opts.verifyingCriteria.has(criterionId) || opts.state === "running") return "running";
     return "pending";
   });
   const row: FeatureRowVM = {

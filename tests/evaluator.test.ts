@@ -48,11 +48,116 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
   return charter.charterId;
 }
 
+async function makePlanningCharter(projectDir: string, input: { criteria: string; feature?: string }): Promise<string> {
+  const charter = await createCharter(projectDir, {
+    objective: "Plan evaluator",
+    now: "2026-05-15T00:00:00.000Z",
+  });
+  const dir = join(projectDir, ".pi/charters", charter.charterId);
+  await writeFile(
+    join(dir, "charter.md"),
+    `# Charter\n## Objective\nPlan evaluator\n## Criteria\n${input.criteria}\n## Scope and constraints\n- none\n`,
+  );
+  if (input.feature) {
+    await mkdir(join(dir, "plan"), { recursive: true });
+    await writeFile(join(dir, "plan/f1.md"), input.feature);
+  }
+  return charter.charterId;
+}
+
 function fakeModel(assessment: EvaluatorAssessment): EvaluatorModelFn {
   return async () => assessment;
 }
 
+function countingModel(assessment: EvaluatorAssessment): { model: EvaluatorModelFn; calls: () => number } {
+  let callCount = 0;
+  return {
+    calls: () => callCount,
+    model: async () => {
+      callCount += 1;
+      return assessment;
+    },
+  };
+}
+
 describe("charter evaluator", () => {
+  it("skips the model in planning when no criteria exist", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = await makePlanningCharter(projectDir, { criteria: "" });
+      const { model, calls } = countingModel({
+        verdict: "drifting",
+        confidence: 0.7,
+        reason: "should not run",
+        steerReminder: "should not run",
+        cites: [],
+      });
+
+      const entry = await runEvaluator(projectDir, {
+        charterId,
+        trigger: "turn_end",
+        modelFn: model,
+        now: "2026-05-15T00:30:00.000Z",
+      });
+
+      expect(calls()).toBe(0);
+      expect(entry.verdict).toBe("on_track");
+      expect(entry.steerReminder).toBeUndefined();
+    });
+  });
+
+  it("skips the model in planning when criteria exist but no features or evidence exist", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = await makePlanningCharter(projectDir, {
+        criteria: "### VAL-PLAN-001 — planned\nVerifier: manual\n",
+      });
+      const { model, calls } = countingModel({
+        verdict: "drifting",
+        confidence: 0.7,
+        reason: "should not run",
+        steerReminder: "should not run",
+        cites: [],
+      });
+
+      const entry = await runEvaluator(projectDir, {
+        charterId,
+        trigger: "turn_end",
+        modelFn: model,
+        now: "2026-05-15T00:30:00.000Z",
+      });
+
+      expect(calls()).toBe(0);
+      expect(entry.verdict).toBe("on_track");
+      expect(entry.steerReminder).toBeUndefined();
+    });
+  });
+
+  it("still evaluates planning charters once criteria and features exist", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = await makePlanningCharter(projectDir, {
+        criteria: "### VAL-PLAN-001 — planned\nVerifier: manual\n",
+        feature: `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-PLAN-001]\npreconditions: []\n---\nbody\n`,
+      });
+      const { model, calls } = countingModel({
+        verdict: "drifting",
+        confidence: 0.8,
+        reason: "VAL-PLAN-001 needs lock_plan",
+        steerReminder: "Run charter_plan lock_plan.",
+        cites: [{ criterionId: "VAL-PLAN-001" }, { featureId: "f1" }],
+      });
+
+      const entry = await runEvaluator(projectDir, {
+        charterId,
+        trigger: "turn_end",
+        modelFn: model,
+        now: "2026-05-15T00:30:00.000Z",
+      });
+
+      expect(calls()).toBe(1);
+      expect(entry.verdict).toBe("drifting");
+      expect(entry.steerReminder).toBe("Run charter_plan lock_plan.");
+    });
+  });
+
   it("builds a context with criteria + drift snapshot", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = await makeActiveCharter(projectDir);
@@ -61,6 +166,7 @@ describe("charter evaluator", () => {
         criterionId: "VAL-EVAL-001",
         outcome: "pass",
         summary: "passed",
+        because: "manual confirmation for evaluator probe",
         now: "2026-05-15T01:00:00.000Z",
       });
       const ctx = await buildEvaluatorContext(projectDir, charterId, {

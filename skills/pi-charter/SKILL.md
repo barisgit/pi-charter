@@ -101,6 +101,45 @@ Both bundled personas are read-only. The verifier records exactly one
 `charter_record action=evidence`. The planner-critic returns a structured
 `PASS | BLOCK | ADVISORY` report.
 
+## Task hygiene
+
+pi-charter and any tactical task tracker (e.g. `task_manage` from
+pi-dag-tasks) operate at **different scales**. Do not confuse them.
+
+| Layer        | Scope                              | Source of truth                       |
+|--------------|------------------------------------|---------------------------------------|
+| Macro DAG    | Milestones and features for the    | `charter.md` + `plan/<id>.md` +       |
+|              | whole charter, fixed at lock_plan. | `feature-state.json`,                 |
+|              |                                    | `criterion-state.json`.               |
+| Tactical     | One turn or a few turns of work    | `task_manage` (pi-dag-tasks) or       |
+| tasks        | inside the current feature.        | inline todos; rewritten as you go.    |
+
+Rules:
+
+- Features and milestones are the **only** durable units across the
+  charter. They are immutable in shape once `lock_plan` runs (use
+  `update_feature` or `amend_charter` for real changes).
+- Tactical tasks (`task_manage`) are **per-turn or per-feature
+  scratch**. A tactical task that spans the whole charter is a smell:
+  promote it to a feature instead, or split it.
+- Charter progress is read from `feature-state.json` and
+  `criterion-state.json`. The reminder bridge re-emits every 8 turns from
+  these sidecars, so anything you forget to record shows up in the
+  reminder and in `charter_status`.
+- Record `charter_record action=evidence` (or let `charter-verifier` do
+  it) the moment a criterion has a real pass/fail signal — not at the end.
+- `charter_record action=handoff_apply` only flips a feature to
+  `status: 'completed'` once every criterion in its `fulfills[]` has pass
+  evidence. Partial handoffs leave the feature `status: 'in_progress'`,
+  which is correct.
+- If you use `task_manage` alongside pi-charter, seed it from the locked
+  plan with one tactical entry per ready feature, mark
+  `status: 'in_progress'` before working that feature, and mark it
+  `status: 'completed'` only after the feature's evidence is recorded.
+  Then drop or rewrite the tactical task when you move on. Charter
+  sidecars remain the source of truth; the task tracker is just a
+  turn-to-turn surface.
+
 ## Filesystem layout
 
 ```
@@ -132,7 +171,34 @@ charter_manage action=create { objective: "<one-line intent>", charterId?: "shor
 
 ## Phase 2: Plan
 
-### 2a. Author criteria
+### 2a. Recon before authoring (do not skip)
+
+A charter written without recon produces brittle VAL criteria and orphan
+features. Before editing `charter.md`, do bounded recon proportional to the
+objective:
+
+- **Read the obvious sources of truth** the objective implies: the spec the
+  user referenced, the entry-point file, the existing tests in the area,
+  and any `CONTEXT.md` / ADRs in the target tree.
+- **Dispatch 1-3 parallel `explorer` subagents** for anything cross-cutting:
+  what pattern is already used, what tests exist, what config/env knobs
+  govern the behavior, what external vendor docs apply. Keep each explorer
+  scope tight (one angle per child).
+- **`recall` past memories** when the work touches a project you've worked
+  on before; cross-session decisions live in ICM, not the code.
+- **Cite the recon in the artifacts you author next.** Drop the relevant
+  paths/symbols into feature bodies or `## Scope and constraints` so the
+  later execution phase doesn't redo the same lookups. The planner-critic
+  in 2c will flag features whose bodies reference no concrete code.
+
+Recon is *not* a charter phase or an FSM state; it is normal agent
+discipline. There are no `charter_research_*` tools, no evidence kind for
+it, and no gate. The deliverable is a better `charter.md` and tighter
+feature bodies. If recon turns up something that invalidates the objective,
+say so before authoring criteria and either narrow the objective or pause
+the charter.
+
+### 2b. Author criteria
 
 Edit `<cwd>/.pi/charters/<id>/charter.md` directly. Replace the VAL-EXAMPLE
 block. The format is strict — use `### VAL-<ID>` H3 headings with field
@@ -155,7 +221,7 @@ Verifier kinds:
 Also fill in the `## Scope and constraints` section if the stub left it
 empty.
 
-### 2b. Seed features
+### 2c. Seed features
 
 For each feature:
 
@@ -175,7 +241,7 @@ charter_plan action=add_feature {
 - `fulfills[]` must list at least one real VAL-* id from `charter.md`.
 - Use `update_feature` (same params) to revise.
 
-### 2c. Run planner-critic (mandatory)
+### 2d. Run planner-critic (mandatory)
 
 ```
 subagent({
@@ -188,7 +254,7 @@ subagent({
 Resolve every BLOCK before locking. ADVISORY findings are optional but
 worth fixing when cheap.
 
-### 2d. Lock
+### 2e. Lock
 
 ```
 charter_plan action=lock_plan { charterId }
@@ -245,6 +311,21 @@ success: `active → completed`, session unbound. If the gate rejects,
 `force_complete` and `amend_charter` are escape hatches subject to blocking
 hooks; use them deliberately.
 
+## Ralph loop and the post-turn evaluator
+
+pi-charter runs a post-turn evaluator that returns one of
+`on_track | drifting | blocked | ready_to_complete | done` with a short
+reason. It is a **steer**, not a gate.
+
+- `on_track` is not a completion signal. Only the `complete` gate (every
+  VAL-* has pass evidence + hooks allow) completes a charter.
+- `drifting`, `blocked`, and `ready_to_complete` re-trigger your next turn
+  with the steer reason injected as a reminder. Treat that as a nudge to
+  read `charter_status` and pick the next legal action, not as a literal
+  instruction.
+- Identical verdicts in a row are de-duped, so spurious repeats will not
+  spam the loop.
+
 ## Reading status and drift
 
 Run `charter_status` whenever you are unsure what to do next, after
@@ -297,6 +378,10 @@ This is the integration point for a TUI approver or CI gate.
 - **Forgetting `pi-charter.projectDir` in subagent metadata.** Without it
   the async bridge cannot locate the per-project charter dir; feature
   events will not be appended.
+- **Assuming `handoff_apply` always completes the feature.** It only does
+  so when every criterion the feature fulfills already has pass evidence.
+  If a handoff covers a subset, the feature stays `in_progress` until the
+  remaining criteria are recorded — that is intentional.
 
 ## Quick reference
 

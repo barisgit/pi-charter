@@ -9,6 +9,7 @@ import {
   registerCharterTools,
   registerCharterWidget,
 } from "./application/registration";
+import { registerCharterRemindersBridge } from "./application/reminders-bridge";
 
 /**
  * pi-charter extension entrypoint.
@@ -31,6 +32,7 @@ export default function charterExtension(pi: ExtensionAPI): void {
   // fire after the bridge has written feature_started/feature_completed
   // events to disk; the widget then reads the updated state.
   registerCharterWidget(pi);
+  registerCharterRemindersBridge(pi);
   registerCharterEvaluator(pi);
   registerCharterPersonas(pi);
 }

@@ -39,6 +39,9 @@ export const BEAD_MIN_BUDGET = 4;
 export const MIN_TERMINAL_WIDTH = 60;
 export const BOX_KEY = "pi-charter";
 
+const SPINNER_TICK_MS = 120;
+const ELAPSED_TICK_MS = 5_000;
+
 const BORDER = {
   topLeft: "╭",
   topRight: "╮",
@@ -344,7 +347,8 @@ export class CharterWidget {
   private ui?: UiLike;
   private vm?: CharterWidgetVM;
   private frame = 0;
-  private interval?: ReturnType<typeof setInterval>;
+  private spinnerInterval?: ReturnType<typeof setInterval>;
+  private elapsedInterval?: ReturnType<typeof setInterval>;
   private tui?: TuiLike;
   private registered = false;
 
@@ -358,8 +362,8 @@ export class CharterWidget {
       // collapsed strip — users explicitly asked for the "completed 26/26"
       // tail to remain visible.
     }
-    if (this.hasRunning(vm)) this.ensureTimer();
-    else this.stopTimer();
+    if (this.hasRunning(vm)) this.ensureSpinnerTimer();
+    else this.stopSpinnerTimer();
     if (!this.registered) {
       this.ui.setWidget(BOX_KEY, (tui, theme) => {
         this.tui = tui;
@@ -376,13 +380,16 @@ export class CharterWidget {
     } else {
       this.tui?.requestRender?.();
     }
+    this.ensureElapsedTimer();
   }
 
   dispose(): void {
-    this.stopTimer();
+    this.stopSpinnerTimer();
+    this.stopElapsedTimer();
     this.ui?.setWidget(BOX_KEY, undefined);
     this.registered = false;
     this.vm = undefined;
+    this.tui = undefined;
   }
 
   private hasRunning(vm: CharterWidgetVM): boolean {
@@ -393,13 +400,23 @@ export class CharterWidget {
     return false;
   }
 
-  private ensureTimer(): void {
-    if (!this.interval) this.interval = setInterval(() => this.tui?.requestRender?.(), 120);
+  private ensureSpinnerTimer(): void {
+    if (!this.spinnerInterval) this.spinnerInterval = setInterval(() => this.tui?.requestRender?.(), SPINNER_TICK_MS);
   }
 
-  private stopTimer(): void {
-    if (!this.interval) return;
-    clearInterval(this.interval);
-    this.interval = undefined;
+  private stopSpinnerTimer(): void {
+    if (!this.spinnerInterval) return;
+    clearInterval(this.spinnerInterval);
+    this.spinnerInterval = undefined;
+  }
+
+  private ensureElapsedTimer(): void {
+    if (!this.elapsedInterval) this.elapsedInterval = setInterval(() => this.tui?.requestRender?.(), ELAPSED_TICK_MS);
+  }
+
+  private stopElapsedTimer(): void {
+    if (!this.elapsedInterval) return;
+    clearInterval(this.elapsedInterval);
+    this.elapsedInterval = undefined;
   }
 }

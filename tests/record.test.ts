@@ -55,6 +55,7 @@ describe("charter_record evidence", () => {
         featureId: "f1-state",
         outcome: "pass",
         summary: "bun test tests/auth.test.ts pass",
+        because: "manual capture of bun test result",
         artifacts: ["tests/auth.test.ts"],
         now: "2026-05-15T03:00:00.000Z",
       });

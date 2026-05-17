@@ -2,10 +2,75 @@ import { describe, expect, test } from "bun:test";
 import type { CharterCriterion, CharterStatus } from "../src/domain/types";
 import type { FeatureDefinition } from "../src/domain/feature-md";
 import { buildViewModel, type ReducerInput, type RunningSubagent } from "../src/ui/widget-state";
-import { renderCharterWidget, formatElapsed } from "../src/ui/widget";
+import { CharterWidget, renderCharterWidget, formatElapsed, type UiLike, type TuiLike } from "../src/ui/widget";
 
 // Plain identity theme: tests assert on the raw glyph stream, not ANSI codes.
 const theme = { fg: (_color: string, text: string) => text };
+
+type CapturedInterval = {
+  handle: ReturnType<typeof setInterval>;
+  ms: number | undefined;
+  callback: () => void;
+  cleared: boolean;
+};
+
+function withCapturedIntervals(run: (intervals: CapturedInterval[]) => void): void {
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const intervals: CapturedInterval[] = [];
+  globalThis.setInterval = ((callback: TimerHandler, timeout?: number) => {
+    const captured: CapturedInterval = {
+      handle: { id: intervals.length + 1 } as unknown as ReturnType<typeof setInterval>,
+      ms: timeout,
+      callback: () => {
+        if (typeof callback === "function") callback();
+      },
+      cleared: false,
+    };
+    intervals.push(captured);
+    return captured.handle;
+  }) as unknown as typeof setInterval;
+  globalThis.clearInterval = ((handle?: ReturnType<typeof setInterval>) => {
+    const captured = intervals.find((entry) => entry.handle === handle);
+    if (captured) captured.cleared = true;
+  }) as unknown as typeof clearInterval;
+  try {
+    run(intervals);
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+}
+
+function makeWidgetHarness(): {
+  ui: UiLike;
+  tui: TuiLike;
+  mount(): void;
+  requestCount(): number;
+  isCleared(): boolean;
+} {
+  let content: Parameters<UiLike["setWidget"]>[1];
+  let requestCount = 0;
+  const tui: TuiLike = {
+    terminal: { columns: 100 },
+    requestRender: () => { requestCount += 1; },
+  };
+  const ui: UiLike = {
+    setWidget(_key, next) {
+      content = next;
+    },
+  };
+  return {
+    ui,
+    tui,
+    mount() {
+      if (typeof content !== "function") throw new Error("widget was not registered");
+      content(tui, theme).render();
+    },
+    requestCount: () => requestCount,
+    isCleared: () => content === undefined,
+  };
+}
 
 function criterion(id: string): CharterCriterion {
   return {
@@ -108,14 +173,28 @@ describe("widget-state reducer", () => {
     expect(vm.overflow.done).toBe(0);
   });
 
-  test("per-feature valStates reflect outcome + verifying set in declaration order", () => {
+  test("per-feature valStates reflect outcome + running state in declaration order", () => {
+    // A running row (live subagent on the feature) paints every non-pass VAL
+    // as running, so the user sees the in-flight feature contribute to the
+    // bar instead of showing pending pips that lie about progress.
     const vm = buildViewModel(defaultInput({
       criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3")],
       criterionOutcomes: { "VAL-1": { outcome: "pass" } },
       features: [feature({ id: "f1", fulfills: ["VAL-1", "VAL-3", "VAL-2"] })],
       runningSubagents: [{ runId: "r1", agentName: "v", featureId: "f1", criterionId: "VAL-2", startedAt: "2026-05-15T10:04:00Z" }],
     }));
-    expect(vm.rows[0]?.valStates).toEqual(["pass", "pending", "running"]);
+    expect(vm.rows[0]?.valStates).toEqual(["pass", "running", "running"]);
+  });
+
+  test("bar credits in_progress features (feature-state) without a live subagent", () => {
+    const vm = buildViewModel(defaultInput({
+      criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3")],
+      criterionOutcomes: { "VAL-1": { outcome: "pass" } },
+      features: [feature({ id: "f1", fulfills: ["VAL-2", "VAL-3"] })],
+      featureStates: { f1: { status: "in_progress" } },
+      runningSubagents: [],
+    }));
+    expect(vm.bar).toEqual({ pass: 1, running: 2, total: 3 });
   });
 });
 
@@ -209,6 +288,68 @@ describe("widget render", () => {
     expect(formatElapsed(12_000)).toBe("12s");
     expect(formatElapsed(4 * 60 * 1000 + 12_000)).toBe("4m 12s");
     expect(formatElapsed(63 * 60 * 1000 + 12_000)).toBe("1h 03m");
+  });
+});
+
+describe("widget host timers", () => {
+  test("CharterWidget.update starts a 5s elapsed ticker that requests render while registered", () => {
+    withCapturedIntervals((intervals) => {
+      const widget = new CharterWidget();
+      const harness = makeWidgetHarness();
+      widget.setUi(harness.ui);
+
+      widget.update(buildViewModel(defaultInput({ features: [feature({ id: "f1" })] })));
+      harness.mount();
+      const elapsed = intervals.find((entry) => entry.ms === 5_000);
+
+      expect(elapsed).toBeDefined();
+      expect(harness.requestCount()).toBe(0);
+      elapsed!.callback();
+      expect(harness.requestCount()).toBe(1);
+    });
+  });
+
+  test("CharterWidget.dispose clears elapsed ticker and prevents further render requests", () => {
+    withCapturedIntervals((intervals) => {
+      const widget = new CharterWidget();
+      const harness = makeWidgetHarness();
+      widget.setUi(harness.ui);
+
+      widget.update(buildViewModel(defaultInput({ features: [feature({ id: "f1" })] })));
+      harness.mount();
+      const elapsed = intervals.find((entry) => entry.ms === 5_000);
+      expect(elapsed).toBeDefined();
+
+      widget.dispose();
+
+      expect(elapsed!.cleared).toBe(true);
+      expect(harness.isCleared()).toBe(true);
+      elapsed!.callback();
+      expect(harness.requestCount()).toBe(0);
+    });
+  });
+
+  test("spinner and elapsed timers coexist and are both cleared on dispose", () => {
+    withCapturedIntervals((intervals) => {
+      const widget = new CharterWidget();
+      const harness = makeWidgetHarness();
+      widget.setUi(harness.ui);
+
+      widget.update(buildViewModel(defaultInput({
+        features: [feature({ id: "f1" })],
+        runningSubagents: [{ runId: "r1", agentName: "fixer", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
+      })));
+
+      const spinner = intervals.find((entry) => entry.ms === 120);
+      const elapsed = intervals.find((entry) => entry.ms === 5_000);
+      expect(spinner).toBeDefined();
+      expect(elapsed).toBeDefined();
+
+      widget.dispose();
+
+      expect(spinner!.cleared).toBe(true);
+      expect(elapsed!.cleared).toBe(true);
+    });
   });
 });
 
