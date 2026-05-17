@@ -144,6 +144,61 @@ describe("charter_record handoff_apply", () => {
     });
   });
 
+  test("preserves prior implementer lastWorkerSessionId across charter-verifier review handoffs", async () => {
+    await withTempProject(async (projectDir) => {
+      await makeActiveCharter(projectDir);
+      const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
+
+      // First handoff: real implementer.
+      await applyHandoff(projectDir, {
+        charterId: "cha-handoff-1",
+        featureId: "f1",
+        subagentSessionId: "sess_worker_real",
+        handoffNote: "Worker completed feature.",
+        completedCriteria: [
+          { criterionId: "VAL-H-001", outcome: "pass", summary: "Implementation done" },
+        ],
+        now: "2026-05-15T02:00:00.000Z",
+      });
+      let fs = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
+      expect(fs.features["f1"].lastWorkerSessionId).toBe("sess_worker_real");
+
+      // Second handoff: charter-verifier review must NOT overwrite implementer.
+      await applyHandoff(projectDir, {
+        charterId: "cha-handoff-1",
+        featureId: "f1",
+        subagentSessionId: "charter-verifier-r1",
+        handoffNote: "Independent review.",
+        completedCriteria: [
+          { criterionId: "VAL-H-001", outcome: "pass", summary: "Reviewed" },
+        ],
+        now: "2026-05-15T03:00:00.000Z",
+      });
+      fs = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
+      expect(fs.features["f1"].lastWorkerSessionId).toBe("sess_worker_real");
+    });
+  });
+
+  test("leaves lastWorkerSessionId unset when only charter-verifier handoffs exist", async () => {
+    await withTempProject(async (projectDir) => {
+      await makeActiveCharter(projectDir);
+      const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
+
+      await applyHandoff(projectDir, {
+        charterId: "cha-handoff-1",
+        featureId: "f1",
+        subagentSessionId: "charter-verifier-only",
+        handoffNote: "Review of root-implemented feature.",
+        completedCriteria: [
+          { criterionId: "VAL-H-001", outcome: "pass", summary: "Reviewed" },
+        ],
+        now: "2026-05-15T03:00:00.000Z",
+      });
+      const fs = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
+      expect(fs.features["f1"].lastWorkerSessionId).toBeUndefined();
+    });
+  });
+
   test("recordEvidence flips feature-state to completed once every fulfilled criterion has pass evidence", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);

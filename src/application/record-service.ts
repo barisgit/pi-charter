@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
@@ -134,6 +134,7 @@ export async function recordEvidence(
 
   if (input.featureId) {
     await projectFeatureCompletionFromEvidence(dir, input.featureId, input.charterId, now);
+    await projectMilestoneReadyForReview(dir, input.charterId, input.featureId, now);
   }
 
   return {
@@ -364,12 +365,23 @@ export async function applyHandoff(projectDir: string, input: ApplyHandoffInput)
   const featureState = await loadFeatureState(dir, input.charterId);
   const existing = featureState.features[input.featureId] ?? {};
   const completed = await handoffCompletesFeature(dir, input.featureId, input.charterId);
+  // A handoff from the charter-verifier persona is a review, not an
+  // implementation. Preserve any existing implementer session id (VAL-13);
+  // when none is recorded, leave lastWorkerSessionId unset so the
+  // identity-disjoint predicate skips this feature cleanly instead of
+  // treating the reviewer as the implementer.
+  const isReviewHandoff = input.subagentSessionId.startsWith(`${DEFAULT_HANDOFF_PERSONA}-`)
+    || input.subagentSessionId === DEFAULT_HANDOFF_PERSONA
+    || input.subagentSessionId.includes("charter-verifier");
+  const nextWorkerSessionId = isReviewHandoff
+    ? existing.lastWorkerSessionId
+    : input.subagentSessionId;
   featureState.features[input.featureId] = {
     ...existing,
     status: completed ? "completed" : existing.status ?? "in_progress",
     startedAt: existing.startedAt ?? now,
     completedAt: completed ? existing.completedAt ?? now : existing.completedAt,
-    lastWorkerSessionId: input.subagentSessionId,
+    lastWorkerSessionId: nextWorkerSessionId,
     lastHandoffPath: handoffRelative,
   };
   await writeJsonAtomic(join(dir, "feature-state.json"), featureState);
@@ -382,6 +394,8 @@ export async function applyHandoff(projectDir: string, input: ApplyHandoffInput)
     subagentSessionId: input.subagentSessionId,
     appliedCount: input.completedCriteria.length,
   });
+
+  await projectMilestoneReadyForReview(dir, input.charterId, input.featureId, now);
 
   return {
     charterId: input.charterId,
@@ -429,7 +443,110 @@ async function projectFeatureCompletionFromEvidence(dir: string, featureId: stri
   await writeJsonAtomic(join(dir, "feature-state.json"), featureState);
 }
 
-async function loadFeatureState(dir: string, charterId: string): Promise<FeatureStateFile> {
+/**
+ * After a feature flips to completed, check whether every feature in the
+ * same milestone is now completed (none failed). If so, emit a single
+ * `milestone_ready_for_review` event per `(milestoneId, planDigest)`. The
+ * event is purely additive — it never gates anything. Charter status and the
+ * evaluator surface it.
+ */
+async function projectMilestoneReadyForReview(
+  dir: string,
+  charterId: string,
+  triggeringFeatureId: string,
+  now: string,
+): Promise<void> {
+  // Identify the milestone of the triggering feature.
+  let triggeringMilestone: string;
+  try {
+    const feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${triggeringFeatureId}.md`), "utf8"));
+    triggeringMilestone = feature.milestone;
+  } catch {
+    return;
+  }
+  if (!triggeringMilestone) return;
+
+  // Load every feature in the milestone and union their fulfills.
+  const planDir = join(dir, "plan");
+  let entries: string[];
+  try {
+    entries = (await readdir(planDir)).filter((entry) => entry.endsWith(".md"));
+  } catch {
+    return;
+  }
+  const milestoneFeatures: { id: string; fulfills: string[] }[] = [];
+  for (const entry of entries) {
+    let feature;
+    try {
+      feature = parseFeatureMarkdown(await readFile(join(planDir, entry), "utf8"));
+    } catch {
+      continue;
+    }
+    if (feature.milestone === triggeringMilestone) {
+      milestoneFeatures.push({ id: feature.id, fulfills: feature.fulfills });
+    }
+  }
+  if (milestoneFeatures.length === 0) return;
+
+  const featureState = await loadFeatureState(dir, charterId);
+  // Suppress when ANY feature in the milestone is marked failed.
+  for (const feature of milestoneFeatures) {
+    if (featureState.features[feature.id]?.status === "failed") return;
+  }
+  // Require ALL features completed.
+  for (const feature of milestoneFeatures) {
+    if (featureState.features[feature.id]?.status !== "completed") return;
+  }
+
+  const planDigest = await loadPlanDigest(dir);
+  // Idempotency: skip if an event for this (milestoneId, planDigest) already exists.
+  const eventsPath = join(dir, "events.jsonl");
+  let existing = "";
+  try {
+    existing = await readFile(eventsPath, "utf8");
+  } catch {
+    existing = "";
+  }
+  if (existing) {
+    for (const line of existing.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      try {
+        const event = JSON.parse(line) as Record<string, unknown>;
+        if (
+          event.type === "milestone_ready_for_review" &&
+          event.milestoneId === triggeringMilestone &&
+          event.planDigest === planDigest
+        ) {
+          return;
+        }
+      } catch {
+        // ignore malformed lines
+      }
+    }
+  }
+
+  const criterionIds = Array.from(new Set(milestoneFeatures.flatMap((feature) => feature.fulfills))).sort();
+  await appendEvent(dir, {
+    type: "milestone_ready_for_review",
+    ts: now,
+    charterId,
+    milestoneId: triggeringMilestone,
+    planDigest,
+    criterionIds,
+  });
+}
+
+async function loadPlanDigest(dir: string): Promise<string> {
+  try {
+    const parsed = JSON.parse(await readFile(join(dir, "state.json"), "utf8")) as { planDigest?: unknown };
+    if (typeof parsed.planDigest === "string") return parsed.planDigest;
+  } catch {
+    // fall through
+  }
+  return "";
+}
+
+export async function loadFeatureState(dir: string, charterId: string): Promise<FeatureStateFile> {
   try {
     const parsed = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8")) as Partial<FeatureStateFile>;
     return {
