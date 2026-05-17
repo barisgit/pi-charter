@@ -64,39 +64,35 @@ export class CharterPickerComponent implements Component {
     let leftWidth = clamp(Math.floor(interiorWidth * 0.32), 28, 50);
     if (leftWidth > interiorWidth) leftWidth = interiorWidth;
     const rightWidth = interiorWidth - leftWidth;
-    const bodyHeight = height - 2;
-    const contentHeight = Math.max(0, bodyHeight - 1);
-    // Reserve bottom ~30% of left pane for cursor-info sub-panel (min 5 lines, max 10).
-    const infoHeight = clamp(Math.floor(contentHeight * 0.30), 5, 10);
-    const listHeight = Math.max(1, contentHeight - infoHeight - 1); // -1 for divider rule
+    // Top + bottom rows carry titles and footer keybinds (widget-style).
+    const bodyHeight = Math.max(0, height - 2);
+    // Bottom ~30% of left pane shows cursor-info sub-panel (min 5, max 10).
+    const infoHeight = clamp(Math.floor(bodyHeight * 0.30), 5, 10);
+    const listHeight = Math.max(1, bodyHeight - infoHeight - 1); // -1 for blank separator
+
+    const cursor = this.charters[this.cursorIndex];
+    const snapshot = cursor ? this.snapshots.get(cursor.charterId) : undefined;
 
     const listContent = this.buildLeftPane(leftWidth);
     const infoContent = this.buildInfoPane(leftWidth);
     const rightContent = this.buildRightPane(rightWidth);
-    this.lastRightMaxScroll = Math.max(0, rightContent.length - contentHeight);
+    this.lastRightMaxScroll = Math.max(0, rightContent.length - bodyHeight);
     this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
-    const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + contentHeight);
-    const infoDivider = this.color("borderMuted", flatRule("info", leftWidth));
+    const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + bodyHeight);
 
-    const rows = [this.topBorder(leftWidth, rightWidth)];
+    const rows: string[] = [];
+    rows.push(this.topBorder(leftWidth, rightWidth, snapshot));
     for (let i = 0; i < bodyHeight; i++) {
-      const isFooter = i === bodyHeight - 1;
       let left: string;
-      let right: string;
-      if (isFooter) {
-        left = this.footerText(LEFT_FOOTER, this.focus === "left");
-        right = this.footerText(RIGHT_FOOTER, this.focus === "right");
-      } else if (i < listHeight) {
+      if (i < listHeight) {
         left = listContent[i] ?? "";
-        right = rightVisible[i] ?? "";
       } else if (i === listHeight) {
-        left = infoDivider;
-        right = rightVisible[i] ?? "";
+        left = "";
       } else {
         const infoIdx = i - listHeight - 1;
         left = infoContent[infoIdx] ?? "";
-        right = rightVisible[i] ?? "";
       }
+      const right = rightVisible[i] ?? "";
       rows.push(this.bodyRow(left, right, leftWidth, rightWidth));
     }
     rows.push(this.bottomBorder(leftWidth, rightWidth));
@@ -155,11 +151,9 @@ export class CharterPickerComponent implements Component {
     const terminal = this.charters
       .map((row, index) => ({ row, index }))
       .filter(({ row }) => TERMINAL_STATUSES.has(row.status));
-    const headerColor: ThemeColorName = this.focus === "left" ? "accent" : "muted";
-    const headerLabel = this.focus === "left" ? " ▶ Charters ◀ " : " Charters ";
-    const lines: string[] = [this.color(headerColor, this.theme.bold(padRight(headerLabel, width)))];
+    const lines: string[] = [];
     for (const entry of nonTerminal) lines.push(this.leftRow(entry.row, entry.index, width, false));
-    if (terminal.length > 0) lines.push(this.color("borderMuted", flatRule("done", width)));
+    if (terminal.length > 0) lines.push(this.color("dim", flatRule("done", width)));
     for (const entry of terminal) lines.push(this.leftRow(entry.row, entry.index, width, true));
     return lines;
   }
@@ -227,16 +221,10 @@ export class CharterPickerComponent implements Component {
     if (!snapshot) return [this.color("dim", "No snapshot for this charter.")];
 
     const lines: string[] = [];
-    const focusedRight = this.focus === "right";
-    const rightTitle = focusedRight ? ` ▶ ${snapshot.header.name} ◀ ` : ` ${snapshot.header.name} `;
-    const headerColor: ThemeColorName = focusedRight ? "accent" : "muted";
-    lines.push(this.color(headerColor, this.theme.bold(padRight(rightTitle, width))));
-    const statusBadge = this.color(statusColor(snapshot.header.status), `[${snapshot.header.status}]`);
-    const passColor = this.passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
-    const counter = this.color(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`);
-    const meta = `${statusBadge}  ${counter}  ${this.color("muted", formatElapsed(snapshot.header.elapsedMs))}`;
-    lines.push(meta);
+    // Name + status + counter + elapsed all live in the top-border title (rendered by topBorder).
+    // Inside the pane: progress bar then sections.
     lines.push(progressBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
+    lines.push("");
     lines.push(this.color("warning", "Objective"));
     const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
     if (!this.objectiveExpanded && objectiveLines.length > 2) {
@@ -304,19 +292,101 @@ export class CharterPickerComponent implements Component {
     return `        ${glyph} ${criterion.criterionId}${title}`;
   }
 
-  private topBorder(leftWidth: number, rightWidth: number): string {
-    return `╭${"─".repeat(leftWidth)}┬${"─".repeat(rightWidth)}╮`;
+  private topBorder(leftWidth: number, rightWidth: number, snapshot: PickerSnapshot | undefined): string {
+    const activeCount = this.charters.filter((r) => !TERMINAL_STATUSES.has(r.status)).length;
+    const totalCount = this.charters.length;
+    const leftTail = activeCount === totalCount ? `${totalCount}` : `${activeCount} active / ${totalCount}`;
+    const leftFocused = this.focus === "left";
+    const leftSegment = this.titledTopSegment({
+      width: leftWidth,
+      label: "Charters",
+      tail: leftTail,
+      labelColor: leftFocused ? "accent" : "text",
+      tailColor: "dim",
+      labelBold: leftFocused,
+    });
+    const rightFocused = this.focus === "right";
+    let rightSegment: string;
+    if (snapshot) {
+      const passColor = this.passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
+      const tailParts = [
+        this.color(statusColor(snapshot.header.status), `[${snapshot.header.status}]`),
+        this.color(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`),
+        this.color("muted", formatElapsed(snapshot.header.elapsedMs)),
+      ];
+      const tailPlain = `[${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
+      rightSegment = this.titledTopSegment({
+        width: rightWidth,
+        label: snapshot.header.name,
+        tailRendered: tailParts.join("  "),
+        tailPlain,
+        labelColor: rightFocused ? "accent" : "text",
+        labelBold: rightFocused,
+      });
+    } else {
+      rightSegment = this.titledTopSegment({
+        width: rightWidth,
+        label: "(no selection)",
+        tail: "",
+        labelColor: "dim",
+        tailColor: "dim",
+      });
+    }
+    const corner = (s: string) => this.color("dim", s);
+    return `${corner("╭")}${leftSegment}${corner("┬")}${rightSegment}${corner("╮")}`;
   }
 
   private bottomBorder(leftWidth: number, rightWidth: number): string {
-    return `╰${"─".repeat(leftWidth)}┴${"─".repeat(rightWidth)}╯`;
+    const leftFocused = this.focus === "left";
+    const rightFocused = this.focus === "right";
+    const leftSegment = this.titledBottomSegment(leftWidth, LEFT_FOOTER, leftFocused);
+    const rightSegment = this.titledBottomSegment(rightWidth, RIGHT_FOOTER, rightFocused);
+    const corner = (s: string) => this.color("dim", s);
+    return `${corner("╰")}${leftSegment}${corner("┴")}${rightSegment}${corner("╯")}`;
+  }
+
+  private titledTopSegment(opts: {
+    width: number;
+    label: string;
+    tail?: string;
+    tailRendered?: string;
+    tailPlain?: string;
+    labelColor: ThemeColorName;
+    tailColor?: ThemeColorName;
+    labelBold?: boolean;
+  }): string {
+    const dash = (n: number) => this.color("dim", "─".repeat(Math.max(0, n)));
+    const labelText = clipText(opts.label, Math.max(0, opts.width - 6));
+    const labelStyled = opts.labelBold
+      ? this.theme.bold(this.color(opts.labelColor, labelText))
+      : this.color(opts.labelColor, labelText);
+    const tailPlain = opts.tailPlain ?? opts.tail ?? "";
+    const tailRendered = opts.tailRendered ?? (opts.tail !== undefined ? this.color(opts.tailColor ?? "dim", opts.tail) : "");
+    const labelLen = visibleWidth(labelText);
+    const tailLen = visibleWidth(tailPlain);
+    const fixedCost = 1 + 1 + labelLen + 1 + 1 + tailLen + (tailLen > 0 ? 1 : 0) + 1;
+    const fillDashes = Math.max(1, opts.width - fixedCost);
+    if (tailLen > 0) {
+      return `${dash(1)} ${labelStyled} ${dash(fillDashes)} ${tailRendered} ${dash(1)}`;
+    }
+    return `${dash(1)} ${labelStyled} ${dash(fillDashes + 2)}${dash(1)}`;
+  }
+
+  private titledBottomSegment(width: number, hint: string, focused: boolean): string {
+    const dash = (n: number) => this.color("dim", "─".repeat(Math.max(0, n)));
+    const hintColor: ThemeColorName = focused ? "accent" : "dim";
+    const hintStyled = focused
+      ? this.theme.bold(this.color(hintColor, hint))
+      : this.color(hintColor, hint);
+    const hintLen = visibleWidth(hint);
+    const fixedCost = 1 + 1 + hintLen + 1;
+    const fillDashes = Math.max(0, width - fixedCost);
+    return `${dash(1)} ${hintStyled} ${dash(fillDashes)}`;
   }
 
   private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
-    const leftBorder = this.color(this.focus === "left" ? "borderAccent" : "borderMuted", "│");
-    const divider = this.color("borderMuted", "│");
-    const rightBorder = this.color(this.focus === "right" ? "borderAccent" : "borderMuted", "│");
-    return `${leftBorder}${padRight(left, leftWidth)}${divider}${padRight(right, rightWidth)}${rightBorder}`;
+    const v = this.color("dim", "│");
+    return `${v}${padRight(left, leftWidth)}${v}${padRight(right, rightWidth)}${v}`;
   }
 
   private color(color: ThemeColorName, text: string): string {
@@ -436,7 +506,7 @@ function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
-type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim" | "borderAccent" | "borderMuted";
+type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim" | "text" | "borderAccent" | "borderMuted";
 
 function statusColor(status: CharterStatus): ThemeColorName {
   switch (status) {

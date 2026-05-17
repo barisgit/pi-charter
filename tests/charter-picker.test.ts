@@ -195,11 +195,11 @@ describe("CharterPickerComponent f5-picker-render", () => {
     }
   });
 
-  test("VAL-PICKER-NAV-003: footer lines match exact literals", () => {
+  test("VAL-PICKER-NAV-003: footer keybind hints embedded in bottom border", () => {
     const lines = makePicker().render(160);
-    const footer = lines.at(-2)!;
-    expect(leftCell(footer, 160).trimEnd()).toBe("tab:focus  j/k:move  esc:close");
-    expect(rightCell(footer, 160).trimEnd()).toBe("tab:focus  j/k:scroll  space:fold  o:objective  esc:close");
+    const bottom = lines.at(-1)!;
+    expect(bottom).toContain("tab:focus  j/k:move  esc:close");
+    expect(bottom).toContain("tab:focus  j/k:scroll  space:fold  o:objective  esc:close");
   });
 
   test("VAL-PICKER-WIRE-001: bare /charters opens top-left fullscreen overlay", async () => {
