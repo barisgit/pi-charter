@@ -252,15 +252,23 @@ export class CharterPickerComponent implements Component {
     }
 
     // Blocking-complete section.
+    // If all VAL pass, surface Ready regardless of any stale blockingForComplete data
+    // (the underlying helper can be stale for completed charters).
     lines.push("");
-    if (snapshot.blockingForComplete.length === 0 && allPass(snapshot)) {
+    if (allPass(snapshot)) {
       lines.push(sectionHeading("Ready to complete", "success"));
     } else {
       lines.push(sectionHeading("Blocking complete", "error"));
-      if (snapshot.blockingForComplete.length === 0) {
+      const blocking = snapshot.blockingForComplete;
+      if (blocking.length === 0) {
         lines.push(this.color("dim", "  No blocking data"));
       } else {
-        for (const item of snapshot.blockingForComplete) lines.push(this.color("error", `  • ${item}`));
+        const MAX_BLOCKING = 5;
+        const shown = blocking.slice(0, MAX_BLOCKING);
+        for (const item of shown) lines.push(this.color("error", `  • ${item}`));
+        if (blocking.length > MAX_BLOCKING) {
+          lines.push(this.color("dim", `  … +${blocking.length - MAX_BLOCKING} more`));
+        }
       }
     }
 
@@ -280,10 +288,15 @@ export class CharterPickerComponent implements Component {
     // Recent evidence section.
     lines.push("");
     lines.push(sectionHeading("Recent evidence"));
-    for (const evidence of snapshot.recentEvidence.slice(0, 5)) {
+    const MAX_EVIDENCE = 5;
+    const evidenceShown = snapshot.recentEvidence.slice(0, MAX_EVIDENCE);
+    for (const evidence of evidenceShown) {
       const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
       const outcome = this.color(outcomeColor, evidence.outcome.padEnd(7));
       lines.push(`${this.color("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}  ${this.color("dim", evidence.recordedBy)}`);
+    }
+    if (snapshot.recentEvidence.length > MAX_EVIDENCE) {
+      lines.push(this.color("dim", `… +${snapshot.recentEvidence.length - MAX_EVIDENCE} more`));
     }
     return lines;
   }
