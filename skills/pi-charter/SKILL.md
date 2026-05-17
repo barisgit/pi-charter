@@ -376,10 +376,22 @@ nextActions, and current guidelines.
 - `/charter <objective>` and `pi --charter-objective "<text>"` hand the
   objective to the agent via a structured user message. **The agent owns
   charter creation** — these surfaces never call `charter_manage create`
-  directly.
-- `/charter` bare prints the current charter status block.
-- `/charter status` is the same block.
-- `/charter pause` and `/charter resume` are lifecycle shortcuts.
+  directly. Any non-empty arg text is treated as objective (no reserved
+  verbs); bare `/charter` emits a usage hint pointing at
+  `/charter <objective>` and `/charters`.
+- `/charters` is the inspection/management command:
+  - bare opens the master-detail picker overlay (lists active charters on
+    the left, full per-charter status on the right; `j/k/up/down` navigate,
+    `enter` selects, `q/esc` cancel),
+  - `/charters status` notifies the status block for the selected charter,
+  - `/charters pause` and `/charters resume` are lifecycle shortcuts on the
+    selected charter,
+  - `/charters select <id>` or `/charters select none` pins / clears the
+    persistent charter-detail widget without opening the overlay,
+  - `/charters list` notifies a one-line summary per active charter.
+  When no selection is set, `status|pause|resume` use the sole active
+  charter if there is exactly one; otherwise they re-open the picker (TUI)
+  or notify a hint listing active ids (non-TUI).
 
 ## Bound-charter defaults
 

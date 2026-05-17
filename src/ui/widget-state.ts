@@ -90,8 +90,78 @@ export interface PlanningStep {
   detail?: string;
 }
 
+/**
+ * Maximum number of charter rows the multi-charter widget renders inline.
+ * Any extra charters collapse into `hiddenCount` (rendered as a `+N more` row).
+ */
+export const MAX_MULTI_ROWS = 5;
+
+export interface PerCharterRowVM {
+  charterId: string;
+  displayName: string;
+  status: CharterStatus;
+  bar: { pass: number; running: number; total: number };
+  isSelected: boolean;
+  hasLiveSubagent: boolean;
+}
+
+export interface MultiCharterWidgetVM {
+  charters: PerCharterRowVM[];
+  hiddenCount: number;
+}
+
+/**
+ * Pre-built per-charter snapshot consumed by the multi-charter reducer.
+ * Structurally `CharterWidgetVM` (the output of `loadCharterSnapshot`) — the
+ * single-charter pipeline already computes pass/running/total/status/name in
+ * one place, so the multi reducer projects from those without re-deriving.
+ */
+export type CharterSnapshotLike = Pick<
+  CharterWidgetVM,
+  "charterId" | "displayName" | "status" | "bar"
+>;
+
+export interface MultiReducerInput {
+  snapshots: CharterSnapshotLike[];
+  selectedCharterId: string | null;
+  runningSubagentsByCharter: Map<string, RunningSubagent[]>;
+}
+
+/**
+ * Pure projection from N pre-built single-charter snapshots into the
+ * multi-charter widget VM. Caps visible rows at MAX_MULTI_ROWS; the rest
+ * collapse into `hiddenCount` (rendered as a `+N more` overflow line). No
+ * I/O, no `Date.now()`, no globals.
+ */
+export function buildMultiCharterViewModel(input: MultiReducerInput): MultiCharterWidgetVM {
+  const snapshots = input.snapshots;
+  if (snapshots.length === 0) {
+    return { charters: [], hiddenCount: 0 };
+  }
+  const visible = snapshots.slice(0, MAX_MULTI_ROWS);
+  const hiddenCount = Math.max(0, snapshots.length - visible.length);
+  const charters = visible.map<PerCharterRowVM>((snapshot) => {
+    const live = input.runningSubagentsByCharter.get(snapshot.charterId);
+    return {
+      charterId: snapshot.charterId,
+      displayName: snapshot.displayName,
+      status: snapshot.status,
+      bar: { pass: snapshot.bar.pass, running: snapshot.bar.running, total: snapshot.bar.total },
+      isSelected: input.selectedCharterId !== null && snapshot.charterId === input.selectedCharterId,
+      hasLiveSubagent: live !== undefined && live.length > 0,
+    };
+  });
+  return { charters, hiddenCount };
+}
+
 export interface RunningSubagent {
   runId: string;
+  /**
+   * Charter this subagent belongs to. Required so `RunningSubagentRegistry.forCharter`
+   * can correctly attribute live work to per-charter widget rows once the multi-charter
+   * widget lands. Sourced from PI_CHARTER metadata.charterId stamped by subagent-bridge.
+   */
+  charterId: string;
   agentName?: string;
   featureId?: string;
   criterionId?: string;       // for charter-verifier subagents pinned to a single VAL

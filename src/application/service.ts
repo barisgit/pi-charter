@@ -805,6 +805,81 @@ function isTerminal(status: CharterStatus): boolean {
  * non-slug chars, and clamps to 32 chars. Returns undefined when the input is
  * empty/blank so callers fall back to the short UUID.
  */
+/**
+ * One row per non-terminal charter for the multi-charter widget and the
+ * `/charters` picker. `name` already falls back to a slice of the charter id
+ * so callers can render it verbatim. `passCount`/`totalCount` summarize VAL
+ * progress at a glance (pass evidence count over criteria total).
+ */
+export interface CharterListEntry {
+  charterId: string;
+  /** Human-friendly label; falls back to `charterId.slice(0, 8)` when state.name is unset. */
+  name: string;
+  objective: string;
+  status: CharterStatus;
+  createdAt: string;
+  passCount: number;
+  totalCount: number;
+}
+
+const NON_TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
+  "planning",
+  "active",
+  "review",
+  "paused",
+]);
+
+/**
+ * Enumerate every non-terminal charter in the project.
+ *
+ * The on-disk index (.pi/charters/index.json) is treated as a list of ids ONLY
+ * because lifecycle transitions write `state.json` but never call updateIndex
+ * (see store.ts:writeCharterState vs. updateIndex, only invoked from
+ * createCharterWorkspace). Filtering by state.status is what makes the listing
+ * accurate for paused/completed charters created before the rewrite.
+ *
+ * Charters whose state.json or charter.md fail to load are silently dropped
+ * — a corrupt entry must not take down the whole picker. Empty projects (no
+ * index.json) return [].
+ */
+export async function listActiveCharters(projectDir: string): Promise<CharterListEntry[]> {
+  const index = await loadCharterIndex(projectDir);
+  const entries = await Promise.all(
+    index.map((row) => loadCharterListEntry(projectDir, row.charterId)),
+  );
+  return entries.filter((entry): entry is CharterListEntry => entry !== null);
+}
+
+async function loadCharterListEntry(
+  projectDir: string,
+  charterId: string,
+): Promise<CharterListEntry | null> {
+  try {
+    const dir = charterDir(projectDir, charterId);
+    const [state, criterionState, charterMd] = await Promise.all([
+      loadCharterState(dir),
+      loadCriterionState(dir, charterId),
+      readFile(join(dir, "charter.md"), "utf8"),
+    ]);
+    if (!NON_TERMINAL_STATUSES.has(state.status)) return null;
+    const parsed = parseCharterMarkdown(charterMd);
+    const passCount = Object.values(criterionState.criteria).filter(
+      (record) => record?.outcome === "pass",
+    ).length;
+    return {
+      charterId,
+      name: state.name?.trim() ? state.name : charterId.slice(0, 8),
+      objective: state.objective,
+      status: state.status,
+      createdAt: state.createdAt,
+      passCount,
+      totalCount: parsed.criteria.length,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function sanitizeCharterName(name?: string): string | undefined {
   if (typeof name !== "string") return undefined;
   const slug = name

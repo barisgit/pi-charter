@@ -99,7 +99,7 @@ describe("widget featureRows (VAL-9)", () => {
 
   test("status: in_progress with active:true when a live subagent owns the feature", () => {
     const subs: RunningSubagent[] = [
-      { runId: "r1", agentName: "fixer", featureId: "fa", startedAt: "2026-05-15T10:04:00Z" },
+      { runId: "r1", charterId: "c-test", agentName: "fixer", featureId: "fa", startedAt: "2026-05-15T10:04:00Z" },
     ];
     const vm = buildViewModel(defaultInput({
       features: [feature({ id: "fa" })],
@@ -186,7 +186,7 @@ describe("widget readyNext (VAL-10)", () => {
 
   test("excludes features currently in_progress / with a live subagent (already in flight)", () => {
     const subs: RunningSubagent[] = [
-      { runId: "r1", agentName: "fixer", featureId: "f2", startedAt: "2026-05-15T10:04:00Z" },
+      { runId: "r1", charterId: "c-test", agentName: "fixer", featureId: "f2", startedAt: "2026-05-15T10:04:00Z" },
     ];
     const vm = buildViewModel(defaultInput({
       features: [

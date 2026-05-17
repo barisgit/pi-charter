@@ -12,6 +12,7 @@ import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import {
   PI_CHARTER_EXTENSION_ID,
+  PI_CHARTER_METADATA_KEYS,
   SUBAGENT_ASYNC_COMPLETE_EVENT,
   SUBAGENT_ASYNC_STARTED_EVENT,
   SUBAGENT_EXPOSE_API_EVENT,
@@ -26,8 +27,22 @@ import {
   type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
-import { CharterWidget } from "../ui/widget";
+import { renderCharterWidget } from "../ui/widget";
+import { renderMultiCharterWidget } from "../ui/multi-charter-widget";
+import { buildMultiCharterViewModel } from "../ui/widget-state";
+import type { CharterWidgetVM } from "../ui/widget-state";
 import { loadCharterSnapshot, RunningSubagentRegistry } from "../ui/widget-service";
+import { CharterPickerComponent } from "../ui/charter-picker";
+import { listActiveCharters, type CharterListEntry } from "./service";
+import {
+  clearSelectionRefresher,
+  getCharterSelection,
+  registerSelectionRefresher,
+  requestSelectionRefresh,
+  resetCharterSelection,
+  setCharterSelection,
+  type CharterSelection,
+} from "../ui/charter-selection";
 
 type CharterManageInput = {
   action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter";
@@ -461,28 +476,16 @@ export function formatCharterStatusText(result: {
   return lines.join("\n");
 }
 
+const CHARTERS_VERBS = ["status", "pause", "resume", "select", "list"] as const;
+const CHARTER_USAGE_HINT = "Usage: /charter <objective> to hand a new objective to the agent, or /charters to inspect/manage active charters.";
+
 export function registerCharterCommands(pi: ExtensionAPI): void {
   pi.registerCommand("charter", {
-    description: "Open or manage pi-charter. Bare shows status; text hands an objective to the agent (the agent creates the charter).",
+    description: "Hand a pi-charter objective to the agent. Bare prints a usage hint; use /charters to inspect or manage active charters.",
     handler: async (args, ctx) => {
       const text = args.trim();
-      if (!text || text === "status") {
-        const status = await getCharterStatus(ctx.cwd).catch((error: unknown) => undefined);
-        if (!status) {
-          ctx.ui.notify("No active charter found.", "info");
-          return;
-        }
-        ctx.ui.notify(formatCharterStatusText(status), "info");
-        return;
-      }
-      if (text === "pause") {
-        const result = await pauseCharter(ctx.cwd, {});
-        ctx.ui.notify(result.message, "info");
-        return;
-      }
-      if (text === "resume") {
-        const result = await resumeCharter(ctx.cwd, {});
-        ctx.ui.notify(result.message, "info");
+      if (!text) {
+        ctx.ui.notify(CHARTER_USAGE_HINT, "info");
         return;
       }
       // pi-charter rule: users describe intent, agents own charter creation.
@@ -514,6 +517,228 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
       );
     },
   });
+
+  // Closure-scoped reentry guard: the picker overlay is exclusive; a second
+  // bare `/charters` while one is already open would stack overlays.
+  let isPickerOpen = false;
+
+  pi.registerCommand("charters", {
+    description: "Inspect/manage active pi-charters. Bare opens the picker; verbs: status, pause, resume, select <id>|none, list.",
+    getArgumentCompletions: async (prefix) => {
+      const text = prefix ?? "";
+      const spaceIndex = text.indexOf(" ");
+      if (spaceIndex === -1) {
+        // First token: complete the verb set.
+        const lower = text.toLowerCase();
+        return CHARTERS_VERBS
+          .filter((verb) => verb.startsWith(lower))
+          .map((verb) => ({ value: verb, label: verb }));
+      }
+      const head = text.slice(0, spaceIndex);
+      const rest = text.slice(spaceIndex + 1);
+      if (head !== "select") return null;
+      const active = await listActiveCharters(process.cwd()).catch(() => [] as CharterListEntry[]);
+      const lowerRest = rest.toLowerCase();
+      const candidates = [...active.map((c) => c.charterId), "none"];
+      return candidates
+        .filter((v) => v.toLowerCase().startsWith(lowerRest))
+        .map((v) => ({ value: `select ${v}`, label: `select ${v}` }));
+    },
+    handler: async (args, ctx) => {
+      const text = args.trim();
+      const active = await listActiveCharters(ctx.cwd).catch(() => [] as CharterListEntry[]);
+
+      // Bare invocation: open the picker overlay (or fall back to a list
+      // notification when there is no UI).
+      if (!text) {
+        await openPicker(pi, ctx, active, () => isPickerOpen, (v) => { isPickerOpen = v; });
+        return;
+      }
+
+      // `list` is a quick text dump of every active charter.
+      if (text === "list") {
+        if (active.length === 0) {
+          ctx.ui.notify("No active charters.", "info");
+          return;
+        }
+        const lines = active.map((c) => `${c.charterId.slice(0, 8)}  ${c.name}  ${c.status}  ${c.passCount}/${c.totalCount}`);
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+
+      // `select <id|none>` updates selection state and rebuilds widgets.
+      if (text.startsWith("select")) {
+        const arg = text.slice("select".length).trim();
+        if (!arg) {
+          ctx.ui.notify("Usage: /charters select <charterId|none>", "warning");
+          return;
+        }
+        if (arg === "none") {
+          setCharterSelection({ kind: "explicit-clear" });
+          await requestSelectionRefreshSafe(ctx);
+          ctx.ui.notify("pi-charter: detail selection cleared.", "info");
+          return;
+        }
+        const match = active.find((c) => c.charterId === arg || c.charterId.startsWith(arg));
+        if (!match) {
+          ctx.ui.notify(`No active charter matches '${arg}'.`, "warning");
+          return;
+        }
+        setCharterSelection({ kind: "explicit", charterId: match.charterId });
+        await requestSelectionRefreshSafe(ctx);
+        ctx.ui.notify(`pi-charter: selected ${match.name} (${match.charterId.slice(0, 8)}).`, "info");
+        return;
+      }
+
+      // status | pause | resume operate on the resolved selection.
+      if (text === "status" || text === "pause" || text === "resume") {
+        const resolved = await resolveCharterForVerb(pi, ctx, active, () => isPickerOpen, (v) => { isPickerOpen = v; });
+        if (!resolved) return;
+        if (text === "status") {
+          const status = await getCharterStatus(ctx.cwd, { charterId: resolved }).catch(() => undefined);
+          if (!status) {
+            ctx.ui.notify(`No status available for ${resolved}.`, "warning");
+            return;
+          }
+          ctx.ui.notify(formatCharterStatusText(status), "info");
+          return;
+        }
+        if (text === "pause") {
+          const result = await pauseCharter(ctx.cwd, { charterId: resolved });
+          ctx.ui.notify(result.message, "info");
+          return;
+        }
+        const result = await resumeCharter(ctx.cwd, { charterId: resolved });
+        ctx.ui.notify(result.message, "info");
+        return;
+      }
+
+      ctx.ui.notify(`Unknown /charters verb '${text}'. Try one of: ${CHARTERS_VERBS.join(", ")}.`, "warning");
+    },
+  });
+}
+
+/**
+ * Pull selection state and resolve a charter id for the verbs that operate on
+ * "the selected charter". Fallbacks per spec: when selection is `unset` or
+ * `explicit-clear`, use the sole active charter if exactly one exists;
+ * otherwise re-open the picker in TUI mode, or notify a hint listing ids.
+ * Returns `undefined` when the caller should NOT proceed (no charter available,
+ * or the picker was opened instead).
+ */
+type CommandCtxLike = {
+  hasUI: boolean;
+  cwd: string;
+  ui: {
+    notify(message: string, type?: "info" | "warning" | "error"): void;
+  };
+  sessionManager?: { getSessionId?(): string | undefined };
+};
+
+async function resolveCharterForVerb(
+  pi: ExtensionAPI,
+  ctx: CommandCtxLike,
+  active: CharterListEntry[],
+  isPickerOpen: () => boolean,
+  setPickerOpen: (v: boolean) => void,
+): Promise<string | undefined> {
+  if (active.length === 0) {
+    ctx.ui.notify("No active charters.", "info");
+    return undefined;
+  }
+  const sel = getCharterSelection();
+  if (sel.kind === "explicit") {
+    if (active.some((c) => c.charterId === sel.charterId)) return sel.charterId;
+    // The pinned charter terminated; downgrade and fall through to fallback.
+    setCharterSelection({ kind: "unset" });
+  }
+  if (active.length === 1) return active[0]!.charterId;
+  // Ambiguous: prefer the picker overlay in TUI mode, else just list ids.
+  if (ctx.hasUI) {
+    await openPicker(pi, ctx, active, isPickerOpen, setPickerOpen);
+    return undefined;
+  }
+  const ids = active.map((c) => `${c.charterId.slice(0, 8)} (${c.name})`).join(", ");
+  ctx.ui.notify(`Multiple active charters. Use /charters select <id> first. Active: ${ids}.`, "warning");
+  return undefined;
+}
+
+async function openPicker(
+  _pi: ExtensionAPI,
+  ctx: CommandCtxLike,
+  active: CharterListEntry[],
+  isPickerOpen: () => boolean,
+  setPickerOpen: (v: boolean) => void,
+): Promise<void> {
+  if (!ctx.hasUI) {
+    if (active.length === 0) {
+      ctx.ui.notify("No active charters.", "info");
+      return;
+    }
+    const ids = active.map((c) => `${c.charterId.slice(0, 8)} (${c.name})`).join(", ");
+    ctx.ui.notify(`Active charters: ${ids}.`, "info");
+    return;
+  }
+  if (isPickerOpen()) {
+    ctx.ui.notify("Charter picker already open.", "info");
+    return;
+  }
+  setPickerOpen(true);
+  try {
+    // Build per-charter snapshots in parallel for the picker right pane.
+    const runningForCharter = new Map<string, never[]>();
+    const snapshotEntries = await Promise.all(
+      active.map(async (c) => {
+        try {
+          const vm = await loadCharterSnapshot({
+            projectDir: ctx.cwd,
+            charterId: c.charterId,
+            runningSubagents: runningForCharter.get(c.charterId) ?? [],
+          });
+          return [c.charterId, vm] as const;
+        } catch {
+          return [c.charterId, null] as const;
+        }
+      }),
+    );
+    const snapshots = new Map<string, CharterWidgetVM>();
+    for (const [id, vm] of snapshotEntries) {
+      if (vm) snapshots.set(id, vm);
+    }
+
+    const current = getCharterSelection();
+    const initialId = current.kind === "explicit"
+      ? current.charterId
+      : (active[0]?.charterId);
+
+    const ui = ctx.ui as unknown as {
+      custom<T>(factory: (tui: unknown, theme: { fg(color: string, text: string): string }, keybindings: unknown, done: (result: T) => void) => unknown, options?: { overlay?: boolean; overlayOptions?: unknown }): Promise<T>;
+    };
+    const result = await ui.custom<string | null>((_tui, theme, _kb, done) => new CharterPickerComponent({
+      charters: active,
+      snapshots,
+      theme,
+      ...(initialId !== undefined ? { initialSelectedCharterId: initialId } : {}),
+      onDone: (id) => done(id),
+    }), {
+      overlay: true,
+      overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" },
+    });
+    if (result !== null) {
+      setCharterSelection({ kind: "explicit", charterId: result });
+      await requestSelectionRefreshSafe(ctx);
+    }
+  } finally {
+    setPickerOpen(false);
+  }
+}
+
+async function requestSelectionRefreshSafe(ctx: { hasUI: boolean; cwd: string; ui: unknown; sessionManager?: { getSessionId?(): string | undefined } }): Promise<void> {
+  try {
+    await requestSelectionRefresh(ctx);
+  } catch {
+    // Selection refresh is best-effort — the next turn_end will catch up.
+  }
 }
 
 interface RegisterCharterFlagsOptions {
@@ -956,66 +1181,164 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true when the snapshot load failed because the charter directory
- * no longer exists (user deleted .pi/charters/<id>/ between turns). We rely
- * on the standard Node ENOENT error code surfaced by readFile on state.json.
+ * VM keys for `ctx.ui.setWidget`. The multi-charter row is always shown
+ * (when there is >=1 active charter); the detail key is shown for whichever
+ * charter the picker / `select` verb chose (or auto-picked).
  */
-function isMissingCharterError(error: unknown): boolean {
-  if (!error || typeof error !== "object") return false;
-  const code = (error as { code?: unknown }).code;
-  return code === "ENOENT";
+const MULTI_WIDGET_KEY = "charter-multi";
+const DETAIL_WIDGET_KEY = "charter-detail";
+
+interface WidgetTuiLike {
+  terminal?: { columns?: number };
+  requestRender?: () => void;
+}
+type WidgetThemeLike = { fg(color: string, text: string): string };
+type WidgetFactory = (
+  tui: WidgetTuiLike,
+  theme: WidgetThemeLike,
+) => { render(): string[]; invalidate(): void; dispose?(): void };
+interface WidgetUiLike {
+  setWidget(
+    key: string,
+    content: undefined | WidgetFactory,
+    options?: { placement?: "aboveEditor" | "belowEditor" },
+  ): void;
+}
+
+/**
+ * Apply the tri-value selection rule to the current active list:
+ *   - `unset` -> first active (auto-select), selection state STAYS `unset`
+ *     so a later `select none` still works.
+ *   - `explicit-clear` -> undefined (no detail rendered).
+ *   - `explicit` with id present -> that snapshot.
+ *   - `explicit` with id NOT present -> downgrade selection to `unset`, render
+ *     first active for this refresh.
+ *   - empty snapshots is handled by the caller (both widgets cleared).
+ */
+export function resolveDetailSnapshot(
+  selection: CharterSelection,
+  snapshots: CharterWidgetVM[],
+  snapshotsById: Map<string, CharterWidgetVM>,
+): CharterWidgetVM | undefined {
+  if (snapshots.length === 0) return undefined;
+  if (selection.kind === "explicit-clear") return undefined;
+  if (selection.kind === "explicit") {
+    const hit = snapshotsById.get(selection.charterId);
+    if (hit) return hit;
+    // Pinned charter no longer in the active list: downgrade so the next
+    // refresh auto-selects, then render the first active for THIS refresh.
+    setCharterSelection({ kind: "unset" });
+    return snapshots[0];
+  }
+  // kind === "unset" -> auto-select first.
+  return snapshots[0];
 }
 
 export function registerCharterWidget(pi: ExtensionAPI): void {
-  const widget = new CharterWidget();
   const runningSubagents = new RunningSubagentRegistry();
 
-  const refresh = async (ctx: { hasUI: boolean; ui: { setWidget: unknown } }, sessionId: string | undefined): Promise<void> => {
+  const refresh = async (ctx: { hasUI: boolean; cwd: string; ui: unknown }): Promise<void> => {
     if (!ctx.hasUI) return;
-    widget.setUi(ctx.ui as Parameters<typeof widget.setUi>[0]);
-    if (!sessionId) {
-      widget.dispose();
-      return;
-    }
-    const binding = await readSessionBinding({ sessionId }).catch(() => null);
-    if (!binding) {
-      widget.dispose();
-      return;
-    }
+    const ui = ctx.ui as WidgetUiLike;
+
+    let active: CharterListEntry[];
     try {
-      const vm = await loadCharterSnapshot({
-        projectDir: binding.projectDir,
-        charterId: binding.charterId,
-        runningSubagents: runningSubagents.forCharter(binding.charterId),
-      });
-      widget.update(vm);
-    } catch (error) {
-      // Charter state vanished out from under us (most common: the user
-      // `rm -rf`'d .pi/charters/<id>/). Drop the stale reverse pointer and
-      // hide the widget; the next charter_manage action=create will rebind.
-      if (isMissingCharterError(error)) {
-        await clearSessionBinding(sessionId).catch(() => undefined);
-        widget.dispose();
-        return;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      // eslint-disable-next-line no-console
-      console.warn(`[pi-charter] widget refresh skipped: ${message}`);
+      active = await listActiveCharters(ctx.cwd);
+    } catch {
+      // listActiveCharters already swallows per-charter errors; an outer
+      // failure (e.g. missing project dir) means "nothing to show".
+      active = [];
     }
+
+    if (active.length === 0) {
+      ui.setWidget(MULTI_WIDGET_KEY, undefined);
+      ui.setWidget(DETAIL_WIDGET_KEY, undefined);
+      return;
+    }
+
+    // Load every per-charter snapshot in parallel so a slow charter doesn't
+    // block the rest. Failures collapse to `null` and that charter is
+    // dropped from both widgets.
+    const snapshotEntries = await Promise.all(
+      active.map(async (c) => {
+        try {
+          const vm = await loadCharterSnapshot({
+            projectDir: ctx.cwd,
+            charterId: c.charterId,
+            runningSubagents: runningSubagents.forCharter(c.charterId),
+          });
+          return [c.charterId, vm] as const;
+        } catch {
+          return [c.charterId, null] as const;
+        }
+      }),
+    );
+    const snapshotsById = new Map<string, CharterWidgetVM>();
+    const snapshots: CharterWidgetVM[] = [];
+    for (const [id, vm] of snapshotEntries) {
+      if (vm) {
+        snapshotsById.set(id, vm);
+        snapshots.push(vm);
+      }
+    }
+    if (snapshots.length === 0) {
+      ui.setWidget(MULTI_WIDGET_KEY, undefined);
+      ui.setWidget(DETAIL_WIDGET_KEY, undefined);
+      return;
+    }
+
+    // Resolve tri-value selection -> the detail snapshot (or null).
+    const selection = getCharterSelection();
+    const detailVm = resolveDetailSnapshot(selection, snapshots, snapshotsById);
+
+    const runningByCharter = new Map<string, ReturnType<RunningSubagentRegistry["forCharter"]>>();
+    for (const c of active) runningByCharter.set(c.charterId, runningSubagents.forCharter(c.charterId));
+
+    const multiVm = buildMultiCharterViewModel({
+      snapshots,
+      selectedCharterId: detailVm?.charterId ?? null,
+      runningSubagentsByCharter: runningByCharter,
+    });
+
+    ui.setWidget(
+      MULTI_WIDGET_KEY,
+      (tui, theme) => ({
+        render: () => renderMultiCharterWidget(multiVm, theme, tui.terminal?.columns ?? 100),
+        invalidate: () => {},
+      }),
+      { placement: "aboveEditor" },
+    );
+
+    if (detailVm === undefined) {
+      ui.setWidget(DETAIL_WIDGET_KEY, undefined);
+      return;
+    }
+
+    ui.setWidget(
+      DETAIL_WIDGET_KEY,
+      (tui, theme) => ({
+        render: () => renderCharterWidget({ width: tui.terminal?.columns ?? 100, theme, vm: detailVm }),
+        invalidate: () => {},
+      }),
+      { placement: "aboveEditor" },
+    );
   };
 
+  registerSelectionRefresher(async (ctx) => {
+    await refresh(ctx as { hasUI: boolean; cwd: string; ui: unknown });
+  });
+
   pi.on("session_start", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId?.();
-    await refresh(ctx, sessionId);
+    await refresh(ctx);
   });
 
   pi.on("turn_end", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId?.();
-    await refresh(ctx, sessionId);
+    await refresh(ctx);
   });
 
   pi.on("session_shutdown", () => {
-    widget.dispose();
+    resetCharterSelection();
+    clearSelectionRefresher();
   });
 
   // Subagent lifecycle: update the in-memory registry first so the next
@@ -1027,8 +1350,14 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
   pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
     const payload = raw as SubagentAsyncStartedPayload | undefined;
     if (!payload) return;
+    // Older spawns that pre-date the charterId stamp (or non-charter spawns
+    // that happen to share this bus) are skipped rather than crashing the
+    // registry; the per-charter filter is meaningless without an id.
+    const charterId = payload.metadata?.[PI_CHARTER_METADATA_KEYS.charterId];
+    if (typeof charterId !== "string" || charterId.length === 0) return;
     runningSubagents.start({
       runId: payload.runId,
+      charterId,
       agent: payload.agent,
       metadata: payload.metadata,
       startedAt: payload.startedAt !== undefined ? new Date(payload.startedAt).toISOString() : undefined,

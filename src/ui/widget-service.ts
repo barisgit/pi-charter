@@ -111,11 +111,12 @@ async function readFeatureStates(dir: string): Promise<Record<string, { status?:
 export class RunningSubagentRegistry {
   private subs = new Map<string, RunningSubagent>();
 
-  start(payload: { runId: string; agent?: string; metadata?: Record<string, unknown>; startedAt?: string }): void {
+  start(payload: { runId: string; charterId: string; agent?: string; metadata?: Record<string, unknown>; startedAt?: string }): void {
     const featureId = readMetaString(payload.metadata, "pi-charter.featureId");
     const criterionId = readMetaString(payload.metadata, "pi-charter.criterionId");
     this.subs.set(payload.runId, {
       runId: payload.runId,
+      charterId: payload.charterId,
       agentName: payload.agent,
       featureId,
       criterionId,
@@ -128,15 +129,7 @@ export class RunningSubagentRegistry {
   }
 
   forCharter(charterId: string): RunningSubagent[] {
-    // The async-bridge only fires for events with our pi-charter.charterId set,
-    // so all entries are already scoped — but a defensive filter when a future
-    // multi-charter setup lands.
-    const out: RunningSubagent[] = [];
-    for (const sub of this.subs.values()) {
-      out.push(sub);
-    }
-    void charterId;
-    return out;
+    return Array.from(this.subs.values()).filter((r) => r.charterId === charterId);
   }
 
   size(): number {

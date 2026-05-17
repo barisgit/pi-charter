@@ -119,15 +119,15 @@ describe("widget-state reducer", () => {
     const vm = buildViewModel(defaultInput({
       criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3"), criterion("VAL-4")],
       criterionOutcomes: { "VAL-1": { outcome: "pass" }, "VAL-2": { outcome: "pass" } },
-      runningSubagents: [{ runId: "r1", agentName: "charter-verifier", criterionId: "VAL-3", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
+      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "charter-verifier", criterionId: "VAL-3", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
     }));
     expect(vm.bar).toEqual({ pass: 2, running: 1, total: 4 });
   });
 
   test("running features sort oldest-first; idle ready before idle blocked", () => {
     const subs: RunningSubagent[] = [
-      { runId: "r1", agentName: "fixer", featureId: "f-newer", startedAt: "2026-05-15T10:04:30Z" },
-      { runId: "r2", agentName: "fixer", featureId: "f-older", startedAt: "2026-05-15T10:03:00Z" },
+      { runId: "r1", charterId: "c-test", agentName: "fixer", featureId: "f-newer", startedAt: "2026-05-15T10:04:30Z" },
+      { runId: "r2", charterId: "c-test", agentName: "fixer", featureId: "f-older", startedAt: "2026-05-15T10:03:00Z" },
     ];
     const features = [
       feature({ id: "f-blocked", order: 10, preconditions: ["f-older"] }),
@@ -181,7 +181,7 @@ describe("widget-state reducer", () => {
       criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3")],
       criterionOutcomes: { "VAL-1": { outcome: "pass" } },
       features: [feature({ id: "f1", fulfills: ["VAL-1", "VAL-3", "VAL-2"] })],
-      runningSubagents: [{ runId: "r1", agentName: "v", featureId: "f1", criterionId: "VAL-2", startedAt: "2026-05-15T10:04:00Z" }],
+      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "v", featureId: "f1", criterionId: "VAL-2", startedAt: "2026-05-15T10:04:00Z" }],
     }));
     expect(vm.rows[0]?.valStates).toEqual(["pass", "running", "running"]);
   });
@@ -261,7 +261,7 @@ describe("widget render", () => {
         Array.from({ length: 7 }, (_, i) => [`VAL-${i + 1}`, { outcome: "pass" }] as const),
       ),
       features: [feature({ id: "wide-feature-name", fulfills: Array.from({ length: 20 }, (_, i) => `VAL-${i + 1}`) })],
-      runningSubagents: [{ runId: "r1", agentName: "charter-verifier-with-loud-name", featureId: "wide-feature-name", startedAt: "2026-05-15T10:04:00Z" }],
+      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "charter-verifier-with-loud-name", featureId: "wide-feature-name", startedAt: "2026-05-15T10:04:00Z" }],
     }));
     const lines = renderCharterWidget({ width: 60, theme, vm });
     // Minimum width clamps to 60; row should still render. Beads should fall
@@ -337,7 +337,7 @@ describe("widget host timers", () => {
 
       widget.update(buildViewModel(defaultInput({
         features: [feature({ id: "f1" })],
-        runningSubagents: [{ runId: "r1", agentName: "fixer", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
+        runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "fixer", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
       })));
 
       const spinner = intervals.find((entry) => entry.ms === 120);
