@@ -5,6 +5,7 @@ import type { CharterListRow, PickerSnapshot, PlanCriterionNode, PlanFeatureNode
 
 interface ThemeLike {
   fg(color: string, text: string): string;
+  bold(text: string): string;
 }
 
 export interface CharterPickerOptions {
@@ -165,7 +166,7 @@ export class CharterPickerComponent implements Component {
     const header = `${snapshot.header.name}  [${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
     lines.push(header);
     lines.push(progressBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
-    lines.push(this.color("yellow", "Objective"));
+    lines.push(this.color("warning", "Objective"));
     const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
     if (!this.objectiveExpanded && objectiveLines.length > 2) {
       lines.push(...objectiveLines.slice(0, 2).map((line) => `  ${line}`));
@@ -181,18 +182,18 @@ export class CharterPickerComponent implements Component {
       }
     }
 
-    lines.push(this.color("red", "Blocking complete:"));
+    lines.push(this.color("error", "Blocking complete:"));
     if (snapshot.blockingForComplete.length === 0 && allPass(snapshot)) {
-      lines.push(this.color("green", "  Ready to complete"));
+      lines.push(this.color("success", "  Ready to complete"));
     } else if (snapshot.blockingForComplete.length === 0) {
       lines.push(this.color("dim", "  No blocking data"));
     } else {
-      for (const item of snapshot.blockingForComplete) lines.push(this.color("red", `  • ${item}`));
+      for (const item of snapshot.blockingForComplete) lines.push(this.color("error", `  • ${item}`));
     }
 
     lines.push("Plan");
     for (const milestone of snapshot.planTree) {
-      lines.push(`  ${this.color("bold", milestone.milestoneId)}`);
+      lines.push(`  ${this.theme.bold(milestone.milestoneId)}`);
       for (const feature of milestone.features) {
         lines.push(this.featureLine(feature));
         if (this.allExpanded) {
@@ -210,9 +211,9 @@ export class CharterPickerComponent implements Component {
 
   private featureLine(feature: PlanFeatureNode): string {
     const glyph = feature.status === "completed"
-      ? this.color("green", "✓")
+      ? this.color("success", "✓")
       : feature.status === "in_progress"
-        ? this.color("cyan", "●")
+        ? this.color("accent", "●")
         : this.color("dim", "○");
     const bar = progressBar(feature.passCount, feature.totalCount, 4);
     return `    ${glyph} ${feature.featureId.padEnd(12)} ${bar} ${feature.passCount}/${feature.totalCount}  ${feature.status}`;
@@ -220,9 +221,9 @@ export class CharterPickerComponent implements Component {
 
   private criterionLine(criterion: PlanCriterionNode): string {
     const glyph = criterion.outcome === "pass"
-      ? this.color("green", "✓")
+      ? this.color("success", "✓")
       : criterion.outcome === "fail"
-        ? this.color("red", "✗")
+        ? this.color("error", "✗")
         : this.color("dim", "○");
     const title = criterion.titleFromH3 ? `  ${criterion.titleFromH3}` : "";
     return `        ${glyph} ${criterion.criterionId}${title}`;
@@ -240,7 +241,7 @@ export class CharterPickerComponent implements Component {
     return `│${padRight(left, leftWidth)}│${padRight(right, rightWidth)}│`;
   }
 
-  private color(color: string, text: string): string {
+  private color(color: ThemeColorName, text: string): string {
     return this.theme.fg(color, text);
   }
 
@@ -334,11 +335,13 @@ function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
-function verdictColor(verdict: string): string {
-  if (verdict === "on_track") return "green";
-  if (verdict === "drifting") return "orange";
-  if (verdict === "blocked") return "red";
-  if (verdict === "done") return "cyan";
+type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim";
+
+function verdictColor(verdict: string): ThemeColorName {
+  if (verdict === "on_track") return "success";
+  if (verdict === "drifting") return "warning";
+  if (verdict === "blocked") return "error";
+  if (verdict === "done") return "accent";
   return "dim";
 }
 

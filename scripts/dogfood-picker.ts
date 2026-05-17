@@ -19,7 +19,7 @@ if (validPairs.length < 1) {
 }
 const snapshots = new Map(validPairs);
 const boundCharterId = "3704bd21-b5e7-4162-94e6-3f971e817527";
-const theme = { fg: (_color: string, text: string) => text };
+const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 const component = new CharterPickerComponent({
   charters,
   snapshots,

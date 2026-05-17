@@ -7,7 +7,7 @@ import type { CharterStatus } from "../src/domain/types";
 import { CharterPickerComponent } from "../src/ui/charter-picker";
 import type { CharterListRow, PickerSnapshot } from "../src/ui/picker-snapshot";
 
-const theme = { fg: (_color: string, text: string) => text };
+const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
 function leftWidthFor(width: number): number {
   return Math.max(28, Math.min(50, Math.floor((width - 3) * 0.32)));
