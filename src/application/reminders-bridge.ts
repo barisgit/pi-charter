@@ -46,10 +46,10 @@ export async function upsertCharterReminder(
     ? await computePlanningNext(projectDir, charterId, charter.criteria.length)
     : computeActiveNext(state.status, await computeDrift(projectDir, { charterId }));
   const guidance = state.status === "planning"
-    ? "Author charter.md and the feature DAG; do not start implementation until lock_plan succeeds."
+    ? "Author charter.md then add features in one batch call (`charter_plan action=add_feature { features: [...] }`); do not start implementation until lock_plan succeeds."
     : state.status === "paused"
       ? "Charter is paused; resume before recording evidence."
-      : "Use subagents for recon, implementation, and charter-verifier verification; update charter evidence and feature progress as each VAL passes.";
+      : "Use subagents for recon, implementation, and charter-verifier verification. Record evidence in batches via `charter_record action=evidence { entries: [...] }`. `charterId` defaults to the bound charter — omit it.";
 
   pi.events.emit(REMINDER_UPSERT_EVENT, {
     id: reminderId(charterId),

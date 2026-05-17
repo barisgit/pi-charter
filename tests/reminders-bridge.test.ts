@@ -174,7 +174,9 @@ describe("charter reminders bridge", () => {
         expect(events).toHaveLength(1);
         expect(events[0].channel).toBe("reminder:upsert");
         expect(events[0].payload.id).toBe(`pi-charter:${charterId}`);
-        expect(events[0].payload.text).toContain("update charter evidence and feature progress");
+        // The active-state guidance now teaches the batch shape + bound-charter default.
+        expect(events[0].payload.text).toContain("charter_record action=evidence");
+        expect(events[0].payload.text).toContain("defaults to the bound charter");
       } finally {
         await rm(homeDir, { recursive: true, force: true });
       }

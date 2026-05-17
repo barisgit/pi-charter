@@ -223,23 +223,35 @@ empty.
 
 ### 2c. Seed features
 
-For each feature:
+Prefer the **batch shape** when you have more than one feature to add
+(typical at planning time). It is atomic: either every feature lands or
+none do, and aggregated validation errors come back in one response.
 
 ```
 charter_plan action=add_feature {
-  charterId,
-  id: "f1-pin-deps",
-  milestone: "m1-bootstrap",
-  order: 1,
-  fulfills: ["VAL-BOOT-001", "VAL-BOOT-002"],
-  preconditions: [],
-  body: "Markdown body describing what this feature does and how it satisfies the listed criteria.",
+  // charterId optional once the session is bound to this charter.
+  features: [
+    {
+      id: "f1-pin-deps",
+      milestone: "m1-bootstrap",
+      order: 1,
+      fulfills: ["VAL-BOOT-001", "VAL-BOOT-002"],
+      preconditions: [],
+      body: "What this feature does and how it satisfies the listed criteria.",
+    },
+    { id: "f2-validate", milestone: "m1-bootstrap", order: 2, fulfills: ["VAL-BOOT-003"], body: "..." },
+  ],
 }
 ```
 
+The single-entry inline shape (`{ id, milestone, order, fulfills, body }`)
+still works for one-off additions and edits but emits a `deprecated`
+warning. Use `update_feature` (same single-entry params) to revise.
+
 - `id` must match `/^[a-z0-9][a-z0-9_-]*$/i`.
 - `fulfills[]` must list at least one real VAL-* id from `charter.md`.
-- Use `update_feature` (same params) to revise.
+- The response preserves request order: `features[i].featureId` matches
+  `input.features[i].id` regardless of the `order` field.
 
 ### 2d. Run planner-critic (mandatory)
 
@@ -290,6 +302,23 @@ stopping**. The shape per feature:
    The persona runs the criterion's verifier or its own equivalent checks
    and writes exactly one `charter_record action=evidence`. The async
    bridge appends `feature_completed` / `feature_failed` based on outcome.
+
+   When you do record evidence yourself for multiple criteria at once,
+   prefer the **batch shape**:
+
+   ```
+   charter_record action=evidence {
+     // charterId optional once bound.
+     entries: [
+       { criterionId: "VAL-AUTH-001", featureId: "f1", outcome: "pass", summary: "...", because: "..." },
+       { criterionId: "VAL-AUTH-002", featureId: "f1", outcome: "pass", summary: "...", because: "..." },
+     ],
+   }
+   ```
+
+   The batch writes `criterion-state.json` once atomically, avoiding the
+   load-modify-write race that the legacy single-entry loop exposed. The
+   inline single-entry shape still works but warns `deprecated`.
 
 4. Move to the next feature. Loop until `charter_status` shows
    `drift.uncovered: []` and every VAL-* has pass evidence.
@@ -351,6 +380,23 @@ nextActions, and current guidelines.
 - `/charter` bare prints the current charter status block.
 - `/charter status` is the same block.
 - `/charter pause` and `/charter resume` are lifecycle shortcuts.
+
+## Bound-charter defaults
+
+Once a charter is bound to your session (automatic on `charter_manage
+action=create`, or via `session_start` reconcile when the reverse binding
+at `~/.pi/agent/sessions/<sid>/charter.json` exists), **every charter tool
+except `charter_manage action=create` defaults `charterId` to the bound
+charter when omitted**. You only need to pass `charterId` when:
+
+- you want to operate on a different charter than the bound one;
+- you have no session binding (the tools then throw a typed
+  `NoCharterBoundError` containing the literal phrase `"no charter bound"`
+  and a `hint` field).
+
+This applies to `charter_status`, every `charter_plan` action, every
+`charter_record` action, and `charter_manage` actions `pause`, `resume`,
+`complete`, `force_complete`, `amend_charter`.
 
 ## Hooks (advanced)
 
