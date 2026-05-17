@@ -79,6 +79,7 @@ describe("charter_manage complete", () => {
         featureId: "f1-callback",
         outcome: "pass",
         summary: "callback works",
+        because: "manual review of callback flow",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
@@ -87,6 +88,7 @@ describe("charter_manage complete", () => {
         featureId: "f2-tokens",
         outcome: "pass",
         summary: "tokens persisted",
+        because: "verified token persistence by hand",
         now: "2026-05-15T02:30:00.000Z",
       });
       const result = await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
@@ -157,6 +159,7 @@ describe("charter_manage amend_charter", () => {
         featureId: "f1-callback",
         outcome: "pass",
         summary: "callback works",
+        because: "manual review of callback flow",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
@@ -165,6 +168,7 @@ describe("charter_manage amend_charter", () => {
         featureId: "f2-tokens",
         outcome: "pass",
         summary: "tokens persisted",
+        because: "verified token persistence by hand",
         now: "2026-05-15T02:30:00.000Z",
       });
       await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });

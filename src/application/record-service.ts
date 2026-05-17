@@ -2,7 +2,14 @@ import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
-import type { CharterCriterion } from "../domain/types";
+import { parseFeatureMarkdown } from "../domain/feature-md";
+import type { CharterCriterion, RecordedBy } from "../domain/types";
+
+/** Default identity for evidence written by the root agent. Callers (handoff,
+ * delegated tooling) override this when they have a more specific identity. */
+const DEFAULT_RECORDED_BY: RecordedBy = "agent:root";
+/** Persona prefix used when applyHandoff derives recordedBy from subagentSessionId. */
+const DEFAULT_HANDOFF_PERSONA = "charter-verifier";
 import {
   appendEvent,
   charterDir,
@@ -23,6 +30,10 @@ export interface RecordEvidenceInput {
   artifacts?: string[];
   details?: Record<string, unknown>;
   source?: "manual" | "verifier" | "subagent";
+  /** Identity of the writer. Defaults to 'agent:root' when omitted. */
+  recordedBy?: RecordedBy;
+  /** Rationale; REQUIRED when source === 'manual'. */
+  because?: string;
   now?: string;
 }
 
@@ -43,6 +54,8 @@ export interface CriterionStateRecord {
   lastSummary: string;
   lastFeatureId?: string;
   source?: "manual" | "verifier" | "subagent";
+  recordedBy?: RecordedBy;
+  because?: string;
 }
 
 export interface CriterionStateFile {
@@ -65,6 +78,15 @@ export async function recordEvidence(
   const criterion = charter.criteria.find((entry) => entry.id === input.criterionId);
   if (!criterion) throw new Error(`Unknown criterion ${input.criterionId} in charter ${input.charterId}`);
 
+  const source = input.source ?? "manual";
+  const because = input.because?.trim() || undefined;
+  if (source === "manual" && !because) {
+    // Manual evidence is the lowest-trust write; without a stable rationale
+    // the completion gate cannot tell drive-by approvals from real review.
+    throw new Error(`Manual evidence for ${criterion.id} requires a non-empty 'because' rationale.`);
+  }
+  const recordedBy: RecordedBy = input.recordedBy ?? DEFAULT_RECORDED_BY;
+
   const now = input.now ?? new Date().toISOString();
   const stamp = now.replace(/[:.]/g, "-");
   const featureSegment = input.featureId?.trim() || "_charter";
@@ -79,7 +101,9 @@ export async function recordEvidence(
     summary: input.summary.trim(),
     artifacts: input.artifacts ?? [],
     details: input.details ?? {},
-    source: input.source ?? "manual",
+    source,
+    recordedBy,
+    ...(because ? { because } : {}),
     verifier: criterion.verifier,
     ts: now,
   };
@@ -92,7 +116,9 @@ export async function recordEvidence(
     lastTs: now,
     lastSummary: record.summary,
     lastFeatureId: input.featureId,
-    source: input.source ?? "manual",
+    source,
+    recordedBy,
+    ...(because ? { because } : {}),
   };
   await writeJsonAtomic(join(dir, "criterion-state.json"), stateFile);
 
@@ -105,6 +131,10 @@ export async function recordEvidence(
     outcome: input.outcome,
     source: record.source,
   });
+
+  if (input.featureId) {
+    await projectFeatureCompletionFromEvidence(dir, input.featureId, input.charterId, now);
+  }
 
   return {
     charterId: input.charterId,
@@ -183,6 +213,7 @@ export async function verifyCriterion(
     outcome,
     summary,
     source: "verifier",
+    recordedBy: DEFAULT_RECORDED_BY,
     details: {
       command: criterion.command,
       exitCode: execution.exitCode,
@@ -325,16 +356,19 @@ export async function applyHandoff(projectDir: string, input: ApplyHandoffInput)
       artifacts: completed.artifacts,
       details: { ...(completed.details ?? {}), subagentSessionId: input.subagentSessionId, handoffPath: handoffRelative },
       source: "subagent",
+      recordedBy: `subagent:${DEFAULT_HANDOFF_PERSONA}:${input.subagentSessionId}` as RecordedBy,
       now,
     });
   }
 
   const featureState = await loadFeatureState(dir, input.charterId);
   const existing = featureState.features[input.featureId] ?? {};
+  const completed = await handoffCompletesFeature(dir, input.featureId, input.charterId);
   featureState.features[input.featureId] = {
     ...existing,
-    status: existing.status ?? "in_progress",
+    status: completed ? "completed" : existing.status ?? "in_progress",
     startedAt: existing.startedAt ?? now,
+    completedAt: completed ? existing.completedAt ?? now : existing.completedAt,
     lastWorkerSessionId: input.subagentSessionId,
     lastHandoffPath: handoffRelative,
   };
@@ -362,6 +396,37 @@ export async function applyHandoff(projectDir: string, input: ApplyHandoffInput)
       ...nextActionsForStatus(state.status),
     ],
   };
+}
+
+async function handoffCompletesFeature(dir: string, featureId: string, charterId: string): Promise<boolean> {
+  let fulfills: string[];
+  try {
+    const feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${featureId}.md`), "utf8"));
+    fulfills = feature.fulfills;
+  } catch {
+    return false;
+  }
+  if (fulfills.length === 0) return false;
+  const criterionState = await loadCriterionState(dir, charterId);
+  return fulfills.every((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass");
+}
+
+/**
+ * After an evidence record is written, flip `feature-state.<featureId>.status`
+ * to `completed` if every fulfilled criterion for that feature now has pass\n+ * evidence. Mirrors the projection in `applyHandoff` so agents that record\n+ * evidence directly (no handoff envelope) still see the feature close.\n+ */
+async function projectFeatureCompletionFromEvidence(dir: string, featureId: string, charterId: string, now: string): Promise<void> {
+  const completed = await handoffCompletesFeature(dir, featureId, charterId);
+  if (!completed) return;
+  const featureState = await loadFeatureState(dir, charterId);
+  const existing = featureState.features[featureId] ?? {};
+  if (existing.status === "completed") return;
+  featureState.features[featureId] = {
+    ...existing,
+    status: "completed",
+    startedAt: existing.startedAt ?? now,
+    completedAt: existing.completedAt ?? now,
+  };
+  await writeJsonAtomic(join(dir, "feature-state.json"), featureState);
 }
 
 async function loadFeatureState(dir: string, charterId: string): Promise<FeatureStateFile> {

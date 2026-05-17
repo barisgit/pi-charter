@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createCharter } from "../src/application/service";
 import { lockPlan } from "../src/application/plan-service";
 import { applyHandoff } from "../src/application/record-service";
+import { recordEvidence } from "../src/application/record-service";
 
 async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promise<T> {
   const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-handoff-"));
@@ -98,6 +99,127 @@ describe("charter_record handoff_apply", () => {
 
       const featureState = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
       expect(featureState.features["f1"].lastWorkerSessionId).toBe("sess_worker_42");
+      expect(featureState.features["f1"].status).toBe("completed");
+      expect(featureState.features["f1"].completedAt).toBe("2026-05-15T02:00:00.000Z");
+    });
+  });
+
+  test("keeps feature in progress until every fulfilled criterion has pass evidence", async () => {
+    await withTempProject(async (projectDir) => {
+      await makeActiveCharter(projectDir);
+      const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
+      await writeFile(
+        join(dir, "plan", "f3.md"),
+        [
+          "---",
+          "id: f3",
+          "milestone: m1",
+          "order: 3",
+          "fulfills: [VAL-H-001, VAL-H-002]",
+          "preconditions: []",
+          "---",
+          "# f3",
+          "",
+        ].join("\n"),
+      );
+
+      await applyHandoff(projectDir, {
+        charterId: "cha-handoff-1",
+        featureId: "f3",
+        subagentSessionId: "sess_worker_partial",
+        handoffNote: "Worker completed only token exchange.",
+        completedCriteria: [
+          {
+            criterionId: "VAL-H-001",
+            outcome: "pass",
+            summary: "Token exchange returns access_token",
+          },
+        ],
+        now: "2026-05-15T02:00:00.000Z",
+      });
+
+      const featureState = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
+      expect(featureState.features["f3"].status).toBe("in_progress");
+      expect(featureState.features["f3"].completedAt).toBeUndefined();
+    });
+  });
+
+  test("recordEvidence flips feature-state to completed once every fulfilled criterion has pass evidence", async () => {
+    await withTempProject(async (projectDir) => {
+      await makeActiveCharter(projectDir);
+      const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
+      await writeFile(
+        join(dir, "plan", "f4.md"),
+        [
+          "---",
+          "id: f4",
+          "milestone: m1",
+          "order: 4",
+          "fulfills: [VAL-H-001, VAL-H-002]",
+          "preconditions: []",
+          "---",
+          "# f4",
+          "",
+        ].join("\n"),
+      );
+
+      await recordEvidence(projectDir, {
+        charterId: "cha-handoff-1",
+        criterionId: "VAL-H-001",
+        featureId: "f4",
+        outcome: "pass",
+        summary: "criterion one passed",
+        because: "manual sign-off, criterion one",
+        now: "2026-05-15T03:00:00.000Z",
+      });
+      let featureState = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
+      expect(featureState.features["f4"]?.status).toBeUndefined();
+
+      await recordEvidence(projectDir, {
+        charterId: "cha-handoff-1",
+        criterionId: "VAL-H-002",
+        featureId: "f4",
+        outcome: "pass",
+        summary: "criterion two passed",
+        because: "manual sign-off, criterion two",
+        now: "2026-05-15T03:01:00.000Z",
+      });
+      featureState = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
+      expect(featureState.features["f4"].status).toBe("completed");
+      expect(featureState.features["f4"].completedAt).toBe("2026-05-15T03:01:00.000Z");
+    });
+  });
+
+  test("writes recordedBy='subagent:charter-verifier:<sessionId>' on every evidence record it appends", async () => {
+    await withTempProject(async (projectDir) => {
+      await makeActiveCharter(projectDir);
+      const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
+
+      const result = await applyHandoff(projectDir, {
+        charterId: "cha-handoff-1",
+        featureId: "f1",
+        subagentSessionId: "rev-1",
+        handoffNote: "verifier reviewed",
+        completedCriteria: [
+          {
+            criterionId: "VAL-H-001",
+            outcome: "pass",
+            summary: "reviewed by charter-verifier",
+          },
+        ],
+        now: "2026-05-15T04:00:00.000Z",
+      });
+      expect(result.appliedCount).toBe(1);
+
+      const evidenceDir = join(dir, "work", "f1", "evidence");
+      const entries = await readdir(evidenceDir);
+      expect(entries.length).toBe(1);
+      const stored = JSON.parse(await readFile(join(evidenceDir, entries[0]), "utf8"));
+      expect(stored.recordedBy).toBe("subagent:charter-verifier:rev-1");
+      expect(stored.source).toBe("subagent");
+
+      const criterionState = JSON.parse(await readFile(join(dir, "criterion-state.json"), "utf8"));
+      expect(criterionState.criteria["VAL-H-001"].recordedBy).toBe("subagent:charter-verifier:rev-1");
     });
   });
 

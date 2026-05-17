@@ -1,4 +1,4 @@
-import type { CharterCriterion, ParsedCharterMarkdown, VerifierKind } from "./types";
+import type { CharterCriterion, ParsedCharterMarkdown, ParseWarning, VerifierKind } from "./types";
 
 const DEFAULT_VERIFIER: VerifierKind = "manual";
 
@@ -49,9 +49,10 @@ export function renderInitialCharterMarkdown(objective: string): string {
 export function parseCharterMarkdown(markdown: string): ParsedCharterMarkdown {
   const sections = splitH2Sections(markdown);
   const objective = cleanBlock(sections.get("objective") ?? "");
-  const criteria = parseCriteria(sections.get("criteria") ?? "");
+  const warnings: ParseWarning[] = [];
+  const criteria = parseCriteria(sections.get("criteria") ?? "", warnings);
   const constraints = parseConstraints(sections.get("scope and constraints") ?? "");
-  return { objective, criteria, constraints };
+  return { objective, criteria, constraints, warnings };
 }
 
 function splitH2Sections(markdown: string): Map<string, string> {
@@ -73,7 +74,7 @@ function splitH2Sections(markdown: string): Map<string, string> {
   return sections;
 }
 
-function parseCriteria(section: string): CharterCriterion[] {
+function parseCriteria(section: string, warnings: ParseWarning[]): CharterCriterion[] {
   const criteria: CharterCriterion[] = [];
   const lines = section.split(/\r?\n/);
   let currentHeading: string | undefined;
@@ -81,7 +82,7 @@ function parseCriteria(section: string): CharterCriterion[] {
 
   const flush = () => {
     if (!currentHeading) return;
-    const parsed = parseCriterion(currentHeading, buffer.join("\n"));
+    const parsed = parseCriterion(currentHeading, buffer.join("\n"), warnings);
     if (parsed) criteria.push(parsed);
   };
 
@@ -99,17 +100,21 @@ function parseCriteria(section: string): CharterCriterion[] {
   return criteria;
 }
 
-function parseCriterion(heading: string, body: string): CharterCriterion | undefined {
+function parseCriterion(heading: string, body: string, warnings: ParseWarning[]): CharterCriterion | undefined {
   const headingMatch = /^(VAL-[A-Z0-9-]+)\s*(?:[—-]\s*)?(.*)$/.exec(heading);
   if (!headingMatch) return undefined;
 
   const fields = parseFields(body);
   const commandValue = fields.get("command");
+  const verifierRaw = fields.get("verifier");
+  if (verifierRaw === undefined) {
+    warnings.push({ criterionId: headingMatch[1], reason: "missing-verifier" });
+  }
   return {
     id: headingMatch[1],
     title: headingMatch[2]?.trim() || headingMatch[1],
     description: fields.get("description"),
-    verifier: parseVerifier(fields.get("verifier")),
+    verifier: parseVerifier(verifierRaw),
     command: commandValue?.trim() ? commandValue.trim() : undefined,
     requireFreshEvidence: parseBoolean(
       fields.get("fresh evidence required") ?? fields.get("require fresh evidence"),

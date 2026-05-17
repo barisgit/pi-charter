@@ -47,10 +47,45 @@ export interface CharterCriterion {
   requireReviewSubagent: boolean;
 }
 
+export type ParseWarningReason = "missing-verifier" | "missing-because";
+
+export interface ParseWarning {
+  criterionId: string;
+  reason: ParseWarningReason;
+}
+
 export interface ParsedCharterMarkdown {
   objective: string;
   criteria: CharterCriterion[];
   constraints: string[];
+  warnings: ParseWarning[];
+}
+
+/**
+ * Identity of the actor that produced an evidence record. Distinguishing the
+ * root agent from a delegated subagent (or a human) is what lets the
+ * completion gate enforce identity-disjoint review without re-deriving the
+ * writer from event history.
+ */
+export type RecordedBy = `agent:root` | `subagent:${string}:${string}` | `user`;
+
+export type EvidenceSource = "manual" | "verifier" | "hook" | "subagent";
+
+export interface EvidenceRecord {
+  charterId: string;
+  criterionId: string;
+  featureId?: string;
+  outcome: "pass" | "fail" | "partial";
+  summary: string;
+  artifacts: string[];
+  details: Record<string, unknown>;
+  source: EvidenceSource;
+  /** Required: who wrote this record. Populated at every recordEvidence/verifyCriterion/applyHandoff call site. */
+  recordedBy: RecordedBy;
+  /** Optional rationale; REQUIRED when source === 'manual'. */
+  because?: string;
+  verifier: VerifierKind;
+  ts: string;
 }
 
 export interface CharterEvent {
