@@ -3,10 +3,10 @@ import { complete, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { addFeature, lockPlan, updateFeature, viewPlan } from "./plan-service";
-import { applyHandoff, recordEvidence, verifyCriterion, type HandoffCompletedCriterion } from "./record-service";
+import { addFeature, addFeatureBatch, lockPlan, updateFeature, viewPlan, type FeatureEntry } from "./plan-service";
+import { applyHandoff, recordEvidence, recordEvidenceBatch, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
-import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding } from "./binding-service";
+import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
 import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
 import { charterDir, loadCharterState } from "../infrastructure/store";
@@ -55,6 +55,7 @@ type CharterPlanInput = {
   fulfills?: string[];
   preconditions?: string[];
   body?: string;
+  features?: FeatureEntry[];
 };
 
 type CharterRecordInput = {
@@ -67,6 +68,7 @@ type CharterRecordInput = {
   because?: string;
   artifacts?: string[];
   details?: Record<string, unknown>;
+  entries?: EvidenceEntry[];
   timeoutMs?: number;
   subagentSessionId?: string;
   handoffNote?: string;
@@ -75,7 +77,7 @@ type CharterRecordInput = {
 
 const CharterManageParams = Type.Object({
   action: StringEnum(["create", "pause", "resume", "complete", "force_complete", "amend_charter"] as const),
-  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional when exactly one active charter exists." })),
+  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional for every action except create; when omitted, resolves to the charter bound to the current session." })),
   name: Type.Optional(Type.String({ description: "Optional short slug shown in widget headers and status (e.g. 'headless-click-pid'). Lowercased; non-slug chars stripped; clamped to 32 chars. Falls back to the first 8 chars of the charterId when omitted." })),
   objective: Type.Optional(Type.String({ description: "Required for action=create. The desired outcome, not a spec path." })),
   reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
@@ -90,24 +92,32 @@ const CharterManageParams = Type.Object({
 });
 
 const CharterStatusParams = Type.Object({
-  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional when exactly one active charter exists." })),
+  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
   verbose: Type.Optional(Type.Boolean({ default: false })),
 });
 
 const CharterPlanParams = Type.Object({
   action: StringEnum(["view", "add_feature", "update_feature", "lock_plan"] as const),
-  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional when exactly one active charter exists." })),
+  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
   id: Type.Optional(Type.String({ description: "Feature id slug, e.g. m1-bootstrap. Required for add_feature/update_feature." })),
   milestone: Type.Optional(Type.String({ description: "Milestone id this feature belongs to, e.g. m1-bootstrap. Required for add_feature." })),
   order: Type.Optional(Type.Number({ description: "Sort order within the milestone (lower runs first). Required for add_feature." })),
   fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill. Must be non-empty for add_feature." })),
   preconditions: Type.Optional(Type.Array(Type.String(), { description: "Other feature ids that should land before this one. Advisory only." })),
   body: Type.Optional(Type.String({ description: "Feature markdown body (prose under the YAML frontmatter). Required for add_feature." })),
+  features: Type.Optional(Type.Array(Type.Object({
+    id: Type.String(),
+    milestone: Type.String(),
+    order: Type.Number(),
+    fulfills: Type.Array(Type.String()),
+    preconditions: Type.Optional(Type.Array(Type.String())),
+    body: Type.String(),
+  }), { description: "Batch shape for action=add_feature. Atomic: all entries land or none. Response preserves request order. Mutually exclusive with the single-entry scalar fields." })),
 });
 
 const CharterRecordParams = Type.Object({
   action: StringEnum(["evidence", "verify", "handoff_apply"] as const),
-  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional when exactly one active charter exists." })),
+  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
   criterionId: Type.Optional(Type.String({ description: "VAL-* criterion id. Required for evidence and verify." })),
   featureId: Type.Optional(Type.String({ description: "Feature id this evidence/verification belongs to." })),
   outcome: Type.Optional(StringEnum(["pass", "fail", "partial"] as const)),
@@ -115,6 +125,16 @@ const CharterRecordParams = Type.Object({
   because: Type.Optional(Type.String({ description: "Rationale for the evidence record. Required when action=evidence and source is manual; explains why this outcome is correct so the completion gate can distinguish drive-by approvals from real review." })),
   artifacts: Type.Optional(Type.Array(Type.String())),
   details: Type.Optional(Type.Object({}, { additionalProperties: true })),
+  entries: Type.Optional(Type.Array(Type.Object({
+    criterionId: Type.String(),
+    featureId: Type.Optional(Type.String()),
+    outcome: StringEnum(["pass", "fail", "partial"] as const),
+    summary: Type.String(),
+    because: Type.Optional(Type.String()),
+    artifacts: Type.Optional(Type.Array(Type.String())),
+    details: Type.Optional(Type.Object({}, { additionalProperties: true })),
+    source: Type.Optional(StringEnum(["manual", "verifier", "subagent"] as const)),
+  }), { description: "Batch evidence entries. When provided, single-entry fields (criterionId/outcome/summary/...) must be omitted; the batch is atomic within the call (one criterion-state.json write covering all entries)." })),
   timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for verify (default 120000)." })),
   subagentSessionId: Type.Optional(Type.String({ description: "Subagent session id for action=handoff_apply." })),
   handoffNote: Type.Optional(Type.String({ description: "Free-text handoff note for action=handoff_apply." })),
@@ -127,7 +147,12 @@ const CharterRecordParams = Type.Object({
   }))),
 });
 
-export function registerCharterTools(pi: ExtensionAPI): void {
+interface RegisterCharterToolsOptions {
+  /** Test seam: keep production bound to the normal home directory. */
+  homeDir?: string;
+}
+
+export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterToolsOptions = {}): void {
   pi.registerTool({
     name: "charter_manage",
     label: "Charter Manage",
@@ -139,6 +164,10 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     ],
     parameters: CharterManageParams,
     async execute(_toolCallId, params: CharterManageInput, _signal, _onUpdate, ctx) {
+      // `create` is the only charter_manage action that does not require a
+      // pre-existing charter (it MINTS one). Every other action resolves
+      // charterId from the explicit argument or the session reverse binding,
+      // throwing NoCharterBoundError when neither is available.
       switch (params.action) {
         case "create": {
           if (!params.objective?.trim()) throw new Error("objective is required for charter_manage action=create");
@@ -151,34 +180,38 @@ export function registerCharterTools(pi: ExtensionAPI): void {
             sessionId,
           });
           if (sessionId) {
-            await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId });
+            await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
           }
           await tryUpsertCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "pause": {
-          const result = await pauseCharter(ctx.cwd, { charterId: params.charterId, reason: params.reason });
+          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+          const result = await pauseCharter(ctx.cwd, { charterId: resolved.charterId, reason: params.reason });
           await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "resume": {
-          const result = await resumeCharter(ctx.cwd, { charterId: params.charterId });
+          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+          const result = await resumeCharter(ctx.cwd, { charterId: resolved.charterId });
           const sessionId = ctx.sessionManager.getSessionId?.();
           if (sessionId) {
-            await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId });
+            await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
           }
           await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "complete": {
-          const result = await completeCharter(ctx.cwd, { charterId: params.charterId, completionNote: params.completionNote });
+          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+          const result = await completeCharter(ctx.cwd, { charterId: resolved.charterId, completionNote: params.completionNote });
           tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
         case "force_complete": {
+          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
           const target = params.target === "completed" || params.target === "abandoned" || params.target === "budget_limited" ? params.target : undefined;
           const result = await forceCompleteCharter(ctx.cwd, {
-            charterId: params.charterId,
+            charterId: resolved.charterId,
             reason: params.reason ?? "",
             target,
           });
@@ -186,9 +219,10 @@ export function registerCharterTools(pi: ExtensionAPI): void {
           return toolResult(result.message, result);
         }
         case "amend_charter": {
+          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
           const target = params.target === "planning" || params.target === "review" ? params.target : undefined;
           const result = await amendCharter(ctx.cwd, {
-            charterId: params.charterId,
+            charterId: resolved.charterId,
             reason: params.reason ?? "",
             target,
           });
@@ -209,7 +243,8 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     ],
     parameters: CharterPlanParams,
     async execute(_toolCallId, params: CharterPlanInput, _signal, _onUpdate, ctx) {
-      const status = await getCharterStatus(ctx.cwd, { charterId: params.charterId });
+      const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+      const status = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
       if (params.action === "view") {
         const result = await viewPlan(ctx.cwd, { charterId: status.charterId });
         return toolResult(`Plan for charter ${result.charterId}: ${result.features.length} feature(s), ${result.drift.uncovered.length} uncovered criterion/criteria.`, result);
@@ -220,11 +255,32 @@ export function registerCharterTools(pi: ExtensionAPI): void {
         return toolResult(result.message, result);
       }
       if (params.action === "add_feature") {
+        const singleProvided = params.id !== undefined
+          || params.milestone !== undefined
+          || params.order !== undefined
+          || params.fulfills !== undefined
+          || params.body !== undefined
+          || params.preconditions !== undefined;
+        if (params.features !== undefined && singleProvided) {
+          throw new Error("provide either single-entry fields or a batch `features` array, not both");
+        }
+        if (params.features !== undefined) {
+          if (params.features.length === 0) throw new Error("features array must be non-empty for charter_plan action=add_feature");
+          const result = await addFeatureBatch(ctx.cwd, {
+            charterId: status.charterId,
+            features: params.features,
+          });
+          return toolResult(result.message, result);
+        }
         if (!params.id?.trim()) throw new Error("id is required for charter_plan action=add_feature");
         if (!params.milestone?.trim()) throw new Error("milestone is required for charter_plan action=add_feature");
         if (params.order === undefined) throw new Error("order is required for charter_plan action=add_feature");
         if (!params.fulfills || params.fulfills.length === 0) throw new Error("fulfills must list at least one VAL-* criterion id for charter_plan action=add_feature");
         if (!params.body?.trim()) throw new Error("body is required for charter_plan action=add_feature");
+        // VAL-8: legacy single-entry shape stays supported but emits a deprecation
+        // notice so callers can migrate to the batch shape. Literal "deprecated"
+        // string is part of the contract — do not reword without updating VAL-8.
+        console.warn("charter_plan action=add_feature: single-entry shape is deprecated; pass a `features: [...]` array instead.");
         const result = await addFeature(ctx.cwd, {
           charterId: status.charterId,
           id: params.id,
@@ -264,11 +320,32 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     ],
     parameters: CharterRecordParams,
     async execute(_toolCallId, params: CharterRecordInput, _signal, _onUpdate, ctx) {
-      const status = await getCharterStatus(ctx.cwd, { charterId: params.charterId });
+      const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+      const status = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
       if (params.action === "evidence") {
+        const hasBatch = Array.isArray(params.entries) && params.entries.length > 0;
+        const hasSingle = Boolean(
+          (params.criterionId && params.criterionId.trim())
+          || params.outcome
+          || (params.summary && params.summary.trim()),
+        );
+        if (hasBatch && hasSingle) {
+          throw new Error("charter_record action=evidence: provide either single-entry fields or a batch `entries` array, not both");
+        }
+        if (hasBatch) {
+          const batch = await recordEvidenceBatch(ctx.cwd, {
+            charterId: status.charterId,
+            entries: params.entries!,
+          });
+          await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
+          return toolResult(`Recorded ${batch.entries.length} evidence entries for charter ${batch.charterId}.`, batch);
+        }
         if (!params.criterionId?.trim()) throw new Error("criterionId is required for charter_record action=evidence");
         if (!params.outcome) throw new Error("outcome is required for charter_record action=evidence");
         if (!params.summary?.trim()) throw new Error("summary is required for charter_record action=evidence");
+        // VAL-8: see add_feature deprecation note above. Literal "deprecated"
+        // string is part of the contract.
+        console.warn("charter_record action=evidence: single-entry shape is deprecated; pass an `entries: [...]` array instead.");
         const result = await recordEvidence(ctx.cwd, {
           charterId: status.charterId,
           criterionId: params.criterionId,
@@ -324,7 +401,8 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     ],
     parameters: CharterStatusParams,
     async execute(_toolCallId, params: CharterStatusInput, _signal, _onUpdate, ctx) {
-      const result = await getCharterStatus(ctx.cwd, { charterId: params.charterId });
+      const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+      const result = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
       return toolResult(formatCharterStatusText(result), result);
     },
   });

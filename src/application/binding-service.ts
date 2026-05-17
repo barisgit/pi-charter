@@ -113,6 +113,52 @@ export async function readSessionBinding(input: {
   }
 }
 
+/**
+ * Typed structured error thrown by `resolveCharterId` when neither an
+ * explicit `charterId` argument nor a session reverse binding is available.
+ *
+ * Shape is intentionally an Error subtype with extra fields so callers can
+ * `instanceof` check, grep for the literal phrase `"no charter bound"` in
+ * logs, and read a stable `code` / `hint` programmatically without parsing
+ * the message string.
+ */
+export class NoCharterBoundError extends Error {
+  readonly code = "NO_CHARTER_BOUND" as const;
+  readonly hint: string;
+  constructor(
+    message = "no charter bound to this session",
+    hint = "Call charter_manage action=create to start one, or rebind this session via session_start.",
+  ) {
+    super(message);
+    this.name = "NoCharterBoundError";
+    this.hint = hint;
+  }
+}
+
+/**
+ * Resolve a charter id from an explicit tool argument or the session's
+ * reverse binding (`<homeDir>/.pi/agent/sessions/<sid>/charter.json`).
+ *
+ * Returns `{ charterId, source }` so callers can distinguish an explicit
+ * pass-through (`"argument"`) from a defaulted resolution (`"binding"`).
+ * Throws `NoCharterBoundError` when neither path produces a charterId; the
+ * error message contains the literal phrase `"no charter bound"` so the
+ * VAL-2 grep test and operator log searches work without coupling to the
+ * exact wording elsewhere in the codebase.
+ */
+export async function resolveCharterId(
+  input: { charterId?: string },
+  ctx: { sessionId?: string; homeDir?: string },
+): Promise<{ charterId: string; source: "argument" | "binding" }> {
+  const explicit = input.charterId?.trim();
+  if (explicit) return { charterId: explicit, source: "argument" };
+  if (ctx.sessionId) {
+    const binding = await readSessionBinding({ sessionId: ctx.sessionId, homeDir: ctx.homeDir });
+    if (binding?.charterId) return { charterId: binding.charterId, source: "binding" };
+  }
+  throw new NoCharterBoundError();
+}
+
 export async function reconcileSessionBinding(input: {
   sessionId: string;
   homeDir?: string;
