@@ -66,18 +66,37 @@ export class CharterPickerComponent implements Component {
     const rightWidth = interiorWidth - leftWidth;
     const bodyHeight = height - 2;
     const contentHeight = Math.max(0, bodyHeight - 1);
+    // Reserve bottom ~30% of left pane for cursor-info sub-panel (min 5 lines, max 10).
+    const infoHeight = clamp(Math.floor(contentHeight * 0.30), 5, 10);
+    const listHeight = Math.max(1, contentHeight - infoHeight - 1); // -1 for divider rule
 
-    const leftContent = this.buildLeftPane(leftWidth);
+    const listContent = this.buildLeftPane(leftWidth);
+    const infoContent = this.buildInfoPane(leftWidth);
     const rightContent = this.buildRightPane(rightWidth);
     this.lastRightMaxScroll = Math.max(0, rightContent.length - contentHeight);
     this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
     const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + contentHeight);
+    const infoDivider = this.color("borderMuted", titledRule("info", leftWidth, "\u251c", "\u2524"));
 
     const rows = [this.topBorder(leftWidth, rightWidth)];
     for (let i = 0; i < bodyHeight; i++) {
       const isFooter = i === bodyHeight - 1;
-      const left = isFooter ? LEFT_FOOTER : (leftContent[i] ?? "");
-      const right = isFooter ? RIGHT_FOOTER : (rightVisible[i] ?? "");
+      let left: string;
+      let right: string;
+      if (isFooter) {
+        left = this.footerText(LEFT_FOOTER, this.focus === "left");
+        right = this.footerText(RIGHT_FOOTER, this.focus === "right");
+      } else if (i < listHeight) {
+        left = listContent[i] ?? "";
+        right = rightVisible[i] ?? "";
+      } else if (i === listHeight) {
+        left = infoDivider;
+        right = rightVisible[i] ?? "";
+      } else {
+        const infoIdx = i - listHeight - 1;
+        left = infoContent[infoIdx] ?? "";
+        right = rightVisible[i] ?? "";
+      }
       rows.push(this.bodyRow(left, right, leftWidth, rightWidth));
     }
     rows.push(this.bottomBorder(leftWidth, rightWidth));
@@ -136,23 +155,69 @@ export class CharterPickerComponent implements Component {
     const terminal = this.charters
       .map((row, index) => ({ row, index }))
       .filter(({ row }) => TERMINAL_STATUSES.has(row.status));
-    const lines: string[] = [titledRule("Charters", width, "╭", "╮")];
+    const headerTitle = this.focus === "left" ? "▶ Charters ◀" : "Charters";
+    const headerColor: ThemeColorName = this.focus === "left" ? "borderAccent" : "borderMuted";
+    const lines: string[] = [this.color(headerColor, titledRule(headerTitle, width, "╭", "╮"))];
     for (const entry of nonTerminal) lines.push(this.leftRow(entry.row, entry.index, width, false));
-    if (terminal.length > 0) lines.push(titledRule("done", width, "├", "┤"));
+    if (terminal.length > 0) lines.push(this.color("borderMuted", titledRule("done", width, "├", "┤")));
     for (const entry of terminal) lines.push(this.leftRow(entry.row, entry.index, width, true));
     return lines;
   }
 
+  private buildInfoPane(width: number): string[] {
+    if (width <= 0) return [];
+    const row = this.charters[this.cursorIndex];
+    if (!row) return [this.color("dim", "(no selection)")];
+    const snapshot = this.snapshots.get(row.charterId);
+    const out: string[] = [];
+    out.push(this.theme.bold(clipText(row.name, width)));
+    const statusBadge = this.color(statusColor(row.status), `[${row.status}]`);
+    const passColor = this.passCountColor(row.passCount, row.totalCount);
+    const counter = this.color(passColor, `${row.passCount}/${row.totalCount}`);
+    out.push(`${statusBadge} ${counter}`);
+    if (snapshot?.evaluatorVerdict) {
+      out.push(this.color(verdictColor(snapshot.evaluatorVerdict.verdict), `⚑ ${snapshot.evaluatorVerdict.verdict}`));
+    }
+    if (snapshot) {
+      const objWidth = Math.max(1, width);
+      const wrapped = wrapText(snapshot.objective, objWidth);
+      const remaining = Math.max(0, 6 - out.length);
+      for (const line of wrapped.slice(0, remaining)) out.push(this.color("muted", line));
+      if (wrapped.length > remaining && remaining > 0) {
+        out[out.length - 1] = this.color("muted", clipText(`${out[out.length - 1]}…`, objWidth));
+      }
+    }
+    return out;
+  }
+
   private leftRow(row: CharterListRow, index: number, width: number, dim: boolean): string {
-    const cursorMark = index === this.cursorIndex ? "►" : " ";
-    const boundMark = row.charterId === this.boundCharterId ? "*" : " ";
+    // Fixed-column layout so bars + counters align vertically across rows:
+    //   prefix(3)  name(flex,≥6)  bar(8)  ' '  count(7,right-aligned)  '  '  status(rest)
+    const isCursor = index === this.cursorIndex;
+    const cursorMark = isCursor ? this.color("accent", "►") : " ";
+    const boundMark = row.charterId === this.boundCharterId ? this.color("accent", "*") : " ";
     const prefix = `${cursorMark}${boundMark} `;
-    const bar = progressBar(row.passCount, row.totalCount, 8);
-    const count = `${row.passCount}/${row.totalCount}`;
-    const tail = `${bar} ${count}  ${row.status}`;
-    const nameWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(tail));
-    const line = `${prefix}${padRight(clipText(row.name, nameWidth), nameWidth)}${tail}`;
-    return dim ? this.color("dim", line) : line;
+    const PREFIX_W = 3;
+    const BAR_W = 8;
+    const COUNT_W = 7; // fits up to "999/999"
+    const GAP_BAR_COUNT = 1;
+    const GAP_COUNT_STATUS = 2;
+    const STATUS_W = Math.max(6, Math.min(14, Math.max(...this.charters.map((r) => r.status.length))));
+    let nameWidth = width - PREFIX_W - BAR_W - GAP_BAR_COUNT - COUNT_W - GAP_COUNT_STATUS - STATUS_W;
+    if (nameWidth < 4) nameWidth = Math.max(0, width - PREFIX_W - BAR_W - GAP_BAR_COUNT - COUNT_W - GAP_COUNT_STATUS);
+    const nameText = row.name.length > nameWidth
+      ? clipText(`${row.name.slice(0, Math.max(0, nameWidth - 1))}…`, nameWidth)
+      : row.name;
+    const namePart = padRight(nameText, nameWidth);
+    const styledName = dim ? this.color("dim", namePart) : (isCursor ? this.theme.bold(namePart) : namePart);
+    const bar = progressBar(row.passCount, row.totalCount, BAR_W);
+    const countText = `${row.passCount}/${row.totalCount}`;
+    const countPadded = countText.padStart(COUNT_W);
+    const count = this.color(this.passCountColor(row.passCount, row.totalCount), countPadded);
+    const statusRaw = clipText(row.status, STATUS_W);
+    const statusPart = padRight(statusRaw, STATUS_W);
+    const status = this.color(statusColor(row.status), statusPart);
+    return `${prefix}${styledName}${bar} ${count}  ${status}`;
   }
 
   private buildRightPane(width: number): string[] {
@@ -163,7 +228,12 @@ export class CharterPickerComponent implements Component {
     if (!snapshot) return [this.color("dim", "No snapshot for this charter.")];
 
     const lines: string[] = [];
-    const header = `${snapshot.header.name}  [${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
+    const focusedRight = this.focus === "right";
+    const rightTitle = focusedRight ? `▶ ${snapshot.header.name} ◀` : snapshot.header.name;
+    const statusBadge = this.color(statusColor(snapshot.header.status), `[${snapshot.header.status}]`);
+    const passColor = this.passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
+    const counter = this.color(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`);
+    const header = `${focusedRight ? this.theme.bold(rightTitle) : rightTitle}  ${statusBadge}  ${counter}  ${this.color("muted", formatElapsed(snapshot.header.elapsedMs))}`;
     lines.push(header);
     lines.push(progressBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
     lines.push(this.color("warning", "Objective"));
@@ -202,9 +272,11 @@ export class CharterPickerComponent implements Component {
       }
     }
 
-    lines.push("Recent evidence");
+    lines.push(this.theme.bold("Recent evidence"));
     for (const evidence of snapshot.recentEvidence.slice(0, 5)) {
-      lines.push(`${formatTime(evidence.ts)}  ${evidence.criterionId.padEnd(14)}  ${evidence.outcome.padEnd(7)}  ${evidence.recordedBy}`);
+      const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
+      const outcome = this.color(outcomeColor, evidence.outcome.padEnd(7));
+      lines.push(`${this.color("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}  ${this.color("dim", evidence.recordedBy)}`);
     }
     return lines;
   }
@@ -216,7 +288,9 @@ export class CharterPickerComponent implements Component {
         ? this.color("accent", "●")
         : this.color("dim", "○");
     const bar = progressBar(feature.passCount, feature.totalCount, 4);
-    return `    ${glyph} ${feature.featureId.padEnd(12)} ${bar} ${feature.passCount}/${feature.totalCount}  ${feature.status}`;
+    const statusWord = this.color(featureStatusColor(feature.status), feature.status);
+    const counter = this.color(this.passCountColor(feature.passCount, feature.totalCount), `${feature.passCount}/${feature.totalCount}`);
+    return `    ${glyph} ${feature.featureId.padEnd(12)} ${bar} ${counter}  ${statusWord}`;
   }
 
   private criterionLine(criterion: PlanCriterionNode): string {
@@ -238,11 +312,25 @@ export class CharterPickerComponent implements Component {
   }
 
   private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
-    return `│${padRight(left, leftWidth)}│${padRight(right, rightWidth)}│`;
+    const leftBorder = this.color(this.focus === "left" ? "borderAccent" : "borderMuted", "│");
+    const divider = this.color("borderMuted", "│");
+    const rightBorder = this.color(this.focus === "right" ? "borderAccent" : "borderMuted", "│");
+    return `${leftBorder}${padRight(left, leftWidth)}${divider}${padRight(right, rightWidth)}${rightBorder}`;
   }
 
   private color(color: ThemeColorName, text: string): string {
     return this.theme.fg(color, text);
+  }
+
+  private passCountColor(pass: number, total: number): ThemeColorName {
+    if (total === 0) return "dim";
+    if (pass === total) return "success";
+    if (pass === 0) return "muted";
+    return "accent";
+  }
+
+  private footerText(text: string, focused: boolean): string {
+    return focused ? this.theme.bold(this.color("accent", text)) : this.color("dim", text);
   }
 
   private clampCursor(): void {
@@ -335,7 +423,26 @@ function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
-type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim";
+type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim" | "borderAccent" | "borderMuted";
+
+function statusColor(status: CharterStatus): ThemeColorName {
+  switch (status) {
+    case "active": return "accent";
+    case "completed": return "success";
+    case "planning": return "muted";
+    case "paused": return "warning";
+    case "review": return "warning";
+    case "abandoned": return "error";
+    case "budget_limited": return "error";
+    default: return "dim";
+  }
+}
+
+function featureStatusColor(status: "completed" | "in_progress" | "pending"): ThemeColorName {
+  if (status === "completed") return "success";
+  if (status === "in_progress") return "accent";
+  return "dim";
+}
 
 function verdictColor(verdict: string): ThemeColorName {
   if (verdict === "on_track") return "success";

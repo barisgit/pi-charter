@@ -151,21 +151,26 @@ describe("CharterPickerComponent f5-picker-render", () => {
   });
 
   test("VAL-PICKER-RENDER-005: objective truncation hint and expansion", () => {
+    // The right detail pane truncates objectives > 2 lines and shows [o for full];
+    // pressing 'o' (with focus right) expands. The left info pane has its own short
+    // preview — we scope this assertion to the right detail pane only.
+    const rightOf = (lines: string[]): string => lines.map((l) => l.split("\u2502")[2] ?? "").join("\n");
+
     const one = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", { objective: "one line" })]]) });
-    expect(one.render(80).join("\n")).not.toContain("[o for full]");
+    expect(rightOf(one.render(80))).not.toContain("[o for full]");
 
     const two = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", { objective: "line one\nline two" })]]) });
-    expect(two.render(80).join("\n")).not.toContain("[o for full]");
+    expect(rightOf(two.render(80))).not.toContain("[o for full]");
 
     const long = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", { objective: "line one\nline two\nline three\nline four" })]]) });
-    expect(long.render(80).join("\n")).toContain("[o for full]");
-    expect(long.render(80).join("\n")).not.toContain("line three");
+    expect(rightOf(long.render(80))).toContain("[o for full]");
+    expect(rightOf(long.render(80))).not.toContain("line three");
     long.handleInput("\t");
     long.handleInput("o");
-    const expanded = long.render(80).join("\n");
-    expect(expanded).not.toContain("[o for full]");
-    expect(expanded).toContain("line three");
-    expect(expanded).toContain("line four");
+    const expandedRight = rightOf(long.render(80));
+    expect(expandedRight).not.toContain("[o for full]");
+    expect(expandedRight).toContain("line three");
+    expect(expandedRight).toContain("line four");
   });
 
   test("VAL-PICKER-NAV-001: tab changes focus and j scrolls right pane", () => {
