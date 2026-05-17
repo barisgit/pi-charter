@@ -105,6 +105,7 @@ async function writeReadyPlan(projectDir: string, charterId: string, criteria = 
         `### ${criterionId} Covered criterion`,
         "Description: Covered by f1.",
         "Verifier: manual",
+        "Because: reminder bridge probe verified by hand",
         "Fresh evidence required: false",
         "",
       ]),
@@ -224,8 +225,9 @@ describe("charter reminders bridge", () => {
         criterionId: "VAL-REM-001",
         featureId: "f1",
         outcome: "pass",
-        summary: "manual pass",
-        because: "manual sign-off for reminder lifecycle test",
+        summary: "reviewer pass",
+        source: "subagent",
+        recordedBy: "subagent:charter-verifier:sess-rem-done",
       });
 
       events.length = 0;
@@ -271,8 +273,9 @@ describe("charter reminders bridge", () => {
         criterionId: "VAL-REM-001",
         featureId: "f1",
         outcome: "pass",
-        summary: "manual pass",
-        because: "manual sign-off for reminder lifecycle test",
+        summary: "reviewer pass",
+        source: "subagent",
+        recordedBy: "subagent:charter-verifier:sess-rem-throw",
       });
       await expect(executeTool(tools.get("charter_manage"), { action: "complete", charterId }, projectDir)).resolves.toMatchObject({
         details: { status: "completed" },
@@ -325,6 +328,153 @@ describe("charter reminders bridge", () => {
       expect(reminder.text).toContain("Next: f1");
       expect(reminder.text).toContain("Use subagents");
       expect(reminder.metadata).toMatchObject({ charterId, projectDir, passCount: 1, totalCount: 2, next: "f1" });
+    });
+  });
+
+  it("surfaces actionable planning-phase next step (no criteria → no features → uncovered → lock_plan)", async () => {
+    await withTempProject(async (projectDir) => {
+      const { events, tools, pi } = makePiHarness();
+      const charterId = await createCharterWithTool(projectDir, tools, events, "planning-stages");
+
+      // 1. Empty charter.md (no VAL criteria yet).
+      await writeCharter(projectDir, charterId, [
+        "# Charter",
+        "## Objective",
+        "Reach planning surface stages",
+        "## Criteria",
+        "## Scope and constraints",
+        "- none",
+        "",
+      ].join("\n"));
+      events.length = 0;
+      await upsertCharterReminder(pi, projectDir, charterId);
+      expect(events.at(-1)?.payload.text).toContain("author charter.md VAL-* criteria");
+      expect(events.at(-1)?.payload.text).toContain("do not start implementation");
+
+      // 2. VAL criteria present but no features yet.
+      await writeCharter(projectDir, charterId, [
+        "# Charter",
+        "## Objective",
+        "Reach planning surface stages",
+        "## Criteria",
+        "### VAL-PLAN-001 first stage",
+        "Description: first stage covered.",
+        "Verifier: manual",
+        "Because: manual planning probe sign-off",
+        "### VAL-PLAN-002 second stage",
+        "Description: second stage covered.",
+        "Verifier: manual",
+        "Because: manual planning probe sign-off",
+        "## Scope and constraints",
+        "- none",
+        "",
+      ].join("\n"));
+      events.length = 0;
+      await upsertCharterReminder(pi, projectDir, charterId);
+      expect(events.at(-1)?.payload.text).toContain("add features that fulfill VAL-* criteria");
+
+      // 3. Add a feature covering only VAL-PLAN-001 → VAL-PLAN-002 still uncovered.
+      await writeFeature(projectDir, charterId, [
+        "---",
+        "id: f1",
+        "milestone: m1",
+        "order: 1",
+        "fulfills:",
+        "  - VAL-PLAN-001",
+        "preconditions: []",
+        "---",
+        "covers first only.",
+        "",
+      ].join("\n"));
+      events.length = 0;
+      await upsertCharterReminder(pi, projectDir, charterId);
+      expect(events.at(-1)?.payload.text).toContain("cover uncovered VAL(s): VAL-PLAN-002");
+
+      // 4. Cover the missing VAL → plan is ready to lock.
+      await writeFile(join(projectDir, ".pi/charters", charterId, "plan", "f1.md"), [
+        "---",
+        "id: f1",
+        "milestone: m1",
+        "order: 1",
+        "fulfills:",
+        "  - VAL-PLAN-001",
+        "  - VAL-PLAN-002",
+        "preconditions: []",
+        "---",
+        "covers both.",
+        "",
+      ].join("\n"));
+      events.length = 0;
+      await upsertCharterReminder(pi, projectDir, charterId);
+      expect(events.at(-1)?.payload.text).toContain("charter_plan action=lock_plan");
+    });
+  });
+
+  it("converts an upsert on a completed charter into a remove (defense in depth)", async () => {
+    await withTempProject(async (projectDir) => {
+      const { events, tools, pi } = makePiHarness();
+      const charterId = await createCharterWithTool(projectDir, tools, events, "upsert-on-completed");
+      await writeReadyPlan(projectDir, charterId);
+      await executeTool(tools.get("charter_plan"), { action: "lock_plan", charterId }, projectDir);
+      await recordEvidence(projectDir, {
+        charterId,
+        criterionId: "VAL-REM-001",
+        featureId: "f1",
+        outcome: "pass",
+        summary: "reviewer pass",
+        source: "subagent",
+        recordedBy: "subagent:charter-verifier:sess-upsert-after-done",
+      });
+      await executeTool(tools.get("charter_manage"), { action: "complete", charterId }, projectDir);
+
+      events.length = 0;
+      await upsertCharterReminder(pi, projectDir, charterId);
+      expect(events).toEqual([
+        { channel: "reminder:remove", payload: { id: `pi-charter:${charterId}`, source: "pi-charter" } },
+      ]);
+    });
+  });
+
+  it("clears a stale reverse session binding pointing at a completed charter on session_start", async () => {
+    await withTempProject(async (projectDir) => {
+      const homeDir = await mkdtemp(join(tmpdir(), "pi-charter-reminders-home-"));
+      try {
+        const sessionId = "session-stale-terminal-binding";
+        const { events, tools, pi, handlers } = makePiHarness();
+        const charterId = await createCharterWithTool(projectDir, tools, events, "stale-binding");
+        await writeReadyPlan(projectDir, charterId);
+        await executeTool(tools.get("charter_plan"), { action: "lock_plan", charterId }, projectDir);
+        await recordEvidence(projectDir, {
+          charterId,
+          criterionId: "VAL-REM-001",
+          featureId: "f1",
+          outcome: "pass",
+          summary: "reviewer pass",
+          source: "subagent",
+          recordedBy: "subagent:charter-verifier:sess-stale-binding",
+        });
+        await bindCharterToSession(projectDir, { charterId, sessionId, homeDir });
+        await executeTool(tools.get("charter_manage"), { action: "complete", charterId }, projectDir);
+
+        registerCharterFlags(pi, { homeDir });
+        events.length = 0;
+        for (const handler of handlers.get("session_start") ?? []) {
+          await handler({}, toolContext(projectDir, sessionId));
+        }
+
+        // Reload should remove (not upsert) the dead reminder.
+        const removes = events.filter((event) => event.channel === "reminder:remove");
+        const upserts = events.filter((event) => event.channel === "reminder:upsert");
+        expect(removes.length).toBeGreaterThanOrEqual(1);
+        expect(upserts).toHaveLength(0);
+
+        // Reverse session binding under home should be gone.
+        const { readSessionBinding } = await import("../src/application/binding-service");
+        const reverse = await readSessionBinding({ sessionId, homeDir });
+        expect(reverse).toBeNull();
+      } finally {
+        await rm(homeDir, { recursive: true, force: true });
+      }
     });
   });
 

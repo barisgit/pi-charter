@@ -464,8 +464,20 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
     if (sessionId) {
       const reconciled = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
       if (reconciled) {
-        ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
-        await trySyncCharterReminder(pi, reconciled.projectDir, reconciled.charterId);
+        // Drop the session binding if it points at a terminal charter so the
+        // reminder bus doesn't keep refreshing a dead charter on reload.
+        const reconciledState = await loadCharterState(charterDir(reconciled.projectDir, reconciled.charterId)).catch(() => undefined);
+        const terminal = reconciledState
+          && (reconciledState.status === "completed"
+            || reconciledState.status === "abandoned"
+            || reconciledState.status === "budget_limited");
+        if (terminal) {
+          removeCharterReminder(pi, reconciled.charterId);
+          await clearSessionBinding(sessionId, options.homeDir).catch(() => undefined);
+        } else {
+          ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
+          await trySyncCharterReminder(pi, reconciled.projectDir, reconciled.charterId);
+        }
       }
     }
 
@@ -971,7 +983,9 @@ function tryRemoveCharterReminder(pi: ExtensionAPI, charterId: string): void {
 async function trySyncCharterReminder(pi: ExtensionAPI, projectDir: string, charterId: string): Promise<void> {
   try {
     const state = await loadCharterState(charterDir(projectDir, charterId));
-    if (state.status === "paused" || state.status === "completed" || state.status === "abandoned" || state.status === "budget_limited") {
+    // Terminal charters are removed; planning/active/review/paused keep a
+    // status-aware reminder so the agent always sees the correct next step.
+    if (state.status === "completed" || state.status === "abandoned" || state.status === "budget_limited") {
       removeCharterReminder(pi, charterId);
       return;
     }
