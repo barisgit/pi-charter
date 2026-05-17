@@ -33,6 +33,21 @@ export interface FeatureRowVM {
   elapsedMs?: number;        // only set when state === "running"
 }
 
+/**
+ * Audit-grade per-feature summary for callers (CLI, alt UIs, tests) that
+ * need the full feature DAG with status counts. Distinct from FeatureRowVM,
+ * which only carries render-slot data and is capped at MAX_ROWS.
+ */
+export interface FeatureSummaryVM {
+  featureId: string;
+  milestone: string;
+  status: "pending" | "in_progress" | "completed" | "blocked";
+  valPass: number;
+  valTotal: number;
+  blockedBy?: string[];      // present iff status === "blocked"
+  active?: boolean;          // true when in_progress or has a live subagent
+}
+
 export interface CharterWidgetVM {
   charterId: string;
   /** Short header label: name when set, else first 8 chars of UUID. */
@@ -45,6 +60,10 @@ export interface CharterWidgetVM {
   bar: { pass: number; running: number; total: number };
   rows: FeatureRowVM[];
   overflow: { hidden: number; done: number };
+  /** Per-feature summary in plan declaration order. */
+  featureRows: FeatureSummaryVM[];
+  /** Feature ids that are ready to start now (not completed, not blocked, no live subagent), in plan declaration order. */
+  readyNext: string[];
   /** Only set when isPlanning is true. */
   planning?: PlanningVM;
 }
@@ -138,9 +157,35 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
 
   const displayName = resolveDisplayName(input.charterId, input.name);
 
+  // Per-feature audit summary + readyNext. Computed once and shared across
+  // every return path (terminal, planning, active). Distinct from rows[],
+  // which is the render-bounded slot list with MAX_ROWS cap and bucket order.
+  const featureRows = buildFeatureSummaries({
+    features: input.features,
+    featureStates: input.featureStates,
+    criterionOutcomes: input.criterionOutcomes,
+    featureIdsWithLiveSubagent,
+    inProgressFeatureIds,
+  });
+  const readyNext = featureRows
+    .filter((row) => row.status === "pending" && !row.active)
+    .map((row) => row.featureId);
+
   if (isTerminal) {
     // Collapsed view: skip feature rows entirely.
-    return { charterId: input.charterId, displayName, status: input.status, isTerminal: true, isPlanning: false, elapsedMs: Math.max(0, now - createdMs), bar, rows: [], overflow: { hidden: 0, done: 0 } };
+    return {
+      charterId: input.charterId,
+      displayName,
+      status: input.status,
+      isTerminal: true,
+      isPlanning: false,
+      elapsedMs: Math.max(0, now - createdMs),
+      bar,
+      rows: [],
+      overflow: { hidden: 0, done: 0 },
+      featureRows,
+      readyNext,
+    };
   }
 
   if (input.status === "planning") {
@@ -155,6 +200,8 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
       bar,
       rows: [],
       overflow: { hidden: 0, done: 0 },
+      featureRows,
+      readyNext,
       planning,
     };
   }
@@ -254,7 +301,61 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
     bar,
     rows,
     overflow: { hidden, done: doneCount },
+    featureRows,
+    readyNext,
   };
+}
+
+function buildFeatureSummaries(opts: {
+  features: FeatureDefinition[];
+  featureStates: Record<string, { status?: string } | undefined>;
+  criterionOutcomes: Record<string, { outcome?: string } | undefined>;
+  featureIdsWithLiveSubagent: Set<string>;
+  inProgressFeatureIds: Set<string>;
+}): FeatureSummaryVM[] {
+  // Plan declaration order = sorted by `order`, tiebreaker on id.
+  const ordered = [...opts.features].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+
+  // Completion derives from feature-state status OR every fulfilled VAL pass,
+  // matching the same lag-tolerant rule used elsewhere in this reducer.
+  const isDone = (id: string): boolean => {
+    const status = opts.featureStates[id]?.status;
+    if (status === "completed" || status === "done") return true;
+    const feature = opts.features.find((f) => f.id === id);
+    if (!feature || feature.fulfills.length === 0) return false;
+    return feature.fulfills.every((cid) => opts.criterionOutcomes[cid]?.outcome === "pass");
+  };
+
+  return ordered.map<FeatureSummaryVM>((feature) => {
+    const featureState = opts.featureStates[feature.id]?.status;
+    const done = isDone(feature.id);
+    const live = opts.featureIdsWithLiveSubagent.has(feature.id);
+    const inProgress = opts.inProgressFeatureIds.has(feature.id);
+    const unmet = (feature.preconditions ?? []).filter((pre) => !isDone(pre));
+    const valPass = feature.fulfills.filter((cid) => opts.criterionOutcomes[cid]?.outcome === "pass").length;
+    const valTotal = feature.fulfills.length;
+
+    let status: FeatureSummaryVM["status"];
+    if (done) status = "completed";
+    else if (inProgress || live) status = "in_progress";
+    else if (unmet.length > 0) status = "blocked";
+    else status = "pending";
+
+    const summary: FeatureSummaryVM = {
+      featureId: feature.id,
+      milestone: feature.milestone,
+      status,
+      valPass,
+      valTotal,
+    };
+    if (status === "blocked") summary.blockedBy = unmet;
+    if (inProgress || live) summary.active = true;
+    // Defensive: an explicit failed/abandoned feature-state should not be coerced.
+    if (featureState && featureState !== "completed" && featureState !== "done" && featureState !== "in_progress" && !live && unmet.length === 0 && !done) {
+      // status stays "pending" — captures pause / unknown variant
+    }
+    return summary;
+  });
 }
 
 function buildRow(opts: {
