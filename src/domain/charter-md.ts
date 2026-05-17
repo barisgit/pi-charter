@@ -140,9 +140,8 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
       fields.get("fresh evidence required") ?? fields.get("require fresh evidence"),
       false,
     ),
-    requireReviewSubagent: parseBoolean(
+    requireReviewSubagent: parseOptionalBoolean(
       fields.get("review subagent required") ?? fields.get("require review subagent"),
-      false,
     ),
     because,
   };
@@ -178,6 +177,22 @@ function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (normalized === "true" || normalized === "yes") return true;
   if (normalized === "false" || normalized === "no") return false;
   return fallback;
+}
+
+/**
+ * Like `parseBoolean` but returns `undefined` when the field line is omitted
+ * entirely (or has an unrecognized value). Used for `requireReviewSubagent`
+ * so the completion gate can distinguish "author wrote `false`" from
+ * "author wrote nothing", and auto-default the omitted case to true when
+ * the criterion is covered by a `milestone_ready_for_review` event.
+ */
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "") return undefined;
+  if (normalized === "true" || normalized === "yes") return true;
+  if (normalized === "false" || normalized === "no") return false;
+  return undefined;
 }
 
 function cleanBlock(value: string): string {

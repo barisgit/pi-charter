@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
-import type { CharterCriterion, CharterStatus } from "../domain/types";
+import type { CharterCriterion, CharterStatus, ParseWarning } from "../domain/types";
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { appendEvent, charterDir, loadCharterState, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
 import { nextActionsForStatus, type NextAction } from "./service";
@@ -14,6 +14,7 @@ export interface PlanView {
   charterId: string;
   criteria: CharterCriterion[];
   features: FeatureDefinition[];
+  warnings: ParseWarning[];
   drift: {
     uncovered: CharterCriterion[];
     orphanFeatures: FeatureDefinition[];
@@ -40,6 +41,7 @@ export async function viewPlan(projectDir: string, input: { charterId: string })
     charterId: input.charterId,
     criteria: charter.criteria,
     features,
+    warnings: charter.warnings,
     drift: { uncovered, orphanFeatures, unknownFulfilledCriteria },
     nextActions: nextActionsForPlan({ uncovered, orphanFeatures, unknownFulfilledCriteria }),
   };
@@ -108,10 +110,18 @@ export async function lockPlan(
   }
   const cycle = detectPreconditionCycle(plan.features);
   if (cycle) failures.push(`precondition cycle: ${cycle.join(" -> ")}`);
-  // Weak verifier BLOCK: manual + no criterion-level Because: is the most
-  // common foot-gun for new charters. Legacy charters defer this BLOCK to
-  // completeCharter so existing in-flight work keeps loading.
+  // Weak verifier BLOCKs (non-legacy only). Legacy charters defer both BLOCKs
+  // to completeCharter so existing in-flight work keeps loading. Two distinct
+  // failures so the error message stays specific:
+  //  - missing Verifier line entirely (VAL-1)
+  //  - manual verifier with no criterion-level Because (VAL-6)
   if (!input.legacy) {
+    const missingVerifier = plan.warnings
+      .filter((w) => w.reason === "missing-verifier")
+      .map((w) => w.criterionId);
+    if (missingVerifier.length) {
+      failures.push(`missing Verifier: line: ${missingVerifier.join(", ")}`);
+    }
     const weak = plan.criteria.filter((criterion) => criterion.verifier === "manual" && !criterion.because);
     if (weak.length) {
       failures.push(`weak verifier (manual + no Because): ${weak.map((c) => c.id).join(", ")}`);

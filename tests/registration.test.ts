@@ -70,7 +70,7 @@ async function createBoundActiveCharter(input: { projectDir: string; homeDir: st
     join(dir, "plan/f1.md"),
     `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1, VAL-2, VAL-3, VAL-4, VAL-5, VAL-6]\npreconditions: []\n---\nbody\n`,
   );
-  await lockPlan(input.projectDir, { charterId: charter.charterId, now: "2026-05-15T00:01:00.000Z" });
+  await lockPlan(input.projectDir, { charterId: charter.charterId, now: "2026-05-15T00:01:00.000Z", legacy: true });
   await bindCharterToSession(input.projectDir, {
     charterId: charter.charterId,
     sessionId: input.sessionId,

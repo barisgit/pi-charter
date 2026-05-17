@@ -64,6 +64,23 @@ The evaluator runs after turns or on status demand and returns:
 
 In charter-scoped mode, a steer must cite a `criterionId`, a `featureId`, or be dropped as invalid. In free-form mode (no active charter), the evaluator can behave like the old intent-sentinel.
 
+## Legacy migration
+
+Pre-m1 charters often lack an explicit `Verifier:` line on every VAL. To keep
+those charters loadable while still enforcing the gate, `parseCharterMarkdown`
+emits a `missing-verifier` `ParseWarning` per affected criterion instead of
+throwing, and `lockPlan` accepts a `legacy: true` option that downgrades the
+BLOCK to a deferred completion-time reject:
+
+- `lockPlan({ legacy: false })` (default): missing-`Verifier:` or weak
+  `manual`+no-`Because:` BLOCKs at plan-lock time.
+- `lockPlan({ legacy: true })`: lockPlan passes; the BLOCK is deferred to
+  `charter_manage action=complete`, where `completeCharter` rejects with the
+  per-VAL trust-gate reasons described above.
+
+This lets in-flight legacy charters keep running while forcing authors to
+upgrade evidence before they can complete.
+
 ## Recommended first cut
 
 1. Implement deterministic command verifiers and manual records first.

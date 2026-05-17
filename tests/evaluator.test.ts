@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCharter } from "../src/application/service";
 import { lockPlan } from "../src/application/plan-service";
-import { recordEvidence } from "../src/application/record-service";
+import { applyHandoff, recordEvidence } from "../src/application/record-service";
 import {
   buildEvaluatorContext,
   buildEvaluatorPrompt,
@@ -279,6 +279,90 @@ describe("charter evaluator", () => {
       expect(prompt).toContain("ready_to_complete");
       expect(prompt).toContain("Cite an id from");
       expect(prompt).toContain("VAL-EVAL-001");
+    });
+  });
+
+  it("steer text contains unreviewed milestoneId; disappears after charter-verifier review (VAL-11)", async () => {
+    await withTempProject(async (projectDir) => {
+      // Fresh fixture so the milestone id is a unique greppable token.
+      const MILESTONE = "m1-eval-review-signal";
+      const charter = await createCharter(projectDir, {
+        objective: "Evaluator milestone steer",
+        now: "2026-05-15T00:00:00.000Z",
+      });
+      const dir = join(projectDir, ".pi/charters", charter.charterId);
+      await writeFile(
+        join(dir, "charter.md"),
+        `# Charter\n## Objective\nSteer\n## Criteria\n### VAL-EVAL-301 — a\nVerifier: manual\n### VAL-EVAL-302 — b\nVerifier: manual\n## Scope and constraints\n- none\n`,
+      );
+      await mkdir(join(dir, "plan"), { recursive: true });
+      await writeFile(
+        join(dir, "plan/f1.md"),
+        `---\nid: f1\nmilestone: ${MILESTONE}\norder: 1\nfulfills: [VAL-EVAL-301]\npreconditions: []\n---\nbody\n`,
+      );
+      await writeFile(
+        join(dir, "plan/f2.md"),
+        `---\nid: f2\nmilestone: ${MILESTONE}\norder: 2\nfulfills: [VAL-EVAL-302]\npreconditions: []\n---\nbody\n`,
+      );
+      await lockPlan(projectDir, { charterId: charter.charterId, legacy: true });
+      await recordEvidence(projectDir, {
+        charterId: charter.charterId,
+        criterionId: "VAL-EVAL-301",
+        featureId: "f1",
+        outcome: "pass",
+        summary: "f1 done",
+        because: "manual sign-off f1",
+        recordedBy: "agent:root",
+        now: "2026-05-15T01:00:00.000Z",
+      });
+      await recordEvidence(projectDir, {
+        charterId: charter.charterId,
+        criterionId: "VAL-EVAL-302",
+        featureId: "f2",
+        outcome: "pass",
+        summary: "f2 done",
+        because: "manual sign-off f2",
+        recordedBy: "agent:root",
+        now: "2026-05-15T01:01:00.000Z",
+      });
+
+      // Model that returns a steer omitting the milestone id; the renderer
+      // must inject the deterministic `(milestone: <id>)` suffix.
+      const model = fakeModel({
+        verdict: "drifting",
+        confidence: 0.7,
+        reason: "keep moving",
+        steerReminder: "Continue with the next feature.",
+        cites: [],
+      });
+      const entry = await runEvaluator(projectDir, {
+        charterId: charter.charterId,
+        trigger: "turn_end",
+        modelFn: model,
+        now: "2026-05-15T01:30:00.000Z",
+      });
+      const text = reminderFromEntry(entry) ?? "";
+      expect(text).toContain(MILESTONE);
+
+      await applyHandoff(projectDir, {
+        charterId: charter.charterId,
+        featureId: "f1",
+        subagentSessionId: "charter-verifier-eval-1",
+        handoffNote: "reviewed both VALs",
+        completedCriteria: [
+          { criterionId: "VAL-EVAL-301", outcome: "pass", summary: "reviewed 301" },
+          { criterionId: "VAL-EVAL-302", outcome: "pass", summary: "reviewed 302" },
+        ],
+        now: "2026-05-15T02:00:00.000Z",
+      });
+      const entry2 = await runEvaluator(projectDir, {
+        charterId: charter.charterId,
+        trigger: "turn_end",
+        modelFn: model,
+        now: "2026-05-15T02:30:00.000Z",
+      });
+      const text2 = reminderFromEntry(entry2) ?? "";
+      expect(text2).not.toContain(MILESTONE);
     });
   });
 });

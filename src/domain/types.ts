@@ -44,7 +44,15 @@ export interface CharterCriterion {
   verifier: VerifierKind;
   command?: string;
   requireFreshEvidence: boolean;
-  requireReviewSubagent: boolean;
+  /**
+   * Tri-state: `true`/`false` when the charter.md criterion explicitly sets
+   * `Review subagent required:`, `undefined` when the line is omitted. The
+   * completion gate uses the explicit-vs-omitted distinction to auto-default
+   * the flag to true for VALs covered by a `milestone_ready_for_review`
+   * event (see `effectiveRequireReviewSubagent` in service.ts). Authors who
+   * want to opt OUT of the auto-default must write `Review subagent required: false`.
+   */
+  requireReviewSubagent: boolean | undefined;
   /**
    * Criterion-level author note ("why this verifier is sufficient"). Distinct
    * from the per-evidence `because` on EvidenceRecord: this annotation is set

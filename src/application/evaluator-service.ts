@@ -23,6 +23,7 @@ import { parseCharterMarkdown } from "../domain/charter-md";
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import { loadCriterionState } from "./record-service";
 import { computeDrift } from "./drift-service";
+import { listUnreviewedMilestones, type UnreviewedMilestone } from "./service";
 
 export type EvaluatorVerdict = "on_track" | "drifting" | "blocked" | "ready_to_complete" | "unclear";
 
@@ -52,6 +53,12 @@ export interface EvaluatorContext {
     stale: { criterionId: string; ageMs: number }[];
     readyNext: { featureId: string; fulfills: string[] }[];
   };
+  /**
+   * Milestones with an unreviewed `milestone_ready_for_review` event. The
+   * evaluator must cite these in its steer text; the renderer enforces a
+   * deterministic `(milestone: <id>)` suffix if the LLM omits the id.
+   */
+  unreviewedMilestones: UnreviewedMilestone[];
   recentUserMessages: string[];
   recentToolNames: string[];
 }
@@ -77,6 +84,7 @@ export async function buildEvaluatorContext(
   const criterionState = await loadCriterionState(dir, charterId);
   const drift = await computeDrift(projectDir, { charterId });
   const featureCount = await countPlanFeatureFiles(join(dir, "plan"));
+  const unreviewedMilestones = await listUnreviewedMilestones(dir);
   return {
     charterId,
     objective: state.objective,
@@ -94,12 +102,14 @@ export async function buildEvaluatorContext(
       stale: drift.stale.map((s) => ({ criterionId: s.criterionId, ageMs: s.ageMs })),
       readyNext: drift.readyNext,
     },
+    unreviewedMilestones,
     recentUserMessages: options.recentUserMessages ?? [],
     recentToolNames: options.recentToolNames ?? [],
   };
 }
 
 export function buildEvaluatorPrompt(context: EvaluatorContext): string {
+  const unreviewedIds = context.unreviewedMilestones.map((entry) => entry.milestoneId);
   return [
     "You supervise a coding agent working under a durable charter.",
     "Decide whether the agent is on track toward the charter objective.",
@@ -115,6 +125,7 @@ export function buildEvaluatorPrompt(context: EvaluatorContext): string {
     "- Never claim the charter is done. completion is gated by VAL-* pass evidence elsewhere.",
     "- If `ready_to_complete`, only suggest calling charter_manage:complete; do not auto-complete.",
     "- Cite an id from `criteria[].id`, `drift.uncovered[].criterionId`, or `drift.readyNext[].featureId`.",
+    "- If `unreviewedMilestones` is non-empty, the steerReminder MUST cite every milestoneId literally and recommend delegating to subagent({agent:'charter-verifier'}).",
     "- If nothing useful to say, return verdict=on_track with steerReminder empty.",
     "",
     "Charter:",
@@ -125,6 +136,7 @@ export function buildEvaluatorPrompt(context: EvaluatorContext): string {
         criteria: context.criteria,
         featureCount: context.featureCount,
         drift: context.drift,
+        unreviewedMilestones: unreviewedIds,
         recentUserMessages: context.recentUserMessages.slice(-5),
         recentToolNames: context.recentToolNames.slice(-12),
       },
@@ -164,6 +176,10 @@ export async function runEvaluator(
   }
   const prompt = buildEvaluatorPrompt(context);
   const assessment = await input.modelFn({ context, prompt });
+  const steerReminder = enforceMilestoneSteer(
+    assessment.steerReminder?.trim() || undefined,
+    context.unreviewedMilestones,
+  );
   const entry: EvaluatorEntry = {
     ts: input.now ?? new Date().toISOString(),
     charterId: input.charterId,
@@ -171,11 +187,31 @@ export async function runEvaluator(
     verdict: assessment.verdict,
     confidence: clampConfidence(assessment.confidence),
     reason: assessment.reason.trim() || "(no reason supplied)",
-    steerReminder: assessment.steerReminder?.trim() || undefined,
+    steerReminder,
     cites: Array.isArray(assessment.cites) ? assessment.cites : [],
   };
   await appendEvaluatorEntry(projectDir, input.charterId, entry);
   return entry;
+}
+
+/**
+ * Append a deterministic `(milestone: <id>)` suffix for every unreviewed
+ * milestone whose id the LLM omitted. The post-condition is grep-testable:
+ * for every unreviewed entry, the returned string contains the literal
+ * milestoneId substring. Returns undefined only when there is nothing to say
+ * (no steer and no unreviewed milestones).
+ */
+function enforceMilestoneSteer(
+  steer: string | undefined,
+  unreviewed: UnreviewedMilestone[],
+): string | undefined {
+  if (unreviewed.length === 0) return steer;
+  const missing = unreviewed
+    .map((entry) => entry.milestoneId)
+    .filter((id) => !(steer ?? "").includes(id));
+  if (missing.length === 0) return steer;
+  const suffix = missing.map((id) => `(milestone: ${id})`).join(" ");
+  return steer && steer.length > 0 ? `${steer} ${suffix}` : suffix;
 }
 
 export async function readEvaluatorLog(
