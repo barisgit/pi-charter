@@ -33,10 +33,11 @@ const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "budget_limited",
 ]);
 
-const LEFT_FOOTER = "j/k  pgup/pgdn  g/G  O:dir  y:id  esc";
-const RIGHT_FOOTER = "j/k  pgup/pgdn  space:fold  o:obj  esc";
+const LEFT_FOOTER = "j/k  pgup/pgdn  g/G  esc";
+const RIGHT_FOOTER = "j/k  space:fold  o:obj  O:dir  y:id";
 const PAGE_SIZE = 10;
 const BANNED_PRINTABLE = new Set(["b", "r", "p", "a", "c"]);
+const FLASH_TTL_RENDERS = 6;
 
 export class CharterPickerComponent implements Component {
   private readonly charters: CharterListRow[];
@@ -53,6 +54,7 @@ export class CharterPickerComponent implements Component {
   private rightScrollLine = 0;
   private finished = false;
   private lastRightMaxScroll = 0;
+  private flashMessage: { text: string; kind: "info" | "warning" | "error"; rendersLeft: number } | null = null;
 
   constructor(opts: CharterPickerOptions) {
     this.charters = opts.charters;
@@ -84,6 +86,12 @@ export class CharterPickerComponent implements Component {
 
     const cursor = this.charters[this.cursorIndex];
     const snapshot = cursor ? this.snapshots.get(cursor.charterId) : undefined;
+
+    // Tick down the flash message lifetime once per render.
+    if (this.flashMessage) {
+      this.flashMessage.rendersLeft -= 1;
+      if (this.flashMessage.rendersLeft <= 0) this.flashMessage = null;
+    }
 
     const listContent = this.buildLeftPane(leftWidth);
     const infoContent = this.buildInfoPane(leftWidth);
@@ -201,28 +209,39 @@ export class CharterPickerComponent implements Component {
     return this.charters[this.cursorIndex];
   }
 
+  private setFlash(text: string, kind: "info" | "warning" | "error" = "info"): void {
+    this.flashMessage = { text, kind, rendersLeft: FLASH_TTL_RENDERS };
+  }
+
   private async openSelectedDir(): Promise<void> {
     const row = this.selectedCharter;
-    if (!row) return;
+    if (!row) {
+      this.setFlash("No charter selected", "warning");
+      return;
+    }
     const host = this.host;
-    if (!host) return;
-    const path = host.resolveCharterDir(row.charterId);
+    const path = host?.resolveCharterDir(row.charterId) ?? row.charterId;
     try {
-      if (host.openPath) {
+      if (host?.openPath) {
         await host.openPath(path);
       } else {
         defaultOpenPath(path);
       }
-      host.notify?.(`Opened ${path}`, "info");
+      this.setFlash(`Opened → ${path}`, "info");
+      host?.notify?.(`Opened ${path}`, "info");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      host.notify?.(`Failed to open: ${msg}`, "error");
+      this.setFlash(`Failed to open: ${msg}`, "error");
+      host?.notify?.(`Failed to open: ${msg}`, "error");
     }
   }
 
   private async copySelectedCharterId(): Promise<void> {
     const row = this.selectedCharter;
-    if (!row) return;
+    if (!row) {
+      this.setFlash("No charter selected", "warning");
+      return;
+    }
     const host = this.host;
     try {
       if (host?.copyText) {
@@ -230,9 +249,11 @@ export class CharterPickerComponent implements Component {
       } else {
         await defaultCopyText(row.charterId);
       }
+      this.setFlash(`Copied id → ${row.charterId}`, "info");
       host?.notify?.(`Copied charterId ${row.charterId.slice(0, 8)}…`, "info");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      this.setFlash(`Copy failed: ${msg}`, "error");
       host?.notify?.(`Copy failed: ${msg}`, "error");
     }
   }
@@ -258,6 +279,13 @@ export class CharterPickerComponent implements Component {
 
   private buildInfoPane(width: number): string[] {
     if (width <= 0) return [];
+    // Flash message takes over the info pane for a few renders so the user gets
+    // immediate in-pane feedback on O/y actions (separate from host notify toast).
+    if (this.flashMessage) {
+      const kindColor: ThemeColorName = this.flashMessage.kind === "error" ? "error" : this.flashMessage.kind === "warning" ? "warning" : "success";
+      const wrapped = wrapText(this.flashMessage.text, width);
+      return wrapped.map((line) => this.color(kindColor, line));
+    }
     const row = this.charters[this.cursorIndex];
     if (!row) return [this.color("dim", "(no selection)")];
     const snapshot = this.snapshots.get(row.charterId);
