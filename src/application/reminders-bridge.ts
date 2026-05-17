@@ -49,7 +49,7 @@ export async function upsertCharterReminder(
     ? "Author charter.md then add features in one batch call (`charter_plan action=add_feature { features: [...] }`); do not start implementation until lock_plan succeeds."
     : state.status === "paused"
       ? "Charter is paused; resume before recording evidence."
-      : "Use subagents for recon, implementation, and charter-verifier verification. Record evidence in batches via `charter_record action=evidence { entries: [...] }`. `charterId` defaults to the bound charter — omit it.";
+      : "Prefer async subagents (`subagent({async:true, ...})`) for implementation and charter-verifier verification — main stays free for user fixes while the charter progresses itself. Use sync subagents only when the next step depends on the result. Record evidence in batches via `charter_record action=evidence { entries: [...] }`. `charterId` defaults to the bound charter — omit it.";
 
   pi.events.emit(REMINDER_UPSERT_EVENT, {
     id: reminderId(charterId),

@@ -788,6 +788,7 @@ function guidelinesForStatus(status: CharterStatus): string[] {
   if (status === "active") return [
     "Charter is locked: implement every feature end to end without stopping. Do not ask 'should I keep going?' — the locked plan is your authorization.",
     "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification to subagent({agent:'charter-verifier', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.criterionId':'VAL-...','pi-charter.projectDir':<cwd>}}); delegate read-only recon to subagent({agent:'explorer', ...}).",
+    "PREFER ASYNC: spawn implementation and verification with subagent({async:true, ...}) wherever the next step does not depend on the result. While async runs, main stays free so the user can prompt fixes — the charter progresses itself. Only stay sync when you must read the subagent's output to choose the next move.",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
   ];
   if (status === "review") return ["Inspect evidence before completing; evaluator done is not a gate."];

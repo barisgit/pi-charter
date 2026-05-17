@@ -101,6 +101,35 @@ Both bundled personas are read-only. The verifier records exactly one
 `charter_record action=evidence`. The planner-critic returns a structured
 `PASS | BLOCK | ADVISORY` report.
 
+### Async by default
+
+For any subagent call where you do not need the result to choose the next
+move (most implementation handoffs, most verifier runs, most
+long-running explorers), spawn it with `subagent({async:true, ...})`. The
+main agent then returns control immediately, and **the charter keeps
+progressing on its own** while you (the user) can prompt main with
+fixes, course-corrections, or unrelated questions. The async subagent
+writes its evidence/feature-state when it finishes; the next `turn_end`
+picks it up.
+
+Use synchronous (`subagent({...})` without `async:true`) only when the
+immediate next step in the locked plan needs the subagent's output. Two
+common sync cases:
+
+- `charter-planner-critic` during planning (you must read BLOCKs before
+  `lock_plan`).
+- An `explorer` whose findings drive whether you spawn fixer vs. abandon.
+
+Everything else — fixer implementing a feature, charter-verifier
+running a `Verifier: command`, follow-up review handoffs — should be
+async unless there's a real dependency. While they run, main is free to
+chat with the user.
+
+Note: the main agent does NOT auto-resume when an async subagent
+finishes (per ADR 0005, no auto-spawn loop). Async results land on disk
+and surface on the next user prompt or turn_end. That's the design —
+the user, not a scheduler, drives main.
+
 ## Task hygiene
 
 pi-charter and any tactical task tracker (e.g. `task_manage` from

@@ -328,7 +328,7 @@ describe("charter reminders bridge", () => {
       expect(reminder.text).toContain("named-charter (active)");
       expect(reminder.text).toContain("1/2 VAL pass");
       expect(reminder.text).toContain("Next: f1");
-      expect(reminder.text).toContain("Use subagents");
+      expect(reminder.text).toContain("async subagents");
       expect(reminder.metadata).toMatchObject({ charterId, projectDir, passCount: 1, totalCount: 2, next: "f1" });
     });
   });
