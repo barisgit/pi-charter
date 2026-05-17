@@ -252,8 +252,11 @@ export class CharterPickerComponent implements Component {
     }
 
     // Blocking-complete section.
-    // If all VAL pass, surface Ready regardless of any stale blockingForComplete data
-    // (the underlying helper can be stale for completed charters).
+    // Suppress entirely for terminal charters (completed/abandoned/budget_limited);
+    // the section only makes sense for live work. If all VAL pass on a non-terminal
+    // charter, surface Ready regardless of any stale blockingForComplete data.
+    const isTerminal = snapshot.header.status === "completed" || snapshot.header.status === "abandoned" || snapshot.header.status === "budget_limited";
+    if (!isTerminal) {
     lines.push("");
     if (allPass(snapshot)) {
       lines.push(sectionHeading("Ready to complete", "success"));
@@ -270,6 +273,7 @@ export class CharterPickerComponent implements Component {
           lines.push(this.color("dim", `  … +${blocking.length - MAX_BLOCKING} more`));
         }
       }
+    }
     }
 
     // Plan section.

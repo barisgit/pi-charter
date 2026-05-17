@@ -130,8 +130,12 @@ export async function buildPickerSnapshot(
   const passCount = Object.values(criterionState.criteria).filter(
     (record) => record?.outcome === "pass",
   ).length;
+  // For terminal charters, freeze elapsed time at completedAt/terminatedAt so the
+  // duration reflects actual lifetime rather than wall-clock since creation.
   const createdMs = Date.parse(state.createdAt);
-  const elapsedMs = Number.isFinite(createdMs) ? Math.max(0, Date.now() - createdMs) : 0;
+  const endIso = state.completedAt ?? state.terminatedAt;
+  const endMs = endIso ? Date.parse(endIso) : Date.now();
+  const elapsedMs = Number.isFinite(createdMs) && Number.isFinite(endMs) ? Math.max(0, endMs - createdMs) : 0;
 
   const planTree = buildPlanTree(features, featureState, criterionState, titleByCriterionId);
 
