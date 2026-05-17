@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { CharterStatus } from "../domain/types";
@@ -8,6 +9,13 @@ interface ThemeLike {
   bold(text: string): string;
 }
 
+interface PickerHostHooks {
+  resolveCharterDir(charterId: string): string;
+  openPath?(absPath: string): Promise<void> | void;
+  copyText?(text: string): Promise<void> | void;
+  notify?(message: string, type?: "info" | "warning" | "error"): void;
+}
+
 export interface CharterPickerOptions {
   charters: CharterListRow[];
   snapshots: Map<string, PickerSnapshot>;
@@ -16,6 +24,7 @@ export interface CharterPickerOptions {
   initialCursorCharterId?: string;
   boundCharterId: string | null;
   onDone: (result: null) => void;
+  host?: PickerHostHooks;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
@@ -24,8 +33,9 @@ const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "budget_limited",
 ]);
 
-const LEFT_FOOTER = "tab:focus  j/k:move  esc:close";
-const RIGHT_FOOTER = "tab:focus  j/k:scroll  space:fold  o:objective  esc:close";
+const LEFT_FOOTER = "j/k  pgup/pgdn  g/G  O:dir  y:id  esc";
+const RIGHT_FOOTER = "j/k  pgup/pgdn  space:fold  o:obj  esc";
+const PAGE_SIZE = 10;
 const BANNED_PRINTABLE = new Set(["b", "r", "p", "a", "c"]);
 
 export class CharterPickerComponent implements Component {
@@ -35,6 +45,7 @@ export class CharterPickerComponent implements Component {
   private readonly heightProvider: () => number;
   private readonly boundCharterId: string | null;
   private readonly onDone: (result: null) => void;
+  private readonly host: PickerHostHooks | undefined;
   private cursorIndex = 0;
   private focus: "left" | "right" = "left";
   private allExpanded = false;
@@ -50,6 +61,7 @@ export class CharterPickerComponent implements Component {
     this.heightProvider = opts.heightProvider;
     this.boundCharterId = opts.boundCharterId;
     this.onDone = opts.onDone;
+    this.host = opts.host;
     const initial = opts.initialCursorCharterId
       ? this.charters.findIndex((row) => row.charterId === opts.initialCursorCharterId)
       : -1;
@@ -137,6 +149,91 @@ export class CharterPickerComponent implements Component {
     if (matchesPrintable(data, "o") && this.focus === "right") {
       this.objectiveExpanded = !this.objectiveExpanded;
       this.rightScrollLine = 0;
+      return;
+    }
+    if (matchesKey(data, "pageDown")) {
+      if (this.focus === "left") {
+        this.cursorIndex = Math.min(Math.max(0, this.charters.length - 1), this.cursorIndex + PAGE_SIZE);
+        this.rightScrollLine = 0;
+      } else {
+        this.rightScrollLine = clamp(this.rightScrollLine + PAGE_SIZE, 0, this.lastRightMaxScroll);
+      }
+      return;
+    }
+    if (matchesKey(data, "pageUp")) {
+      if (this.focus === "left") {
+        this.cursorIndex = Math.max(0, this.cursorIndex - PAGE_SIZE);
+        this.rightScrollLine = 0;
+      } else {
+        this.rightScrollLine = Math.max(0, this.rightScrollLine - PAGE_SIZE);
+      }
+      return;
+    }
+    if (matchesKey(data, "home") || matchesPrintable(data, "g", { exactCase: true })) {
+      if (this.focus === "left") {
+        this.cursorIndex = 0;
+        this.rightScrollLine = 0;
+      } else {
+        this.rightScrollLine = 0;
+      }
+      return;
+    }
+    if (matchesKey(data, "end") || matchesPrintable(data, "G", { exactCase: true })) {
+      if (this.focus === "left") {
+        this.cursorIndex = Math.max(0, this.charters.length - 1);
+        this.rightScrollLine = 0;
+      } else {
+        this.rightScrollLine = this.lastRightMaxScroll;
+      }
+      return;
+    }
+    if (matchesPrintable(data, "O", { exactCase: true })) {
+      void this.openSelectedDir();
+      return;
+    }
+    if (matchesPrintable(data, "y")) {
+      void this.copySelectedCharterId();
+      return;
+    }
+  }
+
+  private get selectedCharter(): CharterListRow | undefined {
+    return this.charters[this.cursorIndex];
+  }
+
+  private async openSelectedDir(): Promise<void> {
+    const row = this.selectedCharter;
+    if (!row) return;
+    const host = this.host;
+    if (!host) return;
+    const path = host.resolveCharterDir(row.charterId);
+    try {
+      if (host.openPath) {
+        await host.openPath(path);
+      } else {
+        defaultOpenPath(path);
+      }
+      host.notify?.(`Opened ${path}`, "info");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      host.notify?.(`Failed to open: ${msg}`, "error");
+    }
+  }
+
+  private async copySelectedCharterId(): Promise<void> {
+    const row = this.selectedCharter;
+    if (!row) return;
+    const host = this.host;
+    try {
+      if (host?.copyText) {
+        await host.copyText(row.charterId);
+      } else {
+        await defaultCopyText(row.charterId);
+      }
+      host?.notify?.(`Copied charterId ${row.charterId.slice(0, 8)}…`, "info");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      host?.notify?.(`Copy failed: ${msg}`, "error");
     }
   }
 
@@ -382,8 +479,14 @@ export class CharterPickerComponent implements Component {
   private bottomBorder(leftWidth: number, rightWidth: number): string {
     const leftFocused = this.focus === "left";
     const rightFocused = this.focus === "right";
-    const leftSegment = this.titledBottomSegment(leftWidth, LEFT_FOOTER, leftFocused);
-    const rightSegment = this.titledBottomSegment(rightWidth, RIGHT_FOOTER, rightFocused);
+    const leftHint = this.charters.length > 0
+      ? `${LEFT_FOOTER}  ${this.cursorIndex + 1}/${this.charters.length}`
+      : LEFT_FOOTER;
+    const rightHint = this.lastRightMaxScroll > 0
+      ? `${RIGHT_FOOTER}  ${this.rightScrollLine}/${this.lastRightMaxScroll}`
+      : RIGHT_FOOTER;
+    const leftSegment = this.titledBottomSegment(leftWidth, leftHint, leftFocused);
+    const rightSegment = this.titledBottomSegment(rightWidth, rightHint, rightFocused);
     const corner = (s: string) => this.color("dim", s);
     return `${corner("╰")}${leftSegment}${corner("┴")}${rightSegment}${corner("╯")}`;
   }
@@ -467,8 +570,29 @@ function isBannedKey(data: string): boolean {
     || matchesKey(data, "delete");
 }
 
-function matchesPrintable(data: string, key: string): boolean {
+function matchesPrintable(data: string, key: string, opts?: { exactCase?: boolean }): boolean {
+  if (opts?.exactCase) return data === key;
   return data === key || matchesKey(data, key as Parameters<typeof matchesKey>[1]);
+}
+
+function defaultOpenPath(path: string): void {
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  const child = spawn(cmd, [path], { detached: true, stdio: "ignore" });
+  child.on("error", () => {
+    /* swallow — host notify? was already called by caller path */
+  });
+  child.unref();
+}
+
+function defaultCopyText(text: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cmd = process.platform === "darwin" ? "pbcopy" : process.platform === "win32" ? "clip" : "xclip";
+    const args = process.platform === "linux" ? ["-selection", "clipboard"] : [];
+    const child = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] });
+    child.on("error", reject);
+    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exit ${code}`))));
+    child.stdin?.end(text);
+  });
 }
 
 function clamp(value: number, min: number, max: number): number {

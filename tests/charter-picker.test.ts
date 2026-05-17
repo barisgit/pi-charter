@@ -199,8 +199,9 @@ describe("CharterPickerComponent f5-picker-render", () => {
   test("VAL-PICKER-NAV-003: footer keybind hints embedded in bottom border", () => {
     const lines = makePicker().render(160);
     const bottom = lines.at(-1)!;
-    expect(bottom).toContain("tab:focus  j/k:move  esc:close");
-    expect(bottom).toContain("tab:focus  j/k:scroll  space:fold  o:objective  esc:close");
+    // Bottom border now embeds compact keybind hints + cursor/scroll indicators.
+    expect(bottom).toMatch(/j\/k.*pgup\/pgdn.*g\/G.*O:dir.*y:id.*esc/);
+    expect(bottom).toMatch(/space:fold.*o:obj.*esc/);
   });
 
   test("VAL-PICKER-WIRE-001: bare /charters opens top-left fullscreen overlay", async () => {

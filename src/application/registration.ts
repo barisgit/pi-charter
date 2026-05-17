@@ -704,6 +704,10 @@ async function openPicker(
     const ui = ctx.ui as unknown as {
       custom<T>(factory: (tui: { terminal?: { rows?: number } }, theme: { fg(color: string, text: string): string; bold(text: string): string }, keybindings: unknown, done: (result: T) => void) => unknown, options?: { overlay?: boolean; overlayOptions?: unknown }): Promise<T>;
     };
+    const notifyHost: ((message: string, type?: "info" | "warning" | "error") => void) | undefined =
+      ctx.hasUI && typeof (ctx.ui as { notify?: unknown }).notify === "function"
+        ? (msg, kind) => (ctx.ui as { notify: (m: string, t?: "info" | "warning" | "error") => void }).notify(msg, kind)
+        : undefined;
     const result = await ui.custom<string | null>((tui, theme, _kb, done) => new CharterPickerComponent({
       charters,
       snapshots,
@@ -712,6 +716,10 @@ async function openPicker(
       ...(initialId !== undefined ? { initialCursorCharterId: initialId } : {}),
       boundCharterId,
       onDone: done,
+      host: {
+        resolveCharterDir: (id) => charterDir(ctx.cwd, id),
+        ...(notifyHost ? { notify: notifyHost } : {}),
+      },
     }), {
       overlay: true,
       overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
