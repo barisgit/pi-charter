@@ -82,12 +82,13 @@ export class CharterPickerComponent implements Component {
 
     const rows: string[] = [];
     rows.push(this.topBorder(leftWidth, rightWidth, snapshot));
+    const infoDivider = this.color("dim", flatRule("info", leftWidth));
     for (let i = 0; i < bodyHeight; i++) {
       let left: string;
       if (i < listHeight) {
         left = listContent[i] ?? "";
       } else if (i === listHeight) {
-        left = "";
+        left = infoDivider;
       } else {
         const infoIdx = i - listHeight - 1;
         left = infoContent[infoIdx] ?? "";
@@ -332,8 +333,7 @@ export class CharterPickerComponent implements Component {
         tailColor: "dim",
       });
     }
-    const corner = (s: string) => this.color("dim", s);
-    return `${corner("╭")}${leftSegment}${corner("┬")}${rightSegment}${corner("╮")}`;
+    return `╭${leftSegment}┬${rightSegment}╮`;
   }
 
   private bottomBorder(leftWidth: number, rightWidth: number): string {
@@ -341,8 +341,7 @@ export class CharterPickerComponent implements Component {
     const rightFocused = this.focus === "right";
     const leftSegment = this.titledBottomSegment(leftWidth, LEFT_FOOTER, leftFocused);
     const rightSegment = this.titledBottomSegment(rightWidth, RIGHT_FOOTER, rightFocused);
-    const corner = (s: string) => this.color("dim", s);
-    return `${corner("╰")}${leftSegment}${corner("┴")}${rightSegment}${corner("╯")}`;
+    return `╰${leftSegment}┴${rightSegment}╯`;
   }
 
   private titledTopSegment(opts: {
@@ -385,8 +384,9 @@ export class CharterPickerComponent implements Component {
   }
 
   private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
-    const v = this.color("dim", "│");
-    return `${v}${padRight(left, leftWidth)}${v}${padRight(right, rightWidth)}${v}`;
+    // Leave border chars uncolored so they inherit the default text color and stay visible.
+    // (Previously coloring with 'dim' made them invisible in some terminal themes.)
+    return `│${padRight(left, leftWidth)}│${padRight(right, rightWidth)}│`;
   }
 
   private color(color: ThemeColorName, text: string): string {
