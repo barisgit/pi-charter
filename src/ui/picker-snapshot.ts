@@ -82,7 +82,9 @@ export interface CharterListRow {
   passCount: number;
   totalCount: number;
   createdAt: string;
+  updatedAt: string;
   completedAt?: string;
+  terminatedAt?: string;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
@@ -221,8 +223,10 @@ async function loadListRow(
     passCount,
     totalCount: parsed?.criteria.length ?? 0,
     createdAt: state.createdAt,
+    updatedAt: state.updatedAt,
   };
   if (state.completedAt) row.completedAt = state.completedAt;
+  if (state.terminatedAt) row.terminatedAt = state.terminatedAt;
   return { row, terminatedAt: state.terminatedAt };
 }
 

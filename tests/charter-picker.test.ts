@@ -21,6 +21,7 @@ function charter(id: string, overrides: Partial<CharterListRow> = {}): CharterLi
     passCount: 1,
     totalCount: 3,
     createdAt: "2026-05-15T00:00:00.000Z",
+    updatedAt: "2026-05-15T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -196,13 +197,29 @@ describe("CharterPickerComponent f5-picker-render", () => {
     }
   });
 
-  test("VAL-PICKER-NAV-003: footer keybind hints embedded in bottom border", () => {
+  test("VAL-PICKER-NAV-003: shared legend in left pane, pane-specific keys in right bottom border", () => {
     const lines = makePicker().render(160);
+    const left = lines.slice(1, -1).map((line) => leftCell(line, 160)).join("\n");
+    // Shared legend lives as a third section inside the left pane (with a `keys`
+    // flatRule divider above it). Only keys that work regardless of focus belong
+    // here; pane-specific keys (space/o) live on the right bottom border instead.
+    expect(left).toMatch(/── keys ─+/);
+    expect(left).toMatch(/j\/k\s+move cursor/);
+    expect(left).toMatch(/pgup\/pgdn\s+jump a page/);
+    expect(left).toMatch(/g \/ G\s+top \/ end/);
+    expect(left).toMatch(/tab\s+switch pane/);
+    expect(left).toMatch(/O\s+open charter dir/);
+    expect(left).toMatch(/y\s+copy charterId/);
+    expect(left).toMatch(/esc\s+close picker/);
+    // Pane-specific keys NOT in the shared legend.
+    expect(left).not.toMatch(/space\s+fold/);
+    expect(left).not.toMatch(/o\s+toggle objective/);
+    // Bottom border: left carries cursor counter; right carries the right-only
+    // keybind hint (so the segment is never an empty `dash + spaces + dash` hole).
     const bottom = lines.at(-1)!;
-    // Bottom border now embeds compact keybind hints split across the two panes
-    // (left: nav-only; right: nav + global commands).
-    expect(bottom).toMatch(/j\/k.*pgup\/pgdn.*g\/G.*esc/);
-    expect(bottom).toMatch(/space:fold.*o:obj.*O:dir.*y:id/);
+    expect(bottom).toMatch(/1\/3/);
+    expect(bottom).toMatch(/space:fold/);
+    expect(bottom).toMatch(/o:obj/);
   });
 
   test("VAL-PICKER-WIRE-001: bare /charters opens top-left fullscreen overlay", async () => {

@@ -33,6 +33,21 @@ const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "budget_limited",
 ]);
 
+// Shared legend lives in the left pane's third section. Only the keys that work
+// regardless of focus belong here; pane-specific keys (`space`, `o`) go in the
+// right pane's bottom-border footer so users see them where they apply.
+const LEGEND_ENTRIES: ReadonlyArray<readonly [string, string]> = [
+  ["j/k",        "move cursor"],
+  ["pgup/pgdn",  "jump a page"],
+  ["g / G",      "top / end"],
+  ["tab",        "switch pane"],
+  ["O",          "open charter dir"],
+  ["y",          "copy charterId"],
+  ["esc",        "close picker"],
+];
+const LEGEND_KEY_W = 10;
+// Right-pane-only keybind hint, embedded in the right bottom-border segment.
+const RIGHT_PANE_HINT = "space:fold  o:obj";
 const LEFT_FOOTER = "j/k  pgup/pgdn  g/G  esc";
 const RIGHT_FOOTER = "j/k  space:fold  o:obj  O:dir  y:id";
 const PAGE_SIZE = 10;
@@ -78,11 +93,17 @@ export class CharterPickerComponent implements Component {
     let leftWidth = clamp(Math.floor(interiorWidth * 0.32), 28, 50);
     if (leftWidth > interiorWidth) leftWidth = interiorWidth;
     const rightWidth = interiorWidth - leftWidth;
-    // Top + bottom rows carry titles and footer keybinds (widget-style).
+    // Top + bottom rows carry titles (widget-style).
     const bodyHeight = Math.max(0, height - 2);
-    // Bottom ~30% of left pane shows cursor-info sub-panel (min 5, max 10).
-    const infoHeight = clamp(Math.floor(bodyHeight * 0.30), 5, 10);
-    const listHeight = Math.max(1, bodyHeight - infoHeight - 1); // -1 for blank separator
+    // Left pane has three stacked sections: list (top) / info (middle) / legend
+    // (bottom). Each pair is separated by one flatRule divider row. Info and
+    // legend size to their actual content so there's no padding gap above the
+    // dividers; list absorbs everything else.
+    const legendContent = this.buildLegendPane(leftWidth);
+    const infoContent = this.buildInfoPane(leftWidth);
+    const legendHeight = legendContent.length;
+    const infoHeight = clamp(infoContent.length, 3, 14);
+    const listHeight = Math.max(1, bodyHeight - infoHeight - legendHeight - 2); // -2 for two dividers
 
     const cursor = this.charters[this.cursorIndex];
     const snapshot = cursor ? this.snapshots.get(cursor.charterId) : undefined;
@@ -94,7 +115,6 @@ export class CharterPickerComponent implements Component {
     }
 
     const listContent = this.buildLeftPane(leftWidth);
-    const infoContent = this.buildInfoPane(leftWidth);
     const rightContent = this.buildRightPane(rightWidth);
     this.lastRightMaxScroll = Math.max(0, rightContent.length - bodyHeight);
     this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
@@ -103,15 +123,23 @@ export class CharterPickerComponent implements Component {
     const rows: string[] = [];
     rows.push(this.topBorder(leftWidth, rightWidth, snapshot));
     const infoDivider = this.color("dim", flatRule("info", leftWidth));
+    const legendDivider = this.color("dim", flatRule("keys", leftWidth));
+    const infoStart = listHeight + 1; // after list + info-divider
+    const legendStart = infoStart + infoHeight + 1; // after info + legend-divider
     for (let i = 0; i < bodyHeight; i++) {
       let left: string;
       if (i < listHeight) {
         left = listContent[i] ?? "";
       } else if (i === listHeight) {
         left = infoDivider;
-      } else {
-        const infoIdx = i - listHeight - 1;
+      } else if (i < legendStart - 1) {
+        const infoIdx = i - infoStart;
         left = infoContent[infoIdx] ?? "";
+      } else if (i === legendStart - 1) {
+        left = legendDivider;
+      } else {
+        const legendIdx = i - legendStart;
+        left = legendContent[legendIdx] ?? "";
       }
       const right = rightVisible[i] ?? "";
       rows.push(this.bodyRow(left, right, leftWidth, rightWidth));
@@ -177,7 +205,11 @@ export class CharterPickerComponent implements Component {
       }
       return;
     }
-    if (matchesKey(data, "home") || matchesPrintable(data, "g", { exactCase: true })) {
+    // g / G / O via matchesKey so Kitty CSI-u sequences (where shift+letter does
+    // NOT arrive as a raw uppercase character) are recognised. matchesKey("g")
+    // matches the raw 'g' char AND the disambiguated kitty sequence; matchesKey(
+    // "shift+g") matches both the legacy uppercase 'G' and shift-modified CSI-u.
+    if (matchesKey(data, "home") || matchesKey(data, "g")) {
       if (this.focus === "left") {
         this.cursorIndex = 0;
         this.rightScrollLine = 0;
@@ -186,7 +218,7 @@ export class CharterPickerComponent implements Component {
       }
       return;
     }
-    if (matchesKey(data, "end") || matchesPrintable(data, "G", { exactCase: true })) {
+    if (matchesKey(data, "end") || matchesKey(data, "shift+g")) {
       if (this.focus === "left") {
         this.cursorIndex = Math.max(0, this.charters.length - 1);
         this.rightScrollLine = 0;
@@ -195,7 +227,7 @@ export class CharterPickerComponent implements Component {
       }
       return;
     }
-    if (matchesPrintable(data, "O", { exactCase: true })) {
+    if (matchesKey(data, "shift+o")) {
       void this.openSelectedDir();
       return;
     }
@@ -298,16 +330,46 @@ export class CharterPickerComponent implements Component {
     if (snapshot?.evaluatorVerdict) {
       out.push(this.color(verdictColor(snapshot.evaluatorVerdict.verdict), `⚑ ${snapshot.evaluatorVerdict.verdict}`));
     }
+    // Timestamps: date + HH:MM for created, plus updated (live) or completed/terminated
+    // (terminal). Helps distinguish stale active charters at a glance.
+    const tsLines = this.formatTimestamps(row);
+    for (const line of tsLines) out.push(this.color("dim", clipText(line, width)));
     if (snapshot) {
       const objWidth = Math.max(1, width);
       const wrapped = wrapText(snapshot.objective, objWidth);
-      const remaining = Math.max(0, 6 - out.length);
+      const remaining = Math.max(0, 8 - out.length);
       for (const line of wrapped.slice(0, remaining)) out.push(this.color("muted", line));
       if (wrapped.length > remaining && remaining > 0) {
         out[out.length - 1] = this.color("muted", clipText(`${out[out.length - 1]}…`, objWidth));
       }
     }
     return out;
+  }
+
+  private formatTimestamps(row: CharterListRow): string[] {
+    const out: string[] = [];
+    out.push(`created  ${formatDateTime(row.createdAt)}`);
+    const endIso = row.completedAt ?? row.terminatedAt;
+    if (endIso) {
+      const label = row.completedAt ? "done   " : "ended  ";
+      out.push(`${label} ${formatDateTime(endIso)}`);
+    } else if (row.updatedAt && row.updatedAt !== row.createdAt) {
+      out.push(`updated  ${formatDateTime(row.updatedAt)}`);
+    }
+    return out;
+  }
+
+  private buildLegendPane(width: number): string[] {
+    if (width <= 0) return [];
+    // Shared legend describes keybinds that apply across both panes (tab toggles
+    // focus; the same nav/action keys work everywhere). Aligned two-column format
+    // makes it scannable; dim styling keeps it visually quieter than the list above.
+    const keyW = Math.min(LEGEND_KEY_W, Math.max(3, width - 4));
+    return LEGEND_ENTRIES.map(([key, desc]) => {
+      const keyPart = padRight(key, keyW);
+      const line = `${keyPart}  ${desc}`;
+      return this.color("dim", clipText(line, width));
+    });
   }
 
   private leftRow(row: CharterListRow, index: number, width: number, dim: boolean): string {
@@ -505,16 +567,18 @@ export class CharterPickerComponent implements Component {
   }
 
   private bottomBorder(leftWidth: number, rightWidth: number): string {
-    const leftFocused = this.focus === "left";
-    const rightFocused = this.focus === "right";
+    // Left bottom carries only the cursor position (the shared legend covers the
+    // keys). Right bottom carries the right-pane-only keybinds plus, when
+    // scrollable, the scroll counter — so neither side renders as an empty
+    // "hole" between dashes.
     const leftHint = this.charters.length > 0
-      ? `${LEFT_FOOTER}  ${this.cursorIndex + 1}/${this.charters.length}`
-      : LEFT_FOOTER;
+      ? `${this.cursorIndex + 1}/${this.charters.length}`
+      : "";
     const rightHint = this.lastRightMaxScroll > 0
-      ? `${RIGHT_FOOTER}  ${this.rightScrollLine}/${this.lastRightMaxScroll}`
-      : RIGHT_FOOTER;
-    const leftSegment = this.titledBottomSegment(leftWidth, leftHint, leftFocused);
-    const rightSegment = this.titledBottomSegment(rightWidth, rightHint, rightFocused);
+      ? `${RIGHT_PANE_HINT}  ${this.rightScrollLine}/${this.lastRightMaxScroll}`
+      : RIGHT_PANE_HINT;
+    const leftSegment = this.titledBottomSegment(leftWidth, leftHint, false);
+    const rightSegment = this.titledBottomSegment(rightWidth, rightHint, this.focus === "right");
     const corner = (s: string) => this.color("dim", s);
     return `${corner("╰")}${leftSegment}${corner("┴")}${rightSegment}${corner("╯")}`;
   }
@@ -547,12 +611,16 @@ export class CharterPickerComponent implements Component {
   }
 
   private titledBottomSegment(width: number, hint: string, focused: boolean): string {
+    // Borders stay uniformly dim regardless of focus — partial-color borders
+    // looked uneven against the side `│` glyphs. Focus tint lives on the hint
+    // text itself, and on the top title. Empty-hint segments render solid dashes
+    // (no `dash + 2 spaces + dash` hole).
     const dash = (n: number) => this.color("dim", "─".repeat(Math.max(0, n)));
-    const hintColor: ThemeColorName = focused ? "accent" : "dim";
-    const hintStyled = focused
-      ? this.theme.bold(this.color(hintColor, hint))
-      : this.color(hintColor, hint);
     const hintLen = visibleWidth(hint);
+    if (hintLen === 0) return dash(width);
+    const hintStyled = focused
+      ? this.theme.bold(this.color("accent", hint))
+      : this.color("dim", hint);
     const fixedCost = 1 + 1 + hintLen + 1;
     const fillDashes = Math.max(0, width - fixedCost);
     return `${dash(1)} ${hintStyled} ${dash(fillDashes)}`;
@@ -739,6 +807,17 @@ function formatTime(ts: string): string {
   const parsed = new Date(ts);
   if (Number.isNaN(parsed.getTime())) return "--:--";
   return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+}
+
+function formatDateTime(ts: string): string {
+  const parsed = new Date(ts);
+  if (Number.isNaN(parsed.getTime())) return "--";
+  const yyyy = parsed.getFullYear();
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  const hh = String(parsed.getHours()).padStart(2, "0");
+  const mi = String(parsed.getMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
 export const PICKER_FOOTERS = {
