@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { renderInitialCharterMarkdown } from "../domain/charter-md";
 import type { Budget, CharterEvent, CharterState } from "../domain/types";
 
@@ -11,6 +11,23 @@ export interface CreateCharterWorkspaceInput {
   now: string;
   budget?: Budget;
   sessionId?: string;
+}
+
+const charterQueues = new Map<string, Promise<unknown>>();
+
+export async function withCharterLock<T>(charterDir: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(charterDir);
+  const prev = charterQueues.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  // Store the swallowed-error version so a failed charter mutation doesn't poison the queue.
+  const guard = next.catch(() => undefined);
+  charterQueues.set(key, guard);
+  try {
+    return await next;
+  } finally {
+    // GC: if no later writer chained onto us, drop the entry.
+    if (charterQueues.get(key) === guard) charterQueues.delete(key);
+  }
 }
 
 export interface CreatedCharterWorkspace {
@@ -113,6 +130,8 @@ export async function appendEvent(dir: string, event: CharterEvent): Promise<voi
   const path = join(dir, "events.jsonl");
   await mkdir(dirname(path), { recursive: true });
   await withPathLock(path, async () => {
+    // Read inside the same path lock as the atomic rewrite so concurrent
+    // appendEvent callers cannot base their write on stale contents.
     let existing = "";
     try {
       existing = await readFile(path, "utf8");
@@ -142,23 +161,28 @@ async function writeTextAtomicUnsafe(path: string, value: string): Promise<void>
 
 async function updateIndex(root: string, state: CharterState): Promise<void> {
   const path = join(root, "index.json");
-  let current: { charters: CharterIndexRow[] } = { charters: [] };
-  try {
-    current = JSON.parse(await readFile(path, "utf8")) as typeof current;
-  } catch {
-    current = { charters: [] };
-  }
-  const row = {
-    charterId: state.charterId,
-    objective: state.objective,
-    status: state.status,
-    createdAt: state.createdAt,
-    updatedAt: state.updatedAt,
-  };
-  const others = Array.isArray(current.charters)
-    ? current.charters.filter((item) => item.charterId !== state.charterId)
-    : [];
-  await writeJsonAtomic(path, { charters: [...others, row] });
+  // Wrap the entire load-modify-write under the same path lock that writeJsonAtomic
+  // uses, so concurrent createCharterWorkspace calls from different charters in the
+  // same project cannot lose rows via last-writer-wins.
+  await withPathLock(path, async () => {
+    let current: { charters: CharterIndexRow[] } = { charters: [] };
+    try {
+      current = JSON.parse(await readFile(path, "utf8")) as typeof current;
+    } catch {
+      current = { charters: [] };
+    }
+    const row = {
+      charterId: state.charterId,
+      objective: state.objective,
+      status: state.status,
+      createdAt: state.createdAt,
+      updatedAt: state.updatedAt,
+    };
+    const others = Array.isArray(current.charters)
+      ? current.charters.filter((item) => item.charterId !== state.charterId)
+      : [];
+    await writeTextAtomicUnsafe(path, `${JSON.stringify({ charters: [...others, row] }, null, 2)}\n`);
+  });
 }
 
 function isIndexRow(value: unknown): value is CharterIndexRow {

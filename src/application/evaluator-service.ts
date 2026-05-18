@@ -17,10 +17,10 @@
  * The actual model call is injected so the test suite can use a fake.
  */
 
-import { readFile, readdir, stat, writeFile, mkdir } from "node:fs/promises";
+import { readFile, readdir, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
-import { charterDir, loadCharterState } from "../infrastructure/store";
+import { charterDir, loadCharterState, withCharterLock, writeTextAtomic } from "../infrastructure/store";
 import { loadCriterionState } from "./record-service";
 import { computeDrift } from "./drift-service";
 import { listUnreviewedMilestones, type UnreviewedMilestone } from "./service";
@@ -245,16 +245,22 @@ async function appendEvaluatorEntry(
   const dir = charterDir(projectDir, charterId);
   await mkdir(dir, { recursive: true });
   const path = join(dir, LOG_FILENAME);
-  let existing = "";
-  try {
-    existing = await readFile(path, "utf8");
-  } catch {
-    existing = "";
-  }
-  const lines = existing.split(/\r?\n/).filter(Boolean);
-  lines.push(JSON.stringify(entry));
-  const kept = lines.slice(-HISTORY_LIMIT);
-  await writeFile(path, `${kept.join("\n")}\n`);
+  // Wrap the read + filter + write in a per-charter lock so concurrent
+  // appendEvaluatorEntry callers cannot base their write on stale contents
+  // and torn writes are avoided. The actual file replacement goes through
+  // writeTextAtomic (tmp-rename) for atomicity on the file system level.
+  await withCharterLock(dir, async () => {
+    let existing = "";
+    try {
+      existing = await readFile(path, "utf8");
+    } catch {
+      existing = "";
+    }
+    const lines = existing.split(/\r?\n/).filter(Boolean);
+    lines.push(JSON.stringify(entry));
+    const kept = lines.slice(-HISTORY_LIMIT);
+    await writeTextAtomic(path, `${kept.join("\n")}\n`);
+  });
 }
 
 async function countPlanFeatureFiles(planDir: string): Promise<number> {

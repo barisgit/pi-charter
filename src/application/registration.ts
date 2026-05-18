@@ -6,6 +6,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 import { addFeature, addFeatureBatch, lockPlan, updateFeature, viewPlan, type FeatureEntry } from "./plan-service";
 import { applyHandoff, recordEvidence, recordEvidenceBatch, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
+import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
 import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
@@ -384,10 +385,74 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
       }
       if (params.action === "handoff_apply") {
-        if (!params.subagentSessionId?.trim()) throw new Error("subagentSessionId is required for charter_record action=handoff_apply");
-        if (!params.featureId?.trim()) throw new Error("featureId is required for charter_record action=handoff_apply");
-        if (!params.handoffNote?.trim()) throw new Error("handoffNote is required for charter_record action=handoff_apply");
-        if (!params.completedCriteria || params.completedCriteria.length === 0) throw new Error("completedCriteria must have at least one entry for charter_record action=handoff_apply");
+        // VAL-HANDOFF-SCHEMA: the four de-facto-required handoff_apply fields
+        // are validated here as the single source of truth (the duplicate guard
+        // inside record-service.applyHandoff has been removed). Each rejection
+        // is a CharterToolError carrying a structured `code` plus nextActions[]
+        // that name the canonical subagent-spawn metadata key so the agent can
+        // self-correct without parsing the message.
+        if (!params.featureId?.trim()) {
+          throw new CharterToolError(
+            "charter_record action=handoff_apply requires 'featureId' (the feature this handoff completes; same value passed in metadata.pi-charter.featureId on the subagent spawn).",
+            {
+              code: "handoff_apply.missing_featureId",
+              nextActions: [
+                {
+                  tool: "charter_record",
+                  action: "handoff_apply",
+                  hint: "Pass `featureId: '<id>'` (same value as metadata['pi-charter.featureId'] on the subagent spawn).",
+                },
+                { tool: "charter_status", hint: "Use charter_status to list active features and pick the right featureId." },
+              ],
+            },
+          );
+        }
+        if (!params.subagentSessionId?.trim()) {
+          throw new CharterToolError(
+            "charter_record action=handoff_apply requires 'subagentSessionId' (the worker/reviewer session id that produced this handoff; same value passed in metadata.pi-charter.subagentSessionId on the subagent spawn).",
+            {
+              code: "handoff_apply.missing_subagentSessionId",
+              nextActions: [
+                {
+                  tool: "charter_record",
+                  action: "handoff_apply",
+                  hint: "Pass `subagentSessionId: '<sessionId>'` (same value as metadata['pi-charter.subagentSessionId'] on the subagent spawn).",
+                },
+              ],
+            },
+          );
+        }
+        if (!params.handoffNote?.trim()) {
+          throw new CharterToolError(
+            "charter_record action=handoff_apply requires 'handoffNote' (a short free-text summary from the subagent describing what was completed and any caveats).",
+            {
+              code: "handoff_apply.missing_handoffNote",
+              nextActions: [
+                {
+                  tool: "charter_record",
+                  action: "handoff_apply",
+                  hint: "Pass `handoffNote: '<summary>'` describing what the subagent completed and any caveats.",
+                },
+              ],
+            },
+          );
+        }
+        if (!params.completedCriteria || params.completedCriteria.length === 0) {
+          throw new CharterToolError(
+            "charter_record action=handoff_apply requires 'completedCriteria' with at least one entry (each entry: {criterionId, outcome, summary[, artifacts, details]}); empty handoffs are not allowed.",
+            {
+              code: "handoff_apply.empty_completedCriteria",
+              nextActions: [
+                {
+                  tool: "charter_record",
+                  action: "handoff_apply",
+                  hint: "Pass `completedCriteria: [{criterionId, outcome, summary}, ...]` with at least one entry (criterionIds match the VAL-* ids fulfilled by this feature).",
+                },
+                { tool: "charter_status", hint: "Use charter_status to list VAL-* criterion ids fulfilled by this feature." },
+              ],
+            },
+          );
+        }
         const result = await applyHandoff(ctx.cwd, {
           charterId: status.charterId,
           featureId: params.featureId,

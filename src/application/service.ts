@@ -8,20 +8,10 @@ import { computeDrift } from "./drift-service";
 import { dispatchHook } from "./hooks";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { trustRank } from "../domain/trust-rank";
-import type { Budget, CharterCriterion, CharterState, CharterStatus, EvidenceSource } from "../domain/types";
+import type { Budget, CharterCriterion, CharterState, CharterStatus, EvidenceSource, NextAction } from "../domain/types";
+import { CharterToolError } from "./errors";
 
-export interface NextAction {
-  tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status" | "subagent";
-  action?: string;
-  hint: string;
-  /**
-   * Optional structured metadata for tool-specific routing. Currently used by
-   * milestone-review next actions ({ milestoneId, criterionIds }) so the
-   * agent can spawn a charter-verifier subagent with the right scope without
-   * re-parsing the hint string.
-   */
-  metadata?: Record<string, unknown>;
-}
+export type { NextAction };
 
 export interface CharterServiceResult<T = unknown> {
   charterId: string;
@@ -72,7 +62,15 @@ export async function createCharter(
   input: { objective: string; name?: string; budget?: Budget; idempotencyKey?: string; charterId?: string; now?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   const objective = input.objective.trim();
-  if (!objective) throw new Error("objective is required");
+  if (!objective) {
+    throw new CharterToolError("objective is required for charter_manage action=create; pass a non-empty objective describing the desired outcome.", {
+      code: "create.empty_objective",
+      nextActions: [
+        { tool: "charter_manage", action: "create", hint: "Retry with `objective: '<one-sentence desired outcome>'`." },
+        { tool: "charter_status", hint: "List active charters; resume one instead of creating a new empty charter." },
+      ],
+    });
+  }
   const now = input.now ?? new Date().toISOString();
   const charterId = input.charterId ?? randomUUID();
   const name = sanitizeCharterName(input.name);
@@ -272,7 +270,15 @@ export async function pauseCharter(
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
-  if (isTerminal(state.status)) throw new Error(`Cannot pause terminal charter in status ${state.status}`);
+  if (isTerminal(state.status)) {
+    throw new CharterToolError(`Cannot pause terminal charter in status ${state.status}`, {
+      code: "lifecycle.wrong_state",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect the terminal charter's status; pause is only legal on non-terminal charters." },
+        { tool: "charter_manage", action: "amend_charter", hint: "Use amend_charter to re-open the terminal charter before pausing." },
+      ],
+    });
+  }
   if (state.status !== "paused") {
     state.previousStatus = state.status;
     state.status = "paused";
@@ -297,7 +303,14 @@ export async function completeCharter(
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
   if (state.status !== "active" && state.status !== "review") {
-    throw new Error(`Cannot complete charter in status ${state.status}; resume or amend first.`);
+    throw new CharterToolError(`Cannot complete charter in status ${state.status}; resume or amend first.`, {
+      code: "complete.wrong_state",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status before retrying complete." },
+        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before completing." },
+        { tool: "charter_manage", action: "amend_charter", hint: "Amend the charter if it is terminal but needs re-opening." },
+      ],
+    });
   }
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const criterionState = await loadCriterionState(dir, charterId);
@@ -321,7 +334,40 @@ export async function completeCharter(
         ? ["Fix: add Because: rationale and run charter-verifier (subagent({agent:'charter-verifier'})) for the listed VALs."]
         : []),
     ].join("\n");
-    throw new Error(message);
+    // Collect every failing criterion id so nextActions can name them in
+    // hint strings; the test spot-check requires at least one nextAction
+    // mentions a failing criterion id literally.
+    const failingIds = new Set<string>();
+    for (const f of failures) {
+      const m = f.match(/^(VAL-[A-Za-z0-9_-]+):/);
+      if (m) failingIds.add(m[1]!);
+    }
+    for (const b of blocking) failingIds.add(b.criterionId);
+    const idList = Array.from(failingIds);
+    const nextActions: NextAction[] = [];
+    for (const id of idList.slice(0, 5)) {
+      nextActions.push({
+        tool: "charter_record",
+        action: "verify",
+        hint: `Run the configured verifier for ${id} to produce machine-trusted evidence.`,
+      });
+      nextActions.push({
+        tool: "charter_record",
+        action: "evidence",
+        hint: `Record charter-verifier-attributed pass evidence for ${id} (set recordedBy='subagent:charter-verifier:<sessionId>').`,
+      });
+    }
+    if (blocking.length > 0) {
+      nextActions.push({
+        tool: "subagent",
+        hint: `Delegate to charter-verifier subagent for: ${blocking.map((b) => b.criterionId).join(", ")}.`,
+      });
+    }
+    nextActions.push({ tool: "charter_status", hint: "Re-read drift and the blockingForComplete view after recording new evidence." });
+    throw new CharterToolError(message, {
+      code: "complete.gate_blocked",
+      nextActions,
+    });
   }
   const now = input.now ?? new Date().toISOString();
   await dispatchHook("charter:before_complete", {
@@ -363,13 +409,36 @@ export async function forceCompleteCharter(
   input: { charterId?: string; reason: string; target?: "completed" | "abandoned" | "budget_limited"; now?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   const reason = input.reason?.trim();
-  if (!reason) throw new Error("force_complete requires a non-empty reason.");
+  if (!reason) {
+    throw new CharterToolError("force_complete requires a non-empty reason.", {
+      code: "force_complete.empty_reason",
+      nextActions: [
+        { tool: "charter_manage", action: "force_complete", hint: "Retry with `reason: '<why the charter is being terminated>'`." },
+        { tool: "charter_status", hint: "Inspect the charter before forcing completion." },
+      ],
+    });
+  }
   const target = input.target ?? "abandoned";
-  if (!isTerminal(target)) throw new Error(`force_complete target must be terminal; got ${target}.`);
+  if (!isTerminal(target)) {
+    throw new CharterToolError(`force_complete target must be terminal; got ${target}.`, {
+      code: "force_complete.non_terminal_target",
+      nextActions: [
+        { tool: "charter_manage", action: "force_complete", hint: "Pass `target: 'completed' | 'abandoned' | 'budget_limited'`; planning/review/paused are not legal force-complete targets." },
+      ],
+    });
+  }
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
-  if (isTerminal(state.status)) throw new Error(`Charter ${charterId} is already terminal (${state.status}).`);
+  if (isTerminal(state.status)) {
+    throw new CharterToolError(`Charter ${charterId} is already terminal (${state.status}).`, {
+      code: "force_complete.already_terminal",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect the terminal charter; force_complete is only legal on non-terminal charters." },
+        { tool: "charter_manage", action: "amend_charter", hint: "Use amend_charter to re-open the terminal charter if it needs more work." },
+      ],
+    });
+  }
   const now = input.now ?? new Date().toISOString();
   await dispatchHook("charter:before_force_complete", {
     type: "charter:before_force_complete",
@@ -401,14 +470,34 @@ export async function amendCharter(
   input: { charterId?: string; reason: string; target?: "planning" | "review"; now?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   const reason = input.reason?.trim();
-  if (!reason) throw new Error("amend_charter requires a non-empty reason.");
+  if (!reason) {
+    throw new CharterToolError("amend_charter requires a non-empty reason.", {
+      code: "amend.empty_reason",
+      nextActions: [
+        { tool: "charter_manage", action: "amend_charter", hint: "Retry with `reason: '<why the terminal charter is being re-opened>'`." },
+      ],
+    });
+  }
   const target = input.target ?? "review";
-  if (target !== "planning" && target !== "review") throw new Error(`amend_charter target must be planning or review; got ${target}.`);
+  if (target !== "planning" && target !== "review") {
+    throw new CharterToolError(`amend_charter target must be planning or review; got ${target}.`, {
+      code: "amend.bad_target",
+      nextActions: [
+        { tool: "charter_manage", action: "amend_charter", hint: "Pass `target: 'planning' | 'review'`; terminal/active/paused are not legal amend targets." },
+      ],
+    });
+  }
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
   if (!isTerminal(state.status)) {
-    throw new Error(`amend_charter only re-opens terminal charters; current status is ${state.status}.`);
+    throw new CharterToolError(`amend_charter only re-opens terminal charters; current status is ${state.status}.`, {
+      code: "amend.non_terminal_charter",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; amend_charter only applies to terminal charters." },
+        { tool: "charter_manage", action: "pause", hint: "Pause an active charter if you need to step away; amend is only for terminal charters." },
+      ],
+    });
   }
   const now = input.now ?? new Date().toISOString();
   await dispatchHook("charter:before_amend_charter", {
@@ -714,7 +803,15 @@ export async function resumeCharter(
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
-  if (state.status !== "paused") throw new Error(`Cannot resume charter in status ${state.status}`);
+  if (state.status !== "paused") {
+    throw new CharterToolError(`Cannot resume charter in status ${state.status}`, {
+      code: "lifecycle.wrong_state",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; resume is only legal from `paused`." },
+        { tool: "charter_manage", action: "pause", hint: "Pause the charter first if you want to later resume it." },
+      ],
+    });
+  }
   state.status = state.previousStatus && !isTerminal(state.previousStatus) ? state.previousStatus : "active";
   state.previousStatus = undefined;
   state.updatedAt = input.now ?? new Date().toISOString();

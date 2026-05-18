@@ -11,6 +11,8 @@ import {
 } from "./application/registration";
 import { registerCharterRemindersBridge } from "./application/reminders-bridge";
 
+export { CharterToolError } from "./application/errors";
+
 /**
  * pi-charter extension entrypoint.
  *

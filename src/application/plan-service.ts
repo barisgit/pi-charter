@@ -6,6 +6,7 @@ import type { CharterCriterion, CharterStatus, ParseWarning } from "../domain/ty
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { appendEvent, charterDir, loadCharterState, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
 import { nextActionsForStatus, type NextAction } from "./service";
+import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
 
 const FEATURE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
@@ -97,7 +98,15 @@ export async function lockPlan(
   input: { charterId: string; now?: string; legacy?: boolean },
 ): Promise<LockPlanResult> {
   const state = await loadCharterState(projectDir, input.charterId);
-  if (state.status !== "planning") throw new Error(`Cannot lock_plan from status ${state.status}; only planning is eligible.`);
+  if (state.status !== "planning") {
+    throw new CharterToolError(`Cannot lock_plan from status ${state.status}; only planning is eligible.`, {
+      code: "lock_plan.bad_status",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; lock_plan is only legal in `planning`." },
+        { tool: "charter_plan", action: "view", hint: "Inspect the existing plan without mutating state." },
+      ],
+    });
+  }
   const plan = await viewPlan(projectDir, { charterId: input.charterId });
   const failures: string[] = [];
   if (plan.criteria.length === 0) failures.push("charter.md has no VAL-* criteria");
@@ -127,7 +136,31 @@ export async function lockPlan(
       failures.push(`weak verifier (manual + no Because): ${weak.map((c) => c.id).join(", ")}`);
     }
   }
-  if (failures.length) throw new Error(`Cannot lock plan because of drift:\n - ${failures.join("\n - ")}`);
+  if (failures.length) {
+    // Distinguish empty-criteria/empty-features from drift/cycle/weak-verifier
+    // failure modes via code, but the nextActions[] pattern is the same:
+    // re-view the plan and patch features until coverage is clean.
+    let code = "lock_plan.drift";
+    if (plan.criteria.length === 0) code = "lock_plan.empty_criteria";
+    else if (plan.features.length === 0) code = "lock_plan.empty_features";
+    else if (cycle) code = "lock_plan.cycle";
+    else if (!input.legacy) {
+      const missing = plan.warnings.filter((w) => w.reason === "missing-verifier");
+      const weak = plan.criteria.filter((c) => c.verifier === "manual" && !c.because);
+      if (missing.length) code = "lock_plan.missing_verifier";
+      else if (weak.length) code = "lock_plan.weak_verifier";
+    }
+    const nextActions: NextAction[] = [
+      { tool: "charter_plan", action: "view", hint: "Re-read plan coverage to see uncovered criteria, orphan features, and unknown fulfills links." },
+      { tool: "charter_plan", action: "update_feature", hint: "Patch fulfills/preconditions on existing features to resolve drift before retrying lock_plan." },
+      { tool: "charter_plan", action: "add_feature", hint: "Add a missing feature to cover an uncovered VAL-* criterion." },
+      { tool: "charter_status", hint: "Inspect the full charter; lock_plan only transitions from planning." },
+    ];
+    throw new CharterToolError(`Cannot lock plan because of drift:\n - ${failures.join("\n - ")}`, {
+      code,
+      nextActions,
+    });
+  }
 
   const planDigest = digestFeatures(plan.features);
   const now = input.now ?? new Date().toISOString();
@@ -183,14 +216,26 @@ export async function addFeature(projectDir: string, input: AddFeatureInput): Pr
   validateFeatureInput(input);
   const state = await loadCharterState(projectDir, input.charterId);
   if (state.status !== "planning") {
-    throw new Error(`Cannot add_feature from status ${state.status}; only planning is eligible.`);
+    throw new CharterToolError(`Cannot add_feature from status ${state.status}; only planning is eligible.`, {
+      code: "add_feature.bad_status",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: "Inspect current plan; add_feature is only legal in `planning`." },
+        { tool: "charter_status", hint: "Inspect current status before retrying." },
+      ],
+    });
   }
   const dir = charterDir(projectDir, input.charterId);
   const planDir = join(dir, "plan");
   await mkdir(planDir, { recursive: true });
   const filePath = join(planDir, `${input.id}.md`);
   if (await fileExists(filePath)) {
-    throw new Error(`Feature ${input.id} already exists; use charter_plan action=update_feature instead.`);
+    throw new CharterToolError(`Feature ${input.id} already exists; use charter_plan action=update_feature instead.`, {
+      code: "add_feature.id_collision",
+      nextActions: [
+        { tool: "charter_plan", action: "update_feature", hint: `Use charter_plan action=update_feature with id='${input.id}' to modify the existing feature.` },
+        { tool: "charter_plan", action: "view", hint: "Re-read the plan to pick a non-colliding feature id." },
+      ],
+    });
   }
   const markdown = renderFeatureMarkdown(input);
   await writeFile(filePath, markdown, "utf8");
@@ -256,7 +301,12 @@ export async function addFeatureBatch(
   input: AddFeatureBatchInput,
 ): Promise<AddFeatureBatchResult> {
   if (!Array.isArray(input.features) || input.features.length === 0) {
-    throw new Error("addFeatureBatch requires a non-empty features array");
+    throw new CharterToolError("addFeatureBatch requires a non-empty features array", {
+      code: "add_feature.empty_batch",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `features: [{id, milestone, order, fulfills, body}, ...]` with at least one entry." },
+      ],
+    });
   }
 
   // 1. Validate every entry up front. Collect per-index failures so the
@@ -292,12 +342,24 @@ export async function addFeatureBatch(
   }
   if (failures.length > 0) {
     const detail = failures.map((f) => `index ${f.index}: ${f.reason}`).join("; ");
-    throw new Error(`add_feature batch validation failed: ${detail}`);
+    throw new CharterToolError(`add_feature batch validation failed: ${detail}`, {
+      code: "add_feature.validation_failed",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Fix the indexed entry/entries (id must match /^[a-z0-9][a-z0-9_-]*$/i, non-empty milestone, finite order, non-empty fulfills, non-empty body) and retry the batch." },
+        { tool: "charter_plan", action: "view", hint: "Inspect existing plan coverage before retrying." },
+      ],
+    });
   }
 
   const state = await loadCharterState(projectDir, input.charterId);
   if (state.status !== "planning") {
-    throw new Error(`Cannot add_feature from status ${state.status}; only planning is eligible.`);
+    throw new CharterToolError(`Cannot add_feature from status ${state.status}; only planning is eligible.`, {
+      code: "add_feature.bad_status",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: "Inspect current plan; add_feature is only legal in `planning`." },
+        { tool: "charter_status", hint: "Inspect current status before retrying." },
+      ],
+    });
   }
 
   const dir = charterDir(projectDir, input.charterId);
@@ -318,7 +380,14 @@ export async function addFeatureBatch(
     .filter((row) => existing.has(row.id));
   if (collisions.length > 0) {
     const detail = collisions.map((c) => `index ${c.index}: feature ${c.id} already exists`).join("; ");
-    throw new Error(`add_feature batch id collision(s): ${detail}; use charter_plan action=update_feature instead.`);
+    const ids = collisions.map((c) => c.id);
+    throw new CharterToolError(`add_feature batch id collision(s): ${detail}; use charter_plan action=update_feature instead.`, {
+      code: "add_feature.id_collision",
+      nextActions: [
+        { tool: "charter_plan", action: "update_feature", hint: `Use charter_plan action=update_feature for the colliding id(s): ${ids.join(", ")}.` },
+        { tool: "charter_plan", action: "view", hint: "Re-read the plan to pick non-colliding feature ids before retrying the batch." },
+      ],
+    });
   }
 
   // 3. Stage every write to a temp path so the visible plan/ stays untouched
@@ -411,10 +480,24 @@ export interface UpdateFeatureInput {
 }
 
 export async function updateFeature(projectDir: string, input: UpdateFeatureInput): Promise<FeatureWriteResult> {
-  if (!FEATURE_ID_RE.test(input.id)) throw new Error(`feature id must match ${FEATURE_ID_RE}; got "${input.id}"`);
+  if (!FEATURE_ID_RE.test(input.id)) {
+    throw new CharterToolError(`feature id must match ${FEATURE_ID_RE}; got "${input.id}"`, {
+      code: "update_feature.bad_id",
+      nextActions: [
+        { tool: "charter_plan", action: "update_feature", hint: "Pass `id` matching /^[a-z0-9][a-z0-9_-]*$/i (slug-style, no spaces)." },
+        { tool: "charter_plan", action: "view", hint: "List feature ids before retrying." },
+      ],
+    });
+  }
   const state = await loadCharterState(projectDir, input.charterId);
   if (state.status !== "planning") {
-    throw new Error(`Cannot update_feature from status ${state.status}; only planning is eligible.`);
+    throw new CharterToolError(`Cannot update_feature from status ${state.status}; only planning is eligible.`, {
+      code: "update_feature.bad_status",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: "Inspect the plan; update_feature is only legal in `planning`." },
+        { tool: "charter_status", hint: "Inspect current status before retrying." },
+      ],
+    });
   }
   const dir = charterDir(projectDir, input.charterId);
   const filePath = join(dir, "plan", `${input.id}.md`);
@@ -422,7 +505,13 @@ export async function updateFeature(projectDir: string, input: UpdateFeatureInpu
   try {
     existing = parseFeatureMarkdown(await readFile(filePath, "utf8"));
   } catch {
-    throw new Error(`Feature ${input.id} not found; use charter_plan action=add_feature to create it.`);
+    throw new CharterToolError(`Feature ${input.id} not found; use charter_plan action=add_feature to create it.`, {
+      code: "update_feature.not_found",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: `Create feature '${input.id}' via charter_plan action=add_feature.` },
+        { tool: "charter_plan", action: "view", hint: "List existing feature ids before retrying." },
+      ],
+    });
   }
   const merged: AddFeatureInput = {
     charterId: input.charterId,
@@ -457,13 +546,47 @@ export async function updateFeature(projectDir: string, input: UpdateFeatureInpu
 }
 
 function validateFeatureInput(input: AddFeatureInput): void {
-  if (!FEATURE_ID_RE.test(input.id)) throw new Error(`feature id must match ${FEATURE_ID_RE}; got "${input.id}"`);
-  if (!input.milestone.trim()) throw new Error("feature milestone is required");
-  if (!Number.isFinite(input.order)) throw new Error("feature order must be a finite number");
-  if (!Array.isArray(input.fulfills) || input.fulfills.length === 0) {
-    throw new Error("feature fulfills must list at least one VAL-* criterion id");
+  if (!FEATURE_ID_RE.test(input.id)) {
+    throw new CharterToolError(`feature id must match ${FEATURE_ID_RE}; got "${input.id}"`, {
+      code: "add_feature.bad_id",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `id` matching /^[a-z0-9][a-z0-9_-]*$/i (slug-style, no spaces)." },
+      ],
+    });
   }
-  if (!input.body.trim()) throw new Error("feature body markdown is required");
+  if (!input.milestone?.trim?.()) {
+    throw new CharterToolError("feature milestone is required", {
+      code: "add_feature.missing_milestone",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `milestone: '<milestone-id>'` (e.g. 'm1-bootstrap')." },
+      ],
+    });
+  }
+  if (!Number.isFinite(input.order)) {
+    throw new CharterToolError("feature order must be a finite number", {
+      code: "add_feature.missing_order",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `order: <number>` (lower runs first within the milestone)." },
+      ],
+    });
+  }
+  if (!Array.isArray(input.fulfills) || input.fulfills.length === 0) {
+    throw new CharterToolError("feature fulfills must list at least one VAL-* criterion id", {
+      code: "add_feature.missing_fulfills",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `fulfills: ['VAL-...', ...]` with at least one criterion id." },
+        { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+      ],
+    });
+  }
+  if (!input.body?.trim?.()) {
+    throw new CharterToolError("feature body markdown is required", {
+      code: "add_feature.missing_body",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `body: '<feature markdown prose>'` (non-empty)." },
+      ],
+    });
+  }
 }
 
 function renderFeatureMarkdown(input: AddFeatureInput): string {

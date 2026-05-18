@@ -14,10 +14,12 @@ import {
   appendEvent,
   charterDir,
   loadCharterState,
+  withCharterLock,
   writeJsonAtomic,
   writeTextAtomic,
 } from "../infrastructure/store";
 import { nextActionsForStatus, type NextAction } from "./service";
+import { CharterToolError } from "./errors";
 
 export type EvidenceOutcome = "pass" | "fail" | "partial";
 
@@ -98,23 +100,60 @@ export async function recordEvidence(
   projectDir: string,
   input: RecordEvidenceInput,
 ): Promise<RecordEvidenceResult> {
-  if (!input.summary?.trim()) throw new Error("summary is required");
+  const dir = charterDir(projectDir, input.charterId);
+  return await withCharterLock(dir, () => recordEvidenceLocked(projectDir, input));
+}
+
+async function recordEvidenceLocked(
+  projectDir: string,
+  input: RecordEvidenceInput,
+): Promise<RecordEvidenceResult> {
+  if (!input.summary?.trim()) {
+    throw new CharterToolError("summary is required", {
+      code: "evidence.missing_summary",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Pass `summary: '<short outcome description>'` (non-empty)." },
+      ],
+    });
+  }
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   if (state.status !== "active" && state.status !== "review") {
-    throw new Error(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`);
+    throw new CharterToolError(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`, {
+      code: "evidence.bad_status",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; record evidence is only legal in `active` or `review`." },
+        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so evidence can be recorded." },
+        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before recording evidence." },
+      ],
+    });
   }
 
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const criterion = charter.criteria.find((entry) => entry.id === input.criterionId);
-  if (!criterion) throw new Error(`Unknown criterion ${input.criterionId} in charter ${input.charterId}`);
+  if (!criterion) {
+    const known = charter.criteria.map((c) => c.id);
+    throw new CharterToolError(`Unknown criterion ${input.criterionId} in charter ${input.charterId}`, {
+      code: "evidence.unknown_criterion",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: `Pass a known criterionId. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
+        { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+      ],
+    });
+  }
 
   const source = input.source ?? "manual";
   const because = input.because?.trim() || undefined;
   if (source === "manual" && !because) {
     // Manual evidence is the lowest-trust write; without a stable rationale
     // the completion gate cannot tell drive-by approvals from real review.
-    throw new Error(`Manual evidence for ${criterion.id} requires a non-empty 'because' rationale.`);
+    throw new CharterToolError(`Manual evidence for ${criterion.id} requires a non-empty 'because' rationale.`, {
+      code: "evidence.missing_because",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: `Pass \`because: '<why this manual outcome is correct>'\` (criterionId='${criterion.id}'), or pass source='verifier'/'subagent' if the writer is not a human.` },
+        { tool: "charter_record", action: "verify", hint: `Run the configured verifier (${criterion.verifier}) for ${criterion.id} instead of recording manual evidence.` },
+      ],
+    });
   }
   const recordedBy: RecordedBy = input.recordedBy ?? DEFAULT_RECORDED_BY;
 
@@ -192,13 +231,33 @@ export async function recordEvidenceBatch(
   projectDir: string,
   input: RecordEvidenceBatchInput,
 ): Promise<RecordEvidenceBatchResult> {
+  const dir = charterDir(projectDir, input.charterId);
+  return await withCharterLock(dir, () => recordEvidenceBatchLocked(projectDir, input));
+}
+
+async function recordEvidenceBatchLocked(
+  projectDir: string,
+  input: RecordEvidenceBatchInput,
+): Promise<RecordEvidenceBatchResult> {
   if (!input.entries || input.entries.length === 0) {
-    throw new Error("recordEvidenceBatch requires at least one entry.");
+    throw new CharterToolError("recordEvidenceBatch requires at least one entry.", {
+      code: "evidence.empty_batch",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Pass `entries: [{criterionId, outcome, summary, because?}, ...]` with at least one entry." },
+      ],
+    });
   }
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   if (state.status !== "active" && state.status !== "review") {
-    throw new Error(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`);
+    throw new CharterToolError(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`, {
+      code: "evidence.bad_status",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; record evidence is only legal in `active` or `review`." },
+        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so evidence can be recorded." },
+        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before recording evidence." },
+      ],
+    });
   }
 
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
@@ -225,22 +284,50 @@ export async function recordEvidenceBatch(
   for (let index = 0; index < input.entries.length; index += 1) {
     const entry = input.entries[index]!;
     if (!entry.summary?.trim()) {
-      throw new Error(`recordEvidenceBatch entry ${index} (${entry.criterionId ?? "<unknown>"}): summary is required.`);
+      throw new CharterToolError(`recordEvidenceBatch entry ${index} (${entry.criterionId ?? "<unknown>"}): summary is required.`, {
+        code: "evidence.missing_summary",
+        nextActions: [
+          { tool: "charter_record", action: "evidence", hint: `Pass entries[${index}].summary as a non-empty string.` },
+        ],
+      });
     }
     if (!entry.criterionId?.trim()) {
-      throw new Error(`recordEvidenceBatch entry ${index}: criterionId is required.`);
+      throw new CharterToolError(`recordEvidenceBatch entry ${index}: criterionId is required.`, {
+        code: "evidence.missing_criterionId",
+        nextActions: [
+          { tool: "charter_record", action: "evidence", hint: `Pass entries[${index}].criterionId as a declared VAL-* id.` },
+          { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+        ],
+      });
     }
     if (!entry.outcome) {
-      throw new Error(`recordEvidenceBatch entry ${index} (${entry.criterionId}): outcome is required.`);
+      throw new CharterToolError(`recordEvidenceBatch entry ${index} (${entry.criterionId}): outcome is required.`, {
+        code: "evidence.missing_outcome",
+        nextActions: [
+          { tool: "charter_record", action: "evidence", hint: `Pass entries[${index}].outcome as 'pass' | 'fail' | 'partial'.` },
+        ],
+      });
     }
     const criterion = criteriaById.get(entry.criterionId);
     if (!criterion) {
-      throw new Error(`recordEvidenceBatch entry ${index}: unknown criterion ${entry.criterionId} in charter ${input.charterId}.`);
+      const known = charter.criteria.map((c) => c.id);
+      throw new CharterToolError(`recordEvidenceBatch entry ${index}: unknown criterion ${entry.criterionId} in charter ${input.charterId}.`, {
+        code: "evidence.unknown_criterion",
+        nextActions: [
+          { tool: "charter_record", action: "evidence", hint: `entries[${index}].criterionId must be a declared VAL-* id. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
+          { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+        ],
+      });
     }
     const source: BatchEvidenceSource = entry.source ?? "manual";
     const because = entry.because?.trim() || undefined;
     if (source === "manual" && !because) {
-      throw new Error(`recordEvidenceBatch entry ${index} (${criterion.id}): manual evidence requires a non-empty 'because' rationale.`);
+      throw new CharterToolError(`recordEvidenceBatch entry ${index} (${criterion.id}): manual evidence requires a non-empty 'because' rationale.`, {
+        code: "evidence.missing_because",
+        nextActions: [
+          { tool: "charter_record", action: "evidence", hint: `Pass entries[${index}].because as a non-empty rationale (criterionId='${criterion.id}'), or set entries[${index}].source to 'verifier' or 'subagent' if the writer is not a human.` },
+        ],
+      });
     }
     const recordedBy: RecordedBy = entry.recordedBy ?? DEFAULT_RECORDED_BY;
     const featureSegment = entry.featureId?.trim() || "_charter";
@@ -401,16 +488,44 @@ export async function verifyCriterion(
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   if (state.status !== "active" && state.status !== "review") {
-    throw new Error(`Cannot verify in status ${state.status}; charter must be active or in review.`);
+    throw new CharterToolError(`Cannot verify in status ${state.status}; charter must be active or in review.`, {
+      code: "verify.bad_status",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; verify is only legal in `active` or `review`." },
+        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so the verifier can run." },
+        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before running the verifier." },
+      ],
+    });
   }
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const criterion = charter.criteria.find((entry) => entry.id === input.criterionId);
-  if (!criterion) throw new Error(`Unknown criterion ${input.criterionId} in charter ${input.charterId}`);
+  if (!criterion) {
+    const known = charter.criteria.map((c) => c.id);
+    throw new CharterToolError(`Unknown criterion ${input.criterionId} in charter ${input.charterId}`, {
+      code: "verify.unknown_criterion",
+      nextActions: [
+        { tool: "charter_record", action: "verify", hint: `Pass a known criterionId. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
+        { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+      ],
+    });
+  }
   if (criterion.verifier !== "command") {
-    throw new Error(`charter_record verify for verifier=${criterion.verifier} is not implemented yet; only command verifier is supported.`);
+    throw new CharterToolError(`charter_record verify for verifier=${criterion.verifier} is not implemented yet; only command verifier is supported.`, {
+      code: "verify.non_command_verifier",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: `Record evidence manually for ${criterion.id}; only the 'command' verifier auto-runs.` },
+        { tool: "charter_plan", action: "view", hint: "Inspect the criterion to confirm its declared verifier kind." },
+      ],
+    });
   }
   if (!criterion.command?.trim()) {
-    throw new Error(`Criterion ${criterion.id} has verifier=command but no Command: field set in charter.md.`);
+    throw new CharterToolError(`Criterion ${criterion.id} has verifier=command but no Command: field set in charter.md.`, {
+      code: "verify.missing_command",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: `Edit charter.md to add a 'Command:' line under ${criterion.id} (e.g. 'Command: bun test tests/foo.test.ts').` },
+        { tool: "charter_record", action: "evidence", hint: `Record manual evidence for ${criterion.id} until the Command: line is set.` },
+      ],
+    });
   }
 
   const started = Date.now();
@@ -532,20 +647,41 @@ export interface FeatureStateFile {
 }
 
 export async function applyHandoff(projectDir: string, input: ApplyHandoffInput): Promise<ApplyHandoffResult> {
-  if (!input.completedCriteria || input.completedCriteria.length === 0) {
-    throw new Error("applyHandoff requires at least one completedCriteria entry.");
-  }
-  if (!input.featureId?.trim()) throw new Error("applyHandoff requires featureId.");
-  if (!input.subagentSessionId?.trim()) throw new Error("applyHandoff requires subagentSessionId.");
+  const dir = charterDir(projectDir, input.charterId);
+  return await withCharterLock(dir, () => applyHandoffLocked(projectDir, input));
+}
+
+async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput): Promise<ApplyHandoffResult> {
+  // VAL-HANDOFF-SCHEMA: featureId/subagentSessionId/handoffNote/completedCriteria
+  // are validated at the registration boundary (charter_record action=handoff_apply)
+  // which throws CharterToolError with structured nextActions[]. The duplicate
+  // guard that used to live here has been removed so the registration layer is
+  // the single source of truth for these four field validations.
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   if (state.status !== "active" && state.status !== "review") {
-    throw new Error(`Cannot apply handoff in status ${state.status}; charter must be active or in review.`);
+    throw new CharterToolError(`Cannot apply handoff in status ${state.status}; charter must be active or in review.`, {
+      code: "handoff_apply.bad_status",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; handoff_apply is only legal in `active` or `review`." },
+        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so handoffs can be applied." },
+        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before applying a handoff." },
+      ],
+    });
   }
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
   for (const completed of input.completedCriteria) {
-    if (!criteriaById.has(completed.criterionId)) throw new Error(`Unknown criterion ${completed.criterionId} in handoff.`);
+    if (!criteriaById.has(completed.criterionId)) {
+      const known = charter.criteria.map((c) => c.id);
+      throw new CharterToolError(`Unknown criterion ${completed.criterionId} in handoff.`, {
+        code: "handoff_apply.unknown_criterion",
+        nextActions: [
+          { tool: "charter_record", action: "handoff_apply", hint: `completedCriteria[].criterionId must be a declared VAL-* id. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
+          { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying the handoff." },
+        ],
+      });
+    }
   }
   const now = input.now ?? new Date().toISOString();
   const stamp = now.replace(/[:.]/g, "-");
@@ -561,18 +697,80 @@ export async function applyHandoff(projectDir: string, input: ApplyHandoffInput)
   };
   await writeTextAtomic(handoffAbsolute, `${JSON.stringify(envelope, null, 2)}\n`);
 
+  const prepared: Array<{
+    completed: HandoffCompletedCriterion;
+    criterion: CharterCriterion;
+    relativePath: string;
+    absolutePath: string;
+    record: Record<string, unknown>;
+    payload: string;
+    recordedBy: RecordedBy;
+  }> = [];
   for (const completed of input.completedCriteria) {
-    await recordEvidence(projectDir, {
+    const criterion = criteriaById.get(completed.criterionId)!;
+    const recordedBy = `subagent:${DEFAULT_HANDOFF_PERSONA}:${input.subagentSessionId}` as RecordedBy;
+    const relativePath = join("work", input.featureId, "evidence", `${criterion.id}__${stamp}.json`);
+    const absolutePath = join(dir, relativePath);
+    const record: Record<string, unknown> = {
       charterId: input.charterId,
-      criterionId: completed.criterionId,
+      criterionId: criterion.id,
       featureId: input.featureId,
       outcome: completed.outcome,
-      summary: completed.summary,
-      artifacts: completed.artifacts,
+      summary: completed.summary.trim(),
+      artifacts: completed.artifacts ?? [],
       details: { ...(completed.details ?? {}), subagentSessionId: input.subagentSessionId, handoffPath: handoffRelative },
       source: "subagent",
-      recordedBy: `subagent:${DEFAULT_HANDOFF_PERSONA}:${input.subagentSessionId}` as RecordedBy,
-      now,
+      recordedBy,
+      verifier: criterion.verifier,
+      ts: now,
+    };
+    prepared.push({
+      completed,
+      criterion,
+      relativePath,
+      absolutePath,
+      record,
+      payload: `${JSON.stringify(record, null, 2)}\n`,
+      recordedBy,
+    });
+  }
+
+  const writtenPaths: string[] = [];
+  try {
+    for (const item of prepared) {
+      await writeTextAtomic(item.absolutePath, item.payload);
+      writtenPaths.push(item.absolutePath);
+    }
+  } catch (error) {
+    for (const path of writtenPaths) {
+      await unlink(path).catch(() => undefined);
+    }
+    throw error;
+  }
+
+  const criterionState = await loadCriterionState(dir, input.charterId);
+  for (const item of prepared) {
+    criterionState.criteria[item.criterion.id] = {
+      outcome: item.completed.outcome,
+      lastEvidencePath: item.relativePath,
+      lastTs: now,
+      lastSummary: String(item.record.summary),
+      lastFeatureId: input.featureId,
+      source: "subagent",
+      recordedBy: item.recordedBy,
+    };
+  }
+  await writeJsonAtomic(join(dir, "criterion-state.json"), criterionState);
+
+  for (const item of prepared) {
+    await appendEvent(dir, {
+      type: "evidence_recorded",
+      ts: now,
+      charterId: input.charterId,
+      criterionId: item.criterion.id,
+      featureId: input.featureId,
+      outcome: item.completed.outcome,
+      source: "subagent",
     });
   }
 

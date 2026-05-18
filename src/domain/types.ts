@@ -7,6 +7,19 @@ export type CharterStatus =
   | "budget_limited"
   | "abandoned";
 
+export interface NextAction {
+  tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status" | "subagent";
+  action?: string;
+  hint: string;
+  /**
+   * Optional structured metadata for tool-specific routing. Currently used by
+   * milestone-review next actions ({ milestoneId, criterionIds }) so the
+   * agent can spawn a charter-verifier subagent with the right scope without
+   * re-parsing the hint string.
+   */
+  metadata?: Record<string, unknown>;
+}
+
 export type VerifierKind = "command" | "hook" | "prompt" | "manual";
 
 export interface Budget {

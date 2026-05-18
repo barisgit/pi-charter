@@ -278,21 +278,10 @@ describe("charter_record handoff_apply", () => {
     });
   });
 
-  test("rejects empty completedCriteria", async () => {
-    await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
-      await expect(
-        applyHandoff(projectDir, {
-          charterId: "cha-handoff-1",
-          featureId: "f1",
-          subagentSessionId: "sess",
-          handoffNote: "nothing",
-          completedCriteria: [],
-          now: "2026-05-15T02:00:00.000Z",
-        }),
-      ).rejects.toThrow(/completedCriteria|at least one/i);
-    });
-  });
+  // Empty-completedCriteria rejection moved to tests/handoff-schema.test.ts:
+  // it is now enforced at the charter_record tool boundary (CharterToolError
+  // with code 'handoff_apply.empty_completedCriteria'), not inside the
+  // record-service applyHandoff function. See VAL-HANDOFF-SCHEMA.
 
   test("rejects unknown criterion in completedCriteria", async () => {
     await withTempProject(async (projectDir) => {
