@@ -8,7 +8,7 @@ import { computeDrift } from "./drift-service";
 import { dispatchHook } from "./hooks";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { trustRank } from "../domain/trust-rank";
-import type { Budget, CharterCriterion, CharterState, CharterStatus, EvidenceSource, NextAction } from "../domain/types";
+import { TERMINAL_STATUSES, type Budget, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction } from "../domain/types";
 import { CharterToolError } from "./errors";
 
 export type { NextAction };
@@ -490,14 +490,27 @@ export async function amendCharter(
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
-  if (!isTerminal(state.status)) {
-    throw new CharterToolError(`amend_charter only re-opens terminal charters; current status is ${state.status}.`, {
-      code: "amend.non_terminal_charter",
-      nextActions: [
-        { tool: "charter_status", hint: "Inspect current status; amend_charter only applies to terminal charters." },
-        { tool: "charter_manage", action: "pause", hint: "Pause an active charter if you need to step away; amend is only for terminal charters." },
-      ],
-    });
+  const from = state.status;
+  const allowedForPlanning: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
+    ...TERMINAL_STATUSES,
+    "active",
+    "review",
+  ]);
+  const allowedForReview = TERMINAL_STATUSES;
+  const allowed = target === "planning" ? allowedForPlanning : allowedForReview;
+  if (!allowed.has(from)) {
+    const legalSources = Array.from(allowed).join(", ");
+    throw new CharterToolError(
+      `Cannot amend charter from ${from} to ${target}; legal source states for target ${target} are: ${legalSources}.`,
+      {
+        code: "amend.invalid_source_state",
+        nextActions: [
+          { tool: "charter_status", hint: "Inspect current status before retrying amend_charter." },
+          { tool: "charter_manage", action: "amend_charter", hint: `Retry only from one of these source states for target ${target}: ${legalSources}.` },
+          { tool: "charter_plan", action: "view", hint: "If the charter is already in planning, inspect the current plan instead of amending again." },
+        ],
+      },
+    );
   }
   const now = input.now ?? new Date().toISOString();
   await dispatchHook("charter:before_amend_charter", {
@@ -507,14 +520,16 @@ export async function amendCharter(
     target,
     reason,
   });
-  state.previousStatus = state.status;
+  state.previousStatus = from;
   state.status = target;
   state.updatedAt = now;
-  state.completedAt = undefined;
-  state.terminatedAt = undefined;
-  state.completionReason = undefined;
+  if (isTerminal(from)) {
+    state.completedAt = undefined;
+    state.terminatedAt = undefined;
+    state.completionReason = undefined;
+  }
   await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_amended", ts: now, charterId, target, reason });
+  await appendEvent(dir, { type: "charter_amended", ts: now, charterId, from, to: target, reason });
   return {
     charterId,
     status: state.status,
@@ -894,7 +909,7 @@ function guidelinesForStatus(status: CharterStatus): string[] {
 }
 
 function isTerminal(status: CharterStatus): boolean {
-  return status === "completed" || status === "budget_limited" || status === "abandoned";
+  return TERMINAL_STATUSES.has(status);
 }
 
 /**

@@ -7,10 +7,11 @@ import { addFeature, addFeatureBatch, lockPlan, updateFeature, viewPlan, type Fe
 import { applyHandoff, recordEvidence, recordEvidenceBatch, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
-import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId } from "./binding-service";
+import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
 import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
 import { charterDir, loadCharterState } from "../infrastructure/store";
+import { TERMINAL_STATUSES } from "../domain/types";
 import {
   PI_CHARTER_EXTENSION_ID,
   PI_CHARTER_METADATA_KEYS,
@@ -811,6 +812,35 @@ interface RegisterCharterFlagsOptions {
   homeDir?: string;
 }
 
+export async function autoBindChildSession(input: {
+  currentSid: string;
+  homeDir?: string;
+}): Promise<SessionBindingRecord | null> {
+  const existing = await readSessionBinding({ sessionId: input.currentSid, homeDir: input.homeDir });
+  if (existing) return null;
+
+  const rootSid = process.env.PI_SUBAGENT_ROOT_SESSION_ID;
+  const forkSid = process.env.PI_SUBAGENT_FORK_SESSION_ID;
+  if (!rootSid || rootSid === input.currentSid || forkSid === input.currentSid) return null;
+
+  const rootBinding = await readSessionBinding({ sessionId: rootSid, homeDir: input.homeDir });
+  if (!rootBinding) return null;
+
+  // Skip when the root binding points at a terminal charter — the owner has
+  // not yet had session_start fire to clear its reverse pointer, but children
+  // spawned in the meantime must not inherit a dead charter.
+  const rootState = await loadCharterState(charterDir(rootBinding.projectDir, rootBinding.charterId)).catch(() => undefined);
+  if (rootState && TERMINAL_STATUSES.has(rootState.status)) return null;
+
+  return writeChildBinding({
+    sessionId: input.currentSid,
+    charterId: rootBinding.charterId,
+    projectDir: rootBinding.projectDir,
+    role: "participant",
+    homeDir: input.homeDir,
+  });
+}
+
 export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterFlagsOptions = {}): void {
   pi.registerFlag("charter-objective", {
     description: "Create and bind a pi-charter before the first turn with this objective.",
@@ -831,20 +861,21 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
     // pointer in state.json before any other action.
     if (sessionId) {
       const reconciled = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
-      if (reconciled) {
+      const binding = reconciled ?? await autoBindChildSession({ currentSid: sessionId, homeDir: options.homeDir });
+      if (binding) {
         // Drop the session binding if it points at a terminal charter so the
         // reminder bus doesn't keep refreshing a dead charter on reload.
-        const reconciledState = await loadCharterState(charterDir(reconciled.projectDir, reconciled.charterId)).catch(() => undefined);
+        const reconciledState = await loadCharterState(charterDir(binding.projectDir, binding.charterId)).catch(() => undefined);
         const terminal = reconciledState
           && (reconciledState.status === "completed"
             || reconciledState.status === "abandoned"
             || reconciledState.status === "budget_limited");
         if (terminal) {
-          removeCharterReminder(pi, reconciled.charterId);
+          removeCharterReminder(pi, binding.charterId);
           await clearSessionBinding(sessionId, options.homeDir).catch(() => undefined);
         } else {
-          ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
-          await trySyncCharterReminder(pi, reconciled.projectDir, reconciled.charterId);
+          if (reconciled) ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
+          await trySyncCharterReminder(pi, binding.projectDir, binding.charterId);
         }
       }
     }
@@ -952,6 +983,11 @@ export function registerCharterEvaluator(pi: ExtensionAPI, options: RegisterChar
       // dormant state. No point reasoning about drift on a closed charter.
       const state = await loadCharterState(charterDir(projectDir, charterId)).catch(() => undefined);
       if (!state || EVALUATOR_SKIP_STATUSES.has(state.status)) return;
+
+      if (binding.role === "participant") {
+        await trySyncCharterReminder(pi, projectDir, charterId);
+        return;
+      }
 
       const recentUserMessages = extractRecentUserMessages(ctx, 2);
       const recentToolNames = extractRecentToolNames(ctx, 8);

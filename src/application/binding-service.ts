@@ -3,7 +3,7 @@
  *
  * Forward: `state.json.sessionId` (lives in <project>/.pi/charters/<charterId>/state.json).
  * Reverse: `<homeDir>/.pi/agent/sessions/<sessionId>/charter.json` ->
- *          `{ sessionId, charterId, projectDir, boundAt }`.
+ *          `{ sessionId, charterId, projectDir, boundAt, role }`.
  *
  * Both pointers are written atomically so a partial restore or crash can be
  * reconciled by `reconcileSessionBinding(sessionId)`: if the reverse pointer
@@ -21,14 +21,21 @@ export interface SessionBindingRecord {
   charterId: string;
   projectDir: string;
   boundAt: string;
+  role?: "owner" | "participant";
 }
 
 interface BindInput {
   charterId: string;
   sessionId: string;
+  role?: SessionBindingRecord["role"];
   homeDir?: string;
   now?: string;
 }
+
+type ChildBindingInput = Omit<SessionBindingRecord, "boundAt"> & {
+  boundAt?: string;
+  homeDir?: string;
+};
 
 function resolveHome(homeDir?: string): string {
   return homeDir ?? homedir();
@@ -76,9 +83,24 @@ export async function bindCharterToSession(projectDir: string, input: BindInput)
     charterId: input.charterId,
     projectDir,
     boundAt: now,
+    role: input.role ?? "owner",
   };
   await writeReverse(home, record);
   return record;
+}
+
+export async function writeChildBinding(record: ChildBindingInput): Promise<SessionBindingRecord> {
+  if (!record.sessionId.trim()) throw new Error("writeChildBinding requires a non-empty sessionId.");
+  const home = resolveHome(record.homeDir);
+  const out: SessionBindingRecord = {
+    sessionId: record.sessionId,
+    charterId: record.charterId,
+    projectDir: record.projectDir,
+    boundAt: record.boundAt ?? new Date().toISOString(),
+    role: record.role ?? "participant",
+  };
+  await writeReverse(home, out);
+  return out;
 }
 
 export async function rebindCharter(projectDir: string, input: BindInput): Promise<SessionBindingRecord> {
@@ -107,6 +129,7 @@ export async function readSessionBinding(input: {
   try {
     const raw = JSON.parse(await readFile(path, "utf8")) as SessionBindingRecord;
     if (!raw.sessionId || !raw.charterId || !raw.projectDir) return null;
+    raw.role ??= "owner";
     return raw;
   } catch {
     return null;

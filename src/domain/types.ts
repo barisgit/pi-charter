@@ -7,6 +7,12 @@ export type CharterStatus =
   | "budget_limited"
   | "abandoned";
 
+export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
+  "completed",
+  "budget_limited",
+  "abandoned",
+]);
+
 export interface NextAction {
   tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status" | "subagent";
   action?: string;

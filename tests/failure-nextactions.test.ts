@@ -273,13 +273,13 @@ describe("service.ts — CharterToolError throw sites", () => {
     });
   });
 
-  test("amendCharter non-terminal -> amend.non_terminal_charter", async () => {
+  test("amendCharter invalid source state -> amend.invalid_source_state", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "cha-amend-active";
       await seedActiveCharter(projectDir, charterId);
       const err = await expectCharterToolError(amendCharter(projectDir, { charterId, reason: "x" }));
-      expect(err.code).toBe("amend.non_terminal_charter");
-      expect(err.message).toMatch(/terminal/);
+      expect(err.code).toBe("amend.invalid_source_state");
+      expect(err.message).toMatch(/active|completed/);
     });
   });
 });
