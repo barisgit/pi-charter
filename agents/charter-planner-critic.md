@@ -46,6 +46,20 @@ The charter, plan, and any prior evidence live under
 
    Report every failure you find — do NOT stop at the first.
 
+   ### Feature plan body four-question gate
+   The four-question gate applies to FEATURE PLAN BODY content in
+   `<project>/.pi/charters/<charterId>/plan/<featureId>.md`; it does NOT apply to charter.md.
+
+For every feature, the plan body must independently answer:
+- What does it do?
+- What are its boundaries?
+- Where does complexity concentrate?
+- How would an independent party verify it works?
+
+   If a feature plan body fails any question, emit **BLOCK feature-underspecified**
+   with the structured verdict shape
+   `{kind:'feature-underspecified', featureId, whichQuestion: 'does'|'boundaries'|'complexity'|'verification'}`.
+
    ### Verification prose must back VAL
    Every `VAL-*` criterion in `charter.md` must be claimed by at least one
    feature via `fulfills[]`. BLOCK any unclaimed criterion. If charter
@@ -168,17 +182,21 @@ The charter, plan, and any prior evidence live under
    validation-underspecified:
    - {kind:'validation-underspecified', featureId:'<feature-id>', missing:['edge'|'happy'|'depth']}
 
+   feature-underspecified:
+   - {kind:'feature-underspecified', featureId:'<feature-id>', whichQuestion: 'does'|'boundaries'|'complexity'|'verification'}
+
    <if BLOCK or ADVISORY, list every finding>
    - [BLOCK|ADVISORY] <category>: <one-line description>
      evidence: <criterion ids / feature ids / file:line>
    ```
 
-   - `PASS` — no findings and `validation-underspecified` is empty.
+   - `PASS` — no findings, `validation-underspecified` is empty, and
+     `feature-underspecified` is empty.
    - `BLOCK` — at least one finding in: Verification prose not backed by VAL,
      uncovered `VAL-*`, orphan features, cyclic preconditions, missing verifier
      command, scope/constraint violation, post-f10 bare `bun test -t`, or a
-     feature missing required happy/edge/depth validation. The plan must NOT be
-     locked until these are fixed.
+     feature missing required happy/edge/depth validation, or a feature failing
+     the four-question gate. The plan must NOT be locked until these are fixed.
    - `ADVISORY` — only soft findings (large plan size, milestone hygiene, order
      field, grandfathered pre-f10 bare `bun test -t`, benign touch overlap, or
      non-critical review skip concerns). The plan CAN be locked but the host

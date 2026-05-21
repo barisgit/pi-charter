@@ -10,6 +10,7 @@ import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
 import { buildRalphPromptForCharter } from "./ralph-service";
+import { formatCommandsInline } from "./subagent-bootstrap";
 import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import { logger } from "../infrastructure/logger";
@@ -537,6 +538,7 @@ export function formatCharterStatusText(result: {
   migrationHint?: string;
   drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[]; probeResult?: string }[] };
   qaBriefs?: string[];
+  commands?: Record<string, string>;
   nextActions: { tool: string; action?: string; hint: string }[];
   guidelines: string[];
   details?: { blockingForComplete?: { criterionId: string; reason: string; featureId?: string; probeResult?: string }[] };
@@ -566,6 +568,10 @@ export function formatCharterStatusText(result: {
   }
   if ((result.qaBriefs?.length ?? 0) > 0) {
     lines.push(`  qa briefs: ${result.qaBriefs!.join(", ")}`);
+  }
+  const commands = formatCommandsInline(result.commands);
+  if (commands) {
+    lines.push(`  commands: ${commands}`);
   }
   if (result.drift.readyNext.length > 0) {
     const preview = result.drift.readyNext

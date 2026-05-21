@@ -25,6 +25,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getCharterStatus, type CharterStatusResult } from "./service";
+import { formatCommandsBlock } from "./subagent-bootstrap";
 import type { CharterStatus } from "../domain/types";
 
 export type RalphCase = "planning" | "active";
@@ -106,6 +107,9 @@ export function renderStatusSummary(status: CharterStatusResult): string {
       lines.push(`  - ${a.tool}${action}: ${a.hint}`);
     }
   }
+
+  const commands = formatCommandsBlock(status.commands);
+  if (commands) lines.push(commands);
 
   const blocking = status.details?.blockingForComplete;
   if (Array.isArray(blocking) && blocking.length > 0) {

@@ -1,3 +1,6 @@
+import type { Verifier, VerifierKind } from "./verifier";
+export type { EvidenceExistsVerifier, SubagentVerifier, Verifier, VerifierKind } from "./verifier";
+
 export type CharterStatus =
   | "planning"
   | "active"
@@ -29,13 +32,13 @@ export interface NextAction {
   metadata?: Record<string, unknown>;
 }
 
-export type VerifierKind = "command" | "hook" | "prompt" | "manual";
-
 export interface Budget {
   tokens?: number;
   wallclockMs?: number;
   turns?: number;
 }
+
+export type CharterCommands = Record<string, string>;
 
 export interface CharterState {
   charterId: string;
@@ -67,6 +70,7 @@ export interface CharterCriterion {
   title: string;
   description?: string;
   verifier: VerifierKind;
+  verifierSpec?: Verifier;
   command?: string;
   requireFreshEvidence: boolean;
   /**
@@ -87,17 +91,21 @@ export interface CharterCriterion {
   because?: string;
 }
 
-export type ParseWarningReason = "missing-verifier" | "missing-because";
+export type ParseWarningReason = "missing-verifier" | "missing-because" | "duplicate-command" | "malformed-command";
 
 export interface ParseWarning {
-  criterionId: string;
+  criterionId?: string;
   reason: ParseWarningReason;
+  section?: string;
+  key?: string;
+  line?: string;
 }
 
 export interface ParsedCharterMarkdown {
   objective: string;
   criteria: CharterCriterion[];
   constraints: string[];
+  commands: CharterCommands;
   qaSection?: string;
   readinessSection?: string;
   warnings: ParseWarning[];

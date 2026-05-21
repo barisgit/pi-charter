@@ -1,4 +1,5 @@
-import type { CharterCriterion, ParsedCharterMarkdown, ParseWarning, VerifierKind } from "./types";
+import { validateVerifier, type Verifier, type VerifierKind } from "./verifier";
+import type { CharterCommands, CharterCriterion, ParsedCharterMarkdown, ParseWarning } from "./types";
 
 const DEFAULT_VERIFIER: VerifierKind = "manual";
 
@@ -23,8 +24,12 @@ export function renderInitialCharterMarkdown(objective: string): string {
     "Format (strict — parsed by pi-charter):",
     "  ### VAL-<UPPER-SNAKE-OR-NUMERIC-ID> <short title>",
     "  Description: <one-line outcome statement>",
-    "  Verifier: <manual|command|hook|prompt>",
+    "  Verifier: <manual|command|hook|prompt|subagent|evidence-exists>",
     "  Command: <shell command if Verifier: command>",
+    "  Agent: <persona name if Verifier: subagent>",
+    "  Task: <subagent task if Verifier: subagent>",
+    "  Kind: <review|qa|readiness|command if Verifier: evidence-exists>",
+    "  FreshSince: <ISO8601 timestamp if Verifier: evidence-exists>",
     "  Fresh evidence required: <true|false>",
     "  Review subagent required: <true|false>",
     "",
@@ -46,6 +51,34 @@ export function renderInitialCharterMarkdown(objective: string): string {
   ].join("\n");
 }
 
+function parseCommands(section: string, warnings: ParseWarning[]): CharterCommands {
+  const commands: CharterCommands = {};
+  for (const rawLine of section.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("<!--")) continue;
+    const match = /^([^:]+):\s*(.*?)\s*$/.exec(line);
+    if (!match) {
+      warnings.push({ reason: "malformed-command", section: "commands", line });
+      continue;
+    }
+    const key = match[1].trim().toLowerCase();
+    const value = match[2].trim();
+    if (!key) {
+      warnings.push({ reason: "malformed-command", section: "commands", line });
+      continue;
+    }
+    if (!value) {
+      warnings.push({ reason: "malformed-command", section: "commands", key });
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(commands, key)) {
+      warnings.push({ reason: "duplicate-command", section: "commands", key });
+    }
+    commands[key] = value;
+  }
+  return commands;
+}
+
 export interface ParseCharterOptions {
   /**
    * When true, criteria missing a `Verifier:` line still parse but the
@@ -65,9 +98,10 @@ export function parseCharterMarkdown(markdown: string, _options: ParseCharterOpt
   const warnings: ParseWarning[] = [];
   const criteria = parseCriteria(sections.get("criteria") ?? "", warnings);
   const constraints = parseConstraints(sections.get("scope and constraints") ?? "");
+  const commands = sections.has("commands") ? parseCommands(sections.get("commands") ?? "", warnings) : {};
   const qaSection = sections.has("qa") ? sections.get("qa") : undefined;
   const readinessSection = sections.has("readiness") ? sections.get("readiness") : undefined;
-  return { objective, criteria, constraints, qaSection, readinessSection, warnings };
+  return { objective, criteria, constraints, commands, qaSection, readinessSection, warnings };
 }
 
 function splitH2Sections(markdown: string): Map<string, string> {
@@ -132,11 +166,13 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
   if (verifierRaw === "manual" && !because) {
     warnings.push({ criterionId: headingMatch[1], reason: "missing-because" });
   }
+  const verifierSpec = parseVerifier(verifierRaw, fields, commandValue, headingMatch[1]);
   return {
     id: headingMatch[1],
     title: headingMatch[2]?.trim() || headingMatch[1],
     description: fields.get("description"),
-    verifier: parseVerifier(verifierRaw),
+    verifier: verifierSpec.kind,
+    verifierSpec,
     command: commandValue?.trim() ? commandValue.trim() : undefined,
     requireFreshEvidence: parseBoolean(
       fields.get("fresh evidence required") ?? fields.get("require fresh evidence"),
@@ -168,9 +204,62 @@ function parseConstraints(section: string): string[] {
     .filter(Boolean);
 }
 
-function parseVerifier(value: string | undefined): VerifierKind {
-  if (value === "command" || value === "hook" || value === "prompt" || value === "manual") return value;
-  return DEFAULT_VERIFIER;
+function parseVerifier(
+  value: string | undefined,
+  fields: Map<string, string>,
+  commandValue: string | undefined,
+  criterionId: string,
+): Verifier {
+  const kind = parseVerifierKind(value, criterionId);
+  let verifier: unknown;
+  switch (kind) {
+    case "command":
+      verifier = { kind, ...(commandValue?.trim() ? { command: commandValue.trim() } : {}) };
+      break;
+    case "manual":
+    case "hook":
+    case "prompt":
+      verifier = { kind };
+      break;
+    case "subagent":
+      verifier = {
+        kind,
+        agent: fields.get("agent")?.trim(),
+        task: fields.get("task")?.trim(),
+      };
+      break;
+    case "evidence-exists":
+      verifier = {
+        kind,
+        evidenceKind: fields.get("kind")?.trim(),
+        ...(fields.get("freshsince")?.trim() ? { freshSince: fields.get("freshsince")!.trim() } : {}),
+      };
+      break;
+    default:
+      return assertNever(kind);
+  }
+
+  const result = validateVerifier(verifier);
+  if (result.ok) return result.value;
+  throw new Error(`Invalid verifier for ${criterionId}: ${result.error}`);
+}
+
+function parseVerifierKind(value: string | undefined, criterionId: string): VerifierKind {
+  if (value === undefined) return DEFAULT_VERIFIER;
+  const normalized = value.trim().toLowerCase();
+  if (
+    normalized === "command" ||
+    normalized === "hook" ||
+    normalized === "prompt" ||
+    normalized === "manual" ||
+    normalized === "subagent" ||
+    normalized === "evidence-exists"
+  ) return normalized;
+  throw new Error(`Unknown verifier kind for ${criterionId}: ${value}`);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled verifier kind: ${String(value)}`);
 }
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {

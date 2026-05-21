@@ -770,7 +770,13 @@ function outcomeFromEvidenceFile(evidence: EvidenceFile): EvidenceOutcome {
     case "review":
     case "qa":
       return evidence.outcome as EvidenceOutcome;
+    default:
+      return assertNever(evidence);
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled evidence kind: ${String((value as { kind?: unknown }).kind)}`);
 }
 
 function sourceFromEvidenceFile(evidence: EvidenceFile): NonNullable<EvidenceEntry["source"]> {
@@ -1225,10 +1231,9 @@ async function projectMilestoneReadyForReview(
   }
   if (!triggeringMilestone) return;
 
-  // Load every impl feature in the milestone and union their fulfills.
-  // Review/QA gates may be auto-injected into the same milestone at lock time;
-  // they must not prevent the legacy milestone-ready review signal that fires
-  // once the implementation slice itself completes.
+  // Load every feature in the milestone and union their fulfills.
+  // Planner-authored review/QA/readiness features are first-class and must
+  // complete before the milestone-ready review signal fires.
   const planDir = join(dir, "plan");
   let entries: string[];
   try {
@@ -1244,7 +1249,7 @@ async function projectMilestoneReadyForReview(
     } catch {
       continue;
     }
-    if (feature.milestone === triggeringMilestone && feature.kind === "impl") {
+    if (feature.milestone === triggeringMilestone) {
       milestoneFeatures.push({ id: feature.id, fulfills: feature.fulfills });
     }
   }

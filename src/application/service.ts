@@ -8,7 +8,7 @@ import { computeDrift } from "./drift-service";
 import { dispatchHook } from "./hooks";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { trustRank } from "../domain/trust-rank";
-import { TERMINAL_STATUSES, type Budget, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction } from "../domain/types";
+import { TERMINAL_STATUSES, type Budget, type CharterCommands, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction } from "../domain/types";
 import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
@@ -66,6 +66,7 @@ export interface CharterStatusResult {
   nextActions: NextAction[];
   details?: CharterStatusDetails;
   qaBriefs: string[];
+  commands: CharterCommands;
 }
 
 export async function createCharter(
@@ -106,6 +107,7 @@ export async function getCharterStatus(
   const blockingForComplete = await computeBlockingForCompleteSafely(dir, charterId);
   const milestoneReviewActions = await computeMilestoneReviewNextActionsSafely(dir);
   const qaBriefs = await listQaBriefs(dir);
+  const commands = await loadCharterCommands(dir);
   const architecturePresent = await hasNonTrivialArchitecture(architectureMarkdownPath(projectDir, charterId));
   const migrationHint = migrationHintForState(state);
   return {
@@ -125,12 +127,21 @@ export async function getCharterStatus(
     nextActions: migrationHint ? migrationReplanNextActions() : state.status === "awaiting-clarification" ? nextActionsForStatus(state.status) : [...nextActionsForStatus(state.status), ...milestoneReviewActions],
     details: { blockingForComplete },
     qaBriefs,
+    commands,
   };
 }
 
 export const V1_REPLAN_REQUIRED_HINT = "This charter has the pi-charter v1 disk shape (charter.md ## Criteria + criterion-state.json). v2 will not auto-migrate it; initiate a replan with charter_manage action=amend_charter and manually port checks using docs/v1-to-v2-migration.md, or force_complete/abandon it if it should not continue.";
 const QA_BRIEFS_DIR = "qa-briefs";
 const LEGACY_QA_BRIEFS_DIR = "qa";
+
+async function loadCharterCommands(dir: string): Promise<CharterCommands> {
+  try {
+    return parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8")).commands;
+  } catch {
+    return {};
+  }
+}
 
 function migrationHintForState(state: CharterState): string | undefined {
   return state.schemaVersion === "v1-needs-replan" ? V1_REPLAN_REQUIRED_HINT : undefined;

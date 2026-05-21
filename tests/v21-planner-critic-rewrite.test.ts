@@ -61,7 +61,8 @@ describe("v2.1 planner critic rewrite", () => {
     const text = promptText();
 
     // PASS verdict is defined — the critic can emit it when all checks clear
-    expect(text).toContain("`PASS` — no findings and `validation-underspecified` is empty");
+    expect(text).toContain("`PASS` — no findings");
+    expect(text).toContain("`validation-underspecified` is empty");
     expect(text).toContain("PASS | BLOCK | ADVISORY");
   });
 

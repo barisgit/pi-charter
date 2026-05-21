@@ -23,5 +23,11 @@ export function trustRank(input: TrustRankInput): number {
       return 2;
     case "manual":
       return input.hasBecause ? 1 : 0;
+    default:
+      return assertNever(input.source);
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled evidence source: ${String(value)}`);
 }
