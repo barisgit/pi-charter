@@ -74,15 +74,15 @@ describe("charter_record evidence", () => {
       expect(result.criterionId).toBe("VAL-AUTH-001");
       expect(result.featureId).toBe("f1-state");
       expect(result.outcome).toBe("pass");
-      expect(result.path.endsWith("__2026-05-15T03-00-00-000Z.json")).toBe(true);
+      expect(result.path).toBe(join("work", "f1-state", "evidence", "2026-05-15T03-00-00-000Z", "evidence.json"));
 
-      const stored = JSON.parse(await readFile(join(dir, "work", "f1-state", "evidence", "VAL-AUTH-001__2026-05-15T03-00-00-000Z.json"), "utf8"));
+      const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
       expect(stored.summary).toBe("bun test tests/auth.test.ts pass");
       expect(stored.artifacts).toEqual(["tests/auth.test.ts"]);
 
       const criterionState = JSON.parse(await readFile(join(dir, "criterion-state.json"), "utf8"));
       expect(criterionState.criteria["VAL-AUTH-001"].outcome).toBe("pass");
-      expect(criterionState.criteria["VAL-AUTH-001"].lastEvidencePath).toContain("VAL-AUTH-001__");
+      expect(criterionState.criteria["VAL-AUTH-001"].lastEvidencePath).toBe(result.path);
       expect(result.nextActions.length).toBeGreaterThan(0);
     });
   });

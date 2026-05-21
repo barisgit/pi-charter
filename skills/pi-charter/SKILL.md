@@ -68,6 +68,21 @@ subagent({
 ```
 
 Each v2 persona (reviewer / qa / readiness-probe) writes a typed JSON evidence file and calls `charter_record action=evidence evidenceFile=<path>` itself.
+Evidence and its artifacts use the v2.1 dir-per-run layout:
+
+```
+work/<feat>/evidence/<ts>/
+  evidence.json          # canonical charter_record evidence
+  qa.json / qa.md        # QA machine record + human narrative, when applicable
+  review.json / review.md
+  readiness.json
+  command.json
+  artifacts...
+```
+
+Use paths like `work/<feat>/evidence/<ts>/{evidence.json, qa.md, artifacts...}`.
+Do not create new flat `<criterionId>__<ts>.json` evidence files; readers only
+tolerate that shape for legacy charters.
 `charter-planner-critic` returns `PASS | BLOCK | ADVISORY`.
 
 **Default to `async: true`** for anything you don't need synchronously to
@@ -184,8 +199,24 @@ Drive every feature to evidence without stopping. Per feature:
    (async by default) with `featureId` + `criterionId` in metadata. It
    runs the verifier or its own equivalent checks and writes one
    `charter_record action=evidence`.
-   Planning QA briefs live under `qa-briefs/<surface>.md`. For QA capture recipe selection, start with `references/qa.md`.
 4. Move to the next feature. Loop until `drift.uncovered: []`.
+
+### Capture recipes
+
+Planning QA briefs live under `qa-briefs/<surface>.md`, not `qa/`. For QA
+capture recipe selection, start with `skills/pi-charter/references/qa.md`.
+That shelf routes terminal, browser, desktop, mobile, HTTP/API, real-time,
+database, logs/processes, generated-file, visual-regression, and
+reproducibility capture surfaces.
+
+### Verifier robustness
+
+Use `scripts/charter-named-test.sh [<test-file>] <phrase>` instead of bare
+`bun test -t` to avoid silent 0-match pass. Example:
+
+```
+bash scripts/charter-named-test.sh tests/v21-skill-md-update.test.ts 'SKILL.md references qa-briefs'
+```
 
 If you record evidence yourself for multiple criteria, use the batch
 shape:

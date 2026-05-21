@@ -268,8 +268,69 @@ export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedM
   return unreviewed;
 }
 
+export interface LoadedFeatureEvidenceRecord {
+  path: string;
+  ts: string;
+  record: Record<string, unknown>;
+}
+
 /**
- * Walk work/<featureId>/evidence/*.json and collect every pass evidence record
+ * Walk both evidence layouts for one feature and return parseable JSON evidence
+ * records sorted by their record timestamp:
+ *   - legacy flat: work/<featureId>/evidence/<criterionId>__<stamp>.json
+ *   - v2.1 run dir: work/<featureId>/evidence/<stamp>/evidence.json
+ * Malformed JSON and non-JSON artifacts are ignored so old/partial evidence
+ * directories never crash status/readiness computations.
+ */
+export async function loadFeatureEvidence(dir: string, featureSegment: string): Promise<LoadedFeatureEvidenceRecord[]> {
+  const evidenceDir = join(dir, "work", featureSegment, "evidence");
+  let entries: string[];
+  try {
+    entries = await readdir(evidenceDir);
+  } catch {
+    return [];
+  }
+
+  const records: LoadedFeatureEvidenceRecord[] = [];
+  for (const entry of entries) {
+    if (entry.endsWith(".json")) {
+      const loaded = await loadEvidenceJson(join(evidenceDir, entry), join("work", featureSegment, "evidence", entry));
+      if (loaded) records.push(loaded);
+      continue;
+    }
+
+    let runEntries: string[];
+    try {
+      runEntries = await readdir(join(evidenceDir, entry));
+    } catch {
+      continue;
+    }
+    if (!runEntries.includes("evidence.json")) continue;
+    const loaded = await loadEvidenceJson(
+      join(evidenceDir, entry, "evidence.json"),
+      join("work", featureSegment, "evidence", entry, "evidence.json"),
+    );
+    if (loaded) records.push(loaded);
+  }
+
+  records.sort((a, b) => a.ts.localeCompare(b.ts) || a.path.localeCompare(b.path));
+  return records;
+}
+
+async function loadEvidenceJson(absolutePath: string, relativePath: string): Promise<LoadedFeatureEvidenceRecord | undefined> {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(await readFile(absolutePath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const ts = typeof parsed.ts === "string" ? parsed.ts : undefined;
+  if (!ts) return undefined;
+  return { path: relativePath, ts, record: parsed };
+}
+
+/**
+ * Walk work/<featureId>/evidence records and collect every pass evidence record
  * whose `recordedBy` is `subagent:charter-reviewer:*`, keyed by criterionId,
  * with the record `ts`. VAL-11 uses this to compare against milestone_ready_for_review.ts.
  */
@@ -283,21 +344,7 @@ async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<s
     return out;
   }
   for (const featureSegment of featureDirs) {
-    const evidenceDir = join(workDir, featureSegment, "evidence");
-    let evidenceFiles: string[];
-    try {
-      evidenceFiles = await readdir(evidenceDir);
-    } catch {
-      continue;
-    }
-    for (const file of evidenceFiles) {
-      if (!file.endsWith(".json")) continue;
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(await readFile(join(evidenceDir, file), "utf8")) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+    for (const { record: parsed } of await loadFeatureEvidence(dir, featureSegment)) {
       if (parsed.outcome !== "pass") continue;
       const criterionId = typeof parsed.criterionId === "string" ? parsed.criterionId : undefined;
       const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : undefined;
@@ -910,10 +957,10 @@ async function loadFeatureStateSafe(dir: string, charterId: string): Promise<Fea
 }
 
 /**
- * Walk work/<featureId>/evidence/<criterionId>__<stamp>.json and collect every
- * pass evidence record's `recordedBy` keyed by criterionId. We need every
- * record (not just the latest in criterion-state) so the identity-disjoint
- * predicate can demand at least one session-disjoint reviewer.
+ * Walk work/<featureId>/evidence records (legacy flat and v2.1 dir-per-run)
+ * and collect every pass evidence record's `recordedBy` keyed by criterionId.
+ * We need every record (not just the latest in criterion-state) so the
+ * identity-disjoint predicate can demand at least one session-disjoint reviewer.
  */
 async function loadPassRecordedByCriterion(dir: string): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
@@ -925,21 +972,7 @@ async function loadPassRecordedByCriterion(dir: string): Promise<Map<string, str
     return out;
   }
   for (const featureSegment of featureDirs) {
-    const evidenceDir = join(workDir, featureSegment, "evidence");
-    let evidenceFiles: string[];
-    try {
-      evidenceFiles = await readdir(evidenceDir);
-    } catch {
-      continue;
-    }
-    for (const file of evidenceFiles) {
-      if (!file.endsWith(".json")) continue;
-      let parsed: Record<string, unknown>;
-      try {
-        parsed = JSON.parse(await readFile(join(evidenceDir, file), "utf8")) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+    for (const { record: parsed } of await loadFeatureEvidence(dir, featureSegment)) {
       if (parsed.outcome !== "pass") continue;
       const criterionId = typeof parsed.criterionId === "string" ? parsed.criterionId : undefined;
       const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : undefined;

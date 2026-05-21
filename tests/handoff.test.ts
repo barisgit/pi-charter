@@ -281,7 +281,7 @@ describe("charter_record handoff_apply", () => {
       const evidenceDir = join(dir, "work", "f1", "evidence");
       const entries = await readdir(evidenceDir);
       expect(entries.length).toBe(1);
-      const stored = JSON.parse(await readFile(join(evidenceDir, entries[0]), "utf8"));
+      const stored = JSON.parse(await readFile(join(evidenceDir, entries[0]!, "evidence.json"), "utf8"));
       expect(stored.recordedBy).toBe("subagent:charter-reviewer:rev-1");
       expect(stored.source).toBe("subagent");
 

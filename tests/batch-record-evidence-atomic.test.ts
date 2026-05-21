@@ -159,8 +159,8 @@ describe("recordEvidenceBatch — VAL-7 single criterion-state write", () => {
       expect(criterionStateWrites).toBe(1);
 
       // Per-entry evidence files: each entry produces its own
-      // work/<featureId>/evidence/*.json file — assert 5 total.
-      const evidenceWrites = countMatching(installed, (path) => /\/work\/.+\/evidence\/[^/]+\.json$/.test(path));
+      // work/<featureId>/evidence/<ts>/evidence.json file — assert 5 total.
+      const evidenceWrites = countMatching(installed, (path) => /\/work\/.+\/evidence\/[^/]+\/evidence\.json$/.test(path));
       expect(evidenceWrites).toBe(5);
 
       // feature-state.json: at most one write per unique featureId completed

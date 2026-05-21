@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile, readdir, unlink } from "node:fs/promises";
+import { access, readFile, readdir, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
@@ -239,8 +239,7 @@ async function recordEvidenceLocked(
   const now = input.now ?? new Date().toISOString();
   const stamp = now.replace(/[:.]/g, "-");
   const featureSegment = input.featureId?.trim() || "_charter";
-  const relativePath = join("work", featureSegment, "evidence", `${criterion.id}__${stamp}.json`);
-  const absolutePath = join(dir, relativePath);
+  const { relativePath, absolutePath } = await allocateEvidenceRecordPath(dir, featureSegment, stamp);
 
   const record = {
     charterId: input.charterId,
@@ -360,6 +359,7 @@ async function recordEvidenceBatchLocked(
   const now = input.now ?? new Date().toISOString();
   const stamp = now.replace(/[:.]/g, "-");
   const prepared: Prepared[] = [];
+  const reservedRunDirs = new Set<string>();
 
   for (let index = 0; index < input.entries.length; index += 1) {
     const entry = input.entries[index]!;
@@ -411,12 +411,7 @@ async function recordEvidenceBatchLocked(
     }
     const recordedBy: RecordedBy = entry.recordedBy ?? DEFAULT_RECORDED_BY;
     const featureSegment = entry.featureId?.trim() || "_charter";
-    // Per-entry index suffix prevents same-`now` filename collisions when the
-    // caller passes a fixed `now` (test fixtures, deterministic replays) or
-    // when the system clock yields identical ISO strings for sub-ms calls.
-    const indexSuffix = String(index).padStart(3, "0");
-    const relativePath = join("work", featureSegment, "evidence", `${criterion.id}__${stamp}_${indexSuffix}.json`);
-    const absolutePath = join(dir, relativePath);
+    const { relativePath, absolutePath } = await allocateEvidenceRecordPath(dir, featureSegment, stamp, reservedRunDirs);
     const record: Record<string, unknown> = {
       charterId: input.charterId,
       criterionId: criterion.id,
@@ -558,6 +553,37 @@ function evidenceFilePath(projectDir: string, dir: string, evidenceFile: string)
   if (isAbsolute(evidenceFile)) return evidenceFile;
   if (evidenceFile.startsWith("evidence/")) return join(dir, evidenceFile);
   return join(projectDir, evidenceFile);
+}
+
+async function allocateEvidenceRecordPath(
+  dir: string,
+  featureSegment: string,
+  stamp: string,
+  reservedRunDirs = new Set<string>(),
+): Promise<{ relativePath: string; absolutePath: string }> {
+  const baseRelative = join("work", featureSegment, "evidence");
+  let suffix = 0;
+  while (true) {
+    const runDir = suffix === 0 ? stamp : `${stamp}-${suffix}`;
+    const runRelative = join(baseRelative, runDir);
+    const absoluteRunDir = join(dir, runRelative);
+    const reservationKey = join(featureSegment, runDir);
+    if (!reservedRunDirs.has(reservationKey) && !(await pathExists(absoluteRunDir))) {
+      reservedRunDirs.add(reservationKey);
+      const relativePath = join(runRelative, "evidence.json");
+      return { relativePath, absolutePath: join(dir, relativePath) };
+    }
+    suffix += 1;
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeLegacyQaEvidence(charterId: string, json: unknown): unknown {
@@ -911,11 +937,11 @@ async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput):
     payload: string;
     recordedBy: RecordedBy;
   }> = [];
+  const reservedRunDirs = new Set<string>();
   for (const completed of input.completedCriteria) {
     const criterion = criteriaById.get(completed.criterionId)!;
     const recordedBy = `subagent:${DEFAULT_HANDOFF_PERSONA}:${input.subagentSessionId}` as RecordedBy;
-    const relativePath = join("work", input.featureId, "evidence", `${criterion.id}__${stamp}.json`);
-    const absolutePath = join(dir, relativePath);
+    const { relativePath, absolutePath } = await allocateEvidenceRecordPath(dir, input.featureId, stamp, reservedRunDirs);
     const record: Record<string, unknown> = {
       charterId: input.charterId,
       criterionId: criterion.id,

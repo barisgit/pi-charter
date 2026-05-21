@@ -168,7 +168,7 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
       expect(result.charterId).toBe(charterId);
       expect(result.criterionId).toBe("VAL-A");
       expect(result.outcome).toBe("pass");
-      expect(result.path).toContain("work/fa/evidence/VAL-A__");
+      expect(result.path).toBe(join("work", "fa", "evidence", "2026-05-15T03-00-00-000Z", "evidence.json"));
       expect(result.ts).toBe("2026-05-15T03:00:00.000Z");
       const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
       expect(stored.summary).toBe("single entry path");

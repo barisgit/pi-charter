@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: scripts/charter-named-test.sh <test-file> <phrase>" >&2
+if [[ $# -eq 1 ]]; then
+  test_file=""
+  phrase="$1"
+elif [[ $# -eq 2 ]]; then
+  test_file="$1"
+  phrase="$2"
+else
+  echo "Usage: scripts/charter-named-test.sh [<test-file>] <phrase>" >&2
   exit 2
 fi
 
-test_file="$1"
-phrase="$2"
-
 set +e
-output="$(bun test "$test_file" -t "$phrase" 2>&1)"
+if [[ -n "$test_file" ]]; then
+  output="$(bun test "$test_file" -t "$phrase" 2>&1)"
+else
+  output="$(bun test -t "$phrase" 2>&1)"
+fi
 status=$?
 set -e
 

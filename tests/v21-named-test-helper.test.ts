@@ -43,6 +43,6 @@ describe("charter named test helper", () => {
     const result = runHelper([]);
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("Usage: scripts/charter-named-test.sh <test-file> <phrase>");
+    expect(result.stderr).toContain("Usage: scripts/charter-named-test.sh [<test-file>] <phrase>");
   });
 });
