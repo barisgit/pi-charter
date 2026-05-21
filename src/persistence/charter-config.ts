@@ -65,6 +65,23 @@ export function resolvePersona(role: CharterPersonaRole, config: CharterConfig):
   return config.personas[role];
 }
 
+/**
+ * Reverse lookup: given a resolved persona name (the value of
+ * `config.personas[role]`), return the configured model override for the matching
+ * role, or undefined if no override is configured. Used by the subagent verifier
+ * dispatch to apply per-role model overrides without forking persona files.
+ */
+export function resolvePersonaModelByAgent(agent: string, config: CharterConfig): string | undefined {
+  const roles: CharterPersonaRole[] = ["plannerCritic", "reviewer", "qa", "readinessProbe"];
+  for (const role of roles) {
+    if (config.personas[role] === agent) {
+      const model = config.personasModel[role];
+      if (typeof model === "string" && model.trim().length > 0) return model;
+    }
+  }
+  return undefined;
+}
+
 export function loadCharterConfig(cwd: string): CharterConfig {
   const path = configPath(cwd);
   let parsed: unknown;

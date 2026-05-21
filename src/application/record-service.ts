@@ -28,6 +28,7 @@ import { assertNotV1NeedsReplan, loadFeatureEvidence, nextActionsForStatus, type
 import { CharterToolError } from "./errors";
 import { PI_CHARTER_METADATA_KEYS } from "../infrastructure/subagent-bridge";
 import { getSubagentApi } from "./subagent-api";
+import { loadCharterConfig, resolvePersonaModelByAgent } from "../persistence/charter-config";
 
 export type EvidenceOutcome = "pass" | "fail" | "partial";
 
@@ -1068,6 +1069,7 @@ async function verifySubagentCriterion(
     commands: charter.commands,
   });
   const started = Date.now();
+  const modelOverride = resolvePersonaModelByAgent(verifier.agent, loadCharterConfig(projectDir));
   const response = await api.spawnRaw({
     systemPrompt: `You are ${verifier.agent}. Run the requested pi-charter verifier persona and write typed evidence before finishing.`,
     prompt,
@@ -1075,6 +1077,7 @@ async function verifySubagentCriterion(
     cwd: input.cwd ?? projectDir,
     inheritProjectContext: true,
     inheritSkills: false,
+    ...(modelOverride ? { model: modelOverride } : {}),
     metadata: {
       [PI_CHARTER_METADATA_KEYS.projectDir]: projectDir,
       [PI_CHARTER_METADATA_KEYS.charterId]: input.charterId,
