@@ -1044,7 +1044,10 @@ async function projectMilestoneReadyForReview(
   }
   if (!triggeringMilestone) return;
 
-  // Load every feature in the milestone and union their fulfills.
+  // Load every impl feature in the milestone and union their fulfills.
+  // Review/QA gates may be auto-injected into the same milestone at lock time;
+  // they must not prevent the legacy milestone-ready review signal that fires
+  // once the implementation slice itself completes.
   const planDir = join(dir, "plan");
   let entries: string[];
   try {
@@ -1060,7 +1063,7 @@ async function projectMilestoneReadyForReview(
     } catch {
       continue;
     }
-    if (feature.milestone === triggeringMilestone) {
+    if (feature.milestone === triggeringMilestone && feature.kind === "impl") {
       milestoneFeatures.push({ id: feature.id, fulfills: feature.fulfills });
     }
   }

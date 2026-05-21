@@ -10,6 +10,7 @@ import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
 import { inspectArchitectureGate } from "./architecture-gate";
 import { listBlockingReadinessFeatures } from "./readiness-service";
+import { loadFeatureState, writeFeatureState } from "../persistence/feature-state";
 
 const FEATURE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
 
@@ -35,7 +36,7 @@ export async function viewPlan(projectDir: string, input: { charterId: string })
   const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
   const fulfilled = new Set(features.flatMap((feature) => feature.fulfills));
   const uncovered = charter.criteria.filter((criterion) => !fulfilled.has(criterion.id));
-  const orphanFeatures = features.filter((feature) => feature.fulfills.length === 0);
+  const orphanFeatures = features.filter((feature) => feature.kind === "impl" && feature.fulfills.length === 0);
   const unknownFulfilledCriteria = features.flatMap((feature) =>
     feature.fulfills
       .filter((criterionId) => !criteriaById.has(criterionId))
@@ -102,6 +103,7 @@ export async function lockPlan(
   input: { charterId: string; now?: string; legacy?: boolean },
 ): Promise<LockPlanResult> {
   const dir = charterDir(projectDir, input.charterId);
+  const now = input.now ?? new Date().toISOString();
   const state = await loadCharterState(projectDir, input.charterId);
   assertNotV1NeedsReplan(state);
   if (state.status === "awaiting-clarification") {
@@ -131,7 +133,7 @@ export async function lockPlan(
       ],
     });
   }
-  const plan = await viewPlan(projectDir, { charterId: input.charterId });
+  let plan = await viewPlan(projectDir, { charterId: input.charterId });
   const failures: string[] = [];
   const hasCoverageDrift = plan.drift.uncovered.length > 0 || plan.drift.orphanFeatures.length > 0 || plan.drift.unknownFulfilledCriteria.length > 0;
   if (plan.criteria.length === 0) failures.push("charter.md has no VAL-* criteria");
@@ -146,6 +148,16 @@ export async function lockPlan(
   if (validationShapeFailures.length) {
     const refs = validationShapeFailures.map((row) => `${row.featureId} missing ${row.missing.join(" and ")}`).join(", ");
     failures.push(`impl features missing validation checks: ${refs}`);
+  }
+  const reviewSkipMissingRationale = plan.features.filter((feature) => feature.kind === "impl" && feature.review === "skip" && !feature.reviewSkipRationale);
+  if (reviewSkipMissingRationale.length) {
+    failures.push(`review skip missing rationale: ${reviewSkipMissingRationale.map((feature) => feature.id).join(", ")}`);
+  }
+  if (failures.length === 0) {
+    const injectedFeatureIds = await synthesizeAutoInjectedFeatures(dir, input.charterId, plan.features, now);
+    if (injectedFeatureIds.length > 0) {
+      plan = await viewPlan(projectDir, { charterId: input.charterId });
+    }
   }
   const readinessBlocking = await listBlockingReadinessFeatures(dir);
   if (readinessBlocking.length) {
@@ -182,6 +194,7 @@ export async function lockPlan(
     if (plan.criteria.length === 0) code = "lock_plan.empty_criteria";
     else if (plan.features.length === 0) code = "lock_plan.empty_features";
     else if (readinessBlocking.length) code = "lock_plan.readiness_blocking";
+    else if (reviewSkipMissingRationale.length) code = "lock_plan.review_skip_missing_rationale";
     else if (cycle) code = "lock_plan.cycle";
     else if (architectureGate.required && !architectureGate.present) code = "lock_plan.missing_architecture";
     else if (!input.legacy) {
@@ -204,7 +217,6 @@ export async function lockPlan(
   }
 
   const planDigest = digestFeatures(plan.features);
-  const now = input.now ?? new Date().toISOString();
   await dispatchHook("charter:before_lock_plan", {
     type: "charter:before_lock_plan",
     charterId: state.charterId,
@@ -632,6 +644,142 @@ function validateFeatureInput(input: AddFeatureInput): void {
   }
 }
 
+interface SyntheticFeatureInput {
+  id: string;
+  milestone: string;
+  order: number;
+  kind: "review" | "qa";
+  targets?: string[];
+  fulfills: string[];
+  preconditions: string[];
+  body: string;
+}
+
+async function synthesizeAutoInjectedFeatures(
+  dir: string,
+  charterId: string,
+  features: FeatureDefinition[],
+  now: string,
+): Promise<string[]> {
+  const planDir = join(dir, "plan");
+  await mkdir(planDir, { recursive: true });
+
+  const synthetic: SyntheticFeatureInput[] = [];
+  const existingIds = new Set(features.map((feature) => feature.id));
+  const implFeatures = features.filter((feature) => feature.kind === "impl");
+  const reviewTargets = new Set(
+    features
+      .filter((feature) => feature.kind === "review")
+      .flatMap((feature) => feature.targets),
+  );
+
+  for (const feature of implFeatures) {
+    if (feature.review === "skip") continue;
+    if (reviewTargets.has(feature.id)) continue;
+    const id = `${feature.milestone}-review-${feature.id}`;
+    if (existingIds.has(id)) {
+      throw new CharterToolError(`Cannot auto-inject review feature ${id}; a non-review feature with that id already exists.`, {
+        code: "lock_plan.auto_inject_id_collision",
+        nextActions: [
+          { tool: "charter_plan", action: "view", hint: "Inspect the colliding feature id before retrying lock_plan." },
+          { tool: "charter_plan", action: "update_feature", hint: "Rename or convert the colliding feature so auto-injection can proceed." },
+        ],
+      });
+    }
+    synthetic.push({
+      id,
+      milestone: feature.milestone,
+      order: feature.order + 0.1,
+      kind: "review",
+      targets: [feature.id],
+      fulfills: [],
+      preconditions: [feature.id],
+      body: `Auto-injected review of ${feature.id}; uses charter-reviewer persona.`,
+    });
+    existingIds.add(id);
+  }
+
+  const milestones = new Map<string, FeatureDefinition[]>();
+  for (const feature of implFeatures) {
+    const group = milestones.get(feature.milestone) ?? [];
+    group.push(feature);
+    milestones.set(feature.milestone, group);
+  }
+  const qaMilestones = new Set(features.filter((feature) => feature.kind === "qa").map((feature) => feature.milestone));
+  for (const [milestone, impls] of milestones) {
+    if (qaMilestones.has(milestone)) continue;
+    const id = `${milestone}-qa`;
+    if (existingIds.has(id)) {
+      throw new CharterToolError(`Cannot auto-inject QA feature ${id}; a non-QA feature with that id already exists.`, {
+        code: "lock_plan.auto_inject_id_collision",
+        nextActions: [
+          { tool: "charter_plan", action: "view", hint: "Inspect the colliding feature id before retrying lock_plan." },
+          { tool: "charter_plan", action: "update_feature", hint: "Rename or convert the colliding feature so auto-injection can proceed." },
+        ],
+      });
+    }
+    synthetic.push({
+      id,
+      milestone,
+      order: Math.max(...impls.map((feature) => feature.order)) + 0.2,
+      kind: "qa",
+      fulfills: [],
+      preconditions: impls.map((feature) => feature.id),
+      body: "Auto-injected milestone QA; uses charter-qa persona.",
+    });
+    existingIds.add(id);
+  }
+
+  for (const feature of synthetic) {
+    await writeFile(join(planDir, `${feature.id}.md`), renderSyntheticFeatureMarkdown(feature), "utf8");
+    await appendEvent(dir, {
+      type: "feature_added",
+      ts: now,
+      charterId,
+      featureId: feature.id,
+      milestone: feature.milestone,
+      fulfills: feature.fulfills,
+    });
+  }
+  if (synthetic.length > 0) {
+    const state = await loadFeatureState(dir, charterId);
+    for (const feature of synthetic) {
+      state.features[feature.id] = state.features[feature.id] ?? { checks: {} };
+    }
+    await writeFeatureState(dir, state);
+  }
+  return synthetic.map((feature) => feature.id);
+}
+
+function renderSyntheticFeatureMarkdown(input: SyntheticFeatureInput): string {
+  const lines: string[] = ["---"];
+  lines.push(`id: ${input.id}`);
+  lines.push(`milestone: ${input.milestone}`);
+  lines.push(`order: ${input.order}`);
+  lines.push(`kind: ${input.kind}`);
+  if (input.targets) {
+    lines.push("targets:");
+    for (const value of input.targets) lines.push(`  - ${value}`);
+  }
+  if (input.fulfills.length === 0) {
+    lines.push("fulfills: []");
+  } else {
+    lines.push("fulfills:");
+    for (const value of input.fulfills) lines.push(`  - ${value}`);
+  }
+  if (input.preconditions.length === 0) {
+    lines.push("preconditions: []");
+  } else {
+    lines.push("preconditions:");
+    for (const value of input.preconditions) lines.push(`  - ${value}`);
+  }
+  lines.push("---");
+  lines.push("");
+  lines.push(input.body);
+  lines.push("");
+  return lines.join("\n");
+}
+
 function renderFeatureMarkdown(input: AddFeatureInput): string {
   const lines: string[] = ["---"];
   lines.push(`id: ${input.id}`);
@@ -718,8 +866,10 @@ function digestFeatures(features: FeatureDefinition[]): string {
       id: feature.id,
       milestone: feature.milestone,
       order: feature.order,
+      kind: feature.kind,
       fulfills: [...feature.fulfills].sort(),
       preconditions: [...feature.preconditions].sort(),
+      targets: [...feature.targets].sort(),
     })),
   );
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;

@@ -1,6 +1,7 @@
 import { parseFeatureValidation, type FeatureValidationChecks } from "./feature-validation";
 
 export type FeatureKind = "impl" | "readiness" | "review" | "qa";
+export type FeatureReviewPolicy = "required" | "skip";
 
 export interface FeatureDefinition {
   id: string;
@@ -9,6 +10,9 @@ export interface FeatureDefinition {
   fulfills: string[];
   preconditions: string[];
   kind: FeatureKind;
+  review: FeatureReviewPolicy;
+  targets: string[];
+  reviewSkipRationale?: string;
   checks: FeatureValidationChecks;
   body: string;
 }
@@ -27,6 +31,9 @@ export function parseFeatureMarkdown(markdown: string): FeatureDefinition {
     fulfills: arrayField(fields, "fulfills"),
     preconditions: arrayField(fields, "preconditions"),
     kind: kindField(fields),
+    review: reviewField(fields),
+    targets: arrayField(fields, "targets"),
+    reviewSkipRationale: optionalStringField(fields, "reviewSkipRationale"),
     checks: parseFeatureValidation(body, id),
     body,
   };
@@ -71,7 +78,14 @@ function parseFrontmatter(text: string): Map<string, string | string[]> {
 function stringField(fields: Map<string, string | string[]>, key: string): string {
   const value = fields.get(key);
   if (typeof value !== "string" || !value.trim()) throw new Error(`Feature frontmatter missing ${key}`);
-  return value.trim();
+  return cleanScalar(value);
+}
+
+function optionalStringField(fields: Map<string, string | string[]>, key: string): string | undefined {
+  const value = fields.get(key);
+  if (typeof value !== "string") return undefined;
+  const cleaned = cleanScalar(value);
+  return cleaned ? cleaned : undefined;
 }
 
 function numberField(fields: Map<string, string | string[]>, key: string): number {
@@ -85,14 +99,23 @@ function kindField(fields: Map<string, string | string[]>): FeatureKind {
   const value = fields.get("kind");
   if (value === undefined) return "impl";
   if (typeof value !== "string") throw new Error("Feature frontmatter unknown feature kind");
-  const kind = value.trim();
+  const kind = cleanScalar(value);
   if (kind === "impl" || kind === "readiness" || kind === "review" || kind === "qa") return kind;
   throw new Error(`Feature frontmatter unknown feature kind "${kind}"`);
 }
 
+function reviewField(fields: Map<string, string | string[]>): FeatureReviewPolicy {
+  const value = fields.get("review");
+  if (value === undefined) return "required";
+  if (typeof value !== "string") throw new Error("Feature frontmatter unknown review policy");
+  const policy = cleanScalar(value);
+  if (policy === "required" || policy === "skip") return policy;
+  throw new Error(`Feature frontmatter unknown review policy "${policy}"`);
+}
+
 function arrayField(fields: Map<string, string | string[]>, key: string): string[] {
   const value = fields.get(key);
-  if (Array.isArray(value)) return value.map((item) => item.trim()).filter(Boolean);
+  if (Array.isArray(value)) return value.map(cleanScalar).filter(Boolean);
   if (typeof value === "string") {
     const trimmed = value.trim();
     if (!trimmed || trimmed === "[]") return [];
@@ -100,8 +123,12 @@ function arrayField(fields: Map<string, string | string[]>, key: string): string
       .replace(/^\[/, "")
       .replace(/\]$/, "")
       .split(",")
-      .map((item) => item.trim().replace(/^['\"]|['\"]$/g, ""))
+      .map(cleanScalar)
       .filter(Boolean);
   }
   return [];
+}
+
+function cleanScalar(value: string): string {
+  return value.trim().replace(/^[\'\"]|[\'\"]$/g, "");
 }
