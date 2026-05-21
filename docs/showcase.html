@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pi-charter v2 — design preview</title>
+<style>
+  :root {
+    --bg: #0b1118;
+    --bg-card: #131a22;
+    --bg-card-2: #0f1620;
+    --bg-elev: #182230;
+    --fg: #e2e8f0;
+    --fg-dim: #93a4b7;
+    --fg-faint: #6a7e93;
+    --accent: #7aa7ff;       /* steel blue */
+    --accent-2: #b794ff;     /* lavender */
+    --accent-3: #5eead4;     /* teal */
+    --ok: #6ee7b7;
+    --warn: #fcd34d;
+    --err: #fca5a5;
+    --pink: #f0a8c8;
+    --border: #243043;
+    --border-strong: #344862;
+    --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, monospace;
+    --glow-accent: 0 0 0 1px rgba(122,167,255,0.18), 0 8px 30px -10px rgba(122,167,255,0.25);
+  }
+  * { box-sizing: border-box; }
+  html, body { background: radial-gradient(1200px 700px at 80% -10%, rgba(122,167,255,0.06), transparent 60%), radial-gradient(900px 600px at -10% 20%, rgba(183,148,255,0.05), transparent 60%), var(--bg); color: var(--fg); margin: 0; padding: 0; }
+  body { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 36px 28px 96px; }
+  header { padding: 8px 0 30px; border-bottom: 1px solid var(--border); margin-bottom: 36px; }
+  h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.015em; font-weight: 700; background: linear-gradient(120deg, #e2e8f0 30%, #b794ff 90%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  h2 { margin: 60px 0 14px; font-size: 12px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
+  h3 { margin: 16px 0 6px; font-size: 14px; color: var(--fg); font-weight: 600; }
+  p { color: var(--fg-dim); margin: 6px 0 10px; }
+  .sub { color: var(--fg-faint); font-size: 13px; }
+  code, pre, kbd { font-family: var(--mono); }
+  code { background: rgba(122,167,255,0.10); padding: 1px 6px; border-radius: 4px; font-size: 12px; color: #d6e3f5; border: 1px solid rgba(122,167,255,0.12); }
+  pre { background: var(--bg-card-2); padding: 16px 18px; border: 1px solid var(--border); border-radius: 10px; overflow-x: auto; font-size: 12.5px; line-height: 1.6; color: #c7d2dc; }
+  pre code { background: transparent; border: 0; padding: 0; }
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 880px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+  .card { background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-card-2) 100%); border: 1px solid var(--border); border-radius: 14px; padding: 20px 20px 18px; }
+  .card.tight { padding: 16px 18px; }
+  .card h3 { margin-top: 0; }
+  .card .meta { color: var(--fg-dim); font-size: 12.5px; }
+  .pill { display: inline-block; font-size: 10.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--fg-dim); margin-right: 6px; letter-spacing: 0.04em; }
+  .pill.ok { color: var(--ok); border-color: rgba(110,231,183,0.35); background: rgba(110,231,183,0.06); }
+  .pill.warn { color: var(--warn); border-color: rgba(252,211,77,0.35); background: rgba(252,211,77,0.05); }
+  .pill.err { color: var(--err); border-color: rgba(252,165,165,0.35); background: rgba(252,165,165,0.06); }
+  .pill.accent { color: var(--accent); border-color: rgba(122,167,255,0.35); background: rgba(122,167,255,0.07); }
+  .pill.accent2 { color: var(--accent-2); border-color: rgba(183,148,255,0.35); background: rgba(183,148,255,0.07); }
+  .pill.accent3 { color: var(--accent-3); border-color: rgba(94,234,212,0.35); background: rgba(94,234,212,0.07); }
+  .diagram { background: linear-gradient(180deg, var(--bg-card-2), #0b1118); border: 1px solid var(--border); border-radius: 14px; padding: 22px; box-shadow: var(--glow-accent); }
+  .diagram svg { display: block; width: 100%; height: auto; }
+  ul.tight { margin: 8px 0 4px; padding-left: 18px; }
+  ul.tight li { margin: 3px 0; color: var(--fg-dim); }
+  ul.tight li strong { color: var(--fg); font-weight: 600; }
+  .kv { display: grid; grid-template-columns: 200px 1fr; gap: 8px 14px; font-size: 13px; }
+  .kv .k { color: var(--fg-faint); font-family: var(--mono); font-size: 12px; }
+  .kv .v { color: var(--fg); }
+  table.tools { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.tools th, table.tools td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.tools th { color: var(--accent); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+  table.tools td { color: var(--fg-dim); }
+  table.tools td:first-child { color: var(--fg); font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  footer { color: var(--fg-faint); font-size: 12px; margin-top: 64px; border-top: 1px solid var(--border); padding-top: 16px; }
+  .lead { font-size: 15px; color: var(--fg); max-width: 880px; }
+  .legend { display: flex; gap: 18px; margin-top: 8px; flex-wrap: wrap; font-size: 12px; color: var(--fg-dim); }
+  .legend .sw { display: inline-block; width: 14px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+  .banner { background: linear-gradient(90deg, rgba(183,148,255,0.10), rgba(122,167,255,0.06)); border: 1px solid rgba(183,148,255,0.30); border-radius: 10px; padding: 12px 16px; color: var(--fg); font-size: 13px; }
+  .banner strong { color: var(--accent-2); }
+
+  /* SVG node styling */
+  .node-bg { fill: #1a2433; stroke: var(--border-strong); stroke-width: 1; }
+  .node-bg.active { fill: rgba(122,167,255,0.12); stroke: var(--accent); }
+  .node-bg.review { fill: rgba(94,234,212,0.10); stroke: var(--accent-3); }
+  .node-bg.paused { fill: rgba(252,211,77,0.08); stroke: var(--warn); }
+  .node-bg.terminal-ok { fill: rgba(110,231,183,0.10); stroke: var(--ok); }
+  .node-bg.terminal-bad { fill: rgba(252,165,165,0.08); stroke: var(--err); }
+  .node-bg.amend { fill: rgba(183,148,255,0.10); stroke: var(--accent-2); }
+  .node-bg.clarify { fill: rgba(240,168,200,0.10); stroke: var(--pink); }
+  .node-bg.readiness { fill: rgba(252,211,77,0.10); stroke: var(--warn); }
+  .node-bg.impl { fill: rgba(122,167,255,0.10); stroke: var(--accent); }
+  .node-bg.reviewf { fill: rgba(183,148,255,0.10); stroke: var(--accent-2); }
+  .node-bg.qaf { fill: rgba(94,234,212,0.10); stroke: var(--accent-3); }
+  .node-title { fill: var(--fg); font: 600 13px var(--mono); }
+  .node-sub { fill: var(--fg-faint); font: 11px var(--mono); }
+  .edge { stroke: #3a4b63; stroke-width: 1.4; fill: none; }
+  .edge.accent { stroke: var(--accent); }
+  .edge.amend { stroke: var(--accent-2); stroke-dasharray: 4 3; }
+  .edge.escape { stroke: var(--err); stroke-dasharray: 3 3; }
+  .edge.clarify { stroke: var(--pink); stroke-dasharray: 4 3; }
+  .edge-label { fill: var(--fg-dim); font: 10.5px var(--mono); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>pi-charter v2</h1>
+    <p class="sub">Durable agent contracts inside pi-coding-agent — features carry their own validation, planning is the forcing function.
+      <span class="pill accent2">design preview</span><span class="pill warn">not yet implemented</span></p>
+    <p class="lead">v2 collapses VAL-* criteria into per-feature checks, treats readiness/review/QA as first-class feature kinds, requires a planning forcing function (architecture pass → fan-out validation authoring → critic iterate-to-fixed-point), and adds an <em>awaiting-clarification</em> state so the agent can stall on user input without the Ralph loop spamming.</p>
+    <div class="banner" style="margin-top: 14px">
+      <strong>Status:</strong> this page shows the v2 design locked-in after design Q&amp;A. The currently-shipped extension is v1 (separate Criteria section, single charter-verifier persona, simple feature DAG). v2 is a breaking change; existing in-flight charters force-replan on next session.
+    </div>
+  </header>
+
+  <!-- ================================================================= -->
+  <h2>What changes in v2</h2>
+  <div class="grid grid-3">
+    <div class="card tight">
+      <h3>Validation lives in features</h3>
+      <p>No more <code>charter.md</code> <em>Criteria</em> section, no global VAL-* IDs. Each <code>plan/&lt;feature&gt;.md</code> carries its own <code>## Validation</code> block split <em>Happy</em> / <em>Edge</em>. Lock-time gate: every feature needs ≥1 of each.</p>
+    </div>
+    <div class="card tight">
+      <h3>Four feature kinds</h3>
+      <p><strong>Readiness</strong>, <strong>Impl</strong>, <strong>Review</strong>, <strong>QA</strong>. Review + QA features auto-inject at <code>lock_plan</code>. Milestones group impls + their gates; <code>readyNext</code> is feature-level so cross-milestone parallelism is normal.</p>
+    </div>
+    <div class="card tight">
+      <h3>Planning is the gate</h3>
+      <p>Architecture artifact required → fan-out validation authoring per area → critic iterates to fixed point (cap 3) → readiness declared → QA briefs staged. <code>lock_plan</code> fails on any missing forcing function.</p>
+    </div>
+    <div class="card tight">
+      <h3>Typed evidence</h3>
+      <p>Four kinds: <code>command</code>, <code>review</code>, <code>qa</code>, <code>readiness</code>. Subagents write JSON to <code>evidence/&lt;featureId&gt;/&lt;ts&gt;.&lt;kind&gt;.json</code> and call <code>charter_record action=evidence evidenceFile=…</code> themselves. Main agent stops re-typing subagent output.</p>
+    </div>
+    <div class="card tight">
+      <h3>Ask state</h3>
+      <p>New status <code>awaiting-clarification</code>. <code>charter_manage action=ask</code> flips status with a one-line note; the question goes in chat. Ralph loop skips this status. Planning-only.</p>
+    </div>
+    <div class="card tight">
+      <h3>Config + BYOA</h3>
+      <p><code>.pi/charter/charter-config.json</code> selects persona implementations per role + model overrides. Default personas ship bundled with the extension; user can point any role at their own agent (resolution is pi-subagents' job).</p>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <h2>Lifecycle</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1080 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="pi-charter v2 lifecycle state diagram">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#5a7592" />
+        </marker>
+        <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7aa7ff" />
+        </marker>
+        <marker id="arrow-amend" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#b794ff" />
+        </marker>
+        <marker id="arrow-escape" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#fca5a5" />
+        </marker>
+        <marker id="arrow-clarify" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#f0a8c8" />
+        </marker>
+      </defs>
+
+      <!-- create entry -->
+      <circle cx="60" cy="120" r="8" fill="#5a7592" />
+      <text x="60" y="155" text-anchor="middle" class="node-sub">create</text>
+
+      <!-- Planning -->
+      <g transform="translate(130,80)">
+        <rect class="node-bg" x="0" y="0" width="170" height="80" rx="10" />
+        <text x="85" y="34" text-anchor="middle" class="node-title">Planning</text>
+        <text x="85" y="56" text-anchor="middle" class="node-sub">architecture · validation</text>
+        <text x="85" y="72" text-anchor="middle" class="node-sub">readiness · qa briefs</text>
+      </g>
+
+      <!-- Awaiting clarification -->
+      <g transform="translate(130,240)">
+        <rect class="node-bg clarify" x="0" y="0" width="170" height="78" rx="10" />
+        <text x="85" y="30" text-anchor="middle" class="node-title">Awaiting</text>
+        <text x="85" y="48" text-anchor="middle" class="node-title">Clarification</text>
+        <text x="85" y="68" text-anchor="middle" class="node-sub">ralph skips</text>
+      </g>
+
+      <!-- Active -->
+      <g transform="translate(380,80)">
+        <rect class="node-bg active" x="0" y="0" width="170" height="80" rx="10" />
+        <text x="85" y="34" text-anchor="middle" class="node-title">Active</text>
+        <text x="85" y="56" text-anchor="middle" class="node-sub">readyNext features</text>
+        <text x="85" y="72" text-anchor="middle" class="node-sub">subagents write evidence</text>
+      </g>
+
+      <!-- Review -->
+      <g transform="translate(630,80)">
+        <rect class="node-bg review" x="0" y="0" width="170" height="80" rx="10" />
+        <text x="85" y="34" text-anchor="middle" class="node-title">Review</text>
+        <text x="85" y="56" text-anchor="middle" class="node-sub">all features passed</text>
+        <text x="85" y="72" text-anchor="middle" class="node-sub">final audit</text>
+      </g>
+
+      <!-- Completed -->
+      <g transform="translate(880,80)">
+        <rect class="node-bg terminal-ok" x="0" y="0" width="160" height="80" rx="10" />
+        <text x="80" y="34" text-anchor="middle" class="node-title">Completed</text>
+        <text x="80" y="56" text-anchor="middle" class="node-sub">terminal</text>
+        <text x="80" y="72" text-anchor="middle" class="node-sub">all features green</text>
+      </g>
+
+      <!-- Paused -->
+      <g transform="translate(380,240)">
+        <rect class="node-bg paused" x="0" y="0" width="170" height="68" rx="10" />
+        <text x="85" y="32" text-anchor="middle" class="node-title">Paused</text>
+        <text x="85" y="52" text-anchor="middle" class="node-sub">user-controlled</text>
+      </g>
+
+      <!-- Amend -->
+      <g transform="translate(630,240)">
+        <rect class="node-bg amend" x="0" y="0" width="170" height="68" rx="10" />
+        <text x="85" y="32" text-anchor="middle" class="node-title">Amend</text>
+        <text x="85" y="52" text-anchor="middle" class="node-sub">re-enter planning</text>
+      </g>
+
+      <!-- Abandoned -->
+      <g transform="translate(380,360)">
+        <rect class="node-bg terminal-bad" x="0" y="0" width="170" height="68" rx="10" />
+        <text x="85" y="32" text-anchor="middle" class="node-title">Abandoned</text>
+        <text x="85" y="52" text-anchor="middle" class="node-sub">force_complete</text>
+      </g>
+
+      <!-- BudgetLimited -->
+      <g transform="translate(630,360)">
+        <rect class="node-bg terminal-bad" x="0" y="0" width="170" height="68" rx="10" />
+        <text x="85" y="32" text-anchor="middle" class="node-title">Budget-Limited</text>
+        <text x="85" y="52" text-anchor="middle" class="node-sub">budget hit</text>
+      </g>
+
+      <!-- create -> planning -->
+      <path class="edge accent" d="M 68,120 H 130" marker-end="url(#arrow-accent)" />
+
+      <!-- planning -> awaiting-clarification (and back) -->
+      <path class="edge clarify" d="M 200,160 V 240" marker-end="url(#arrow-clarify)" />
+      <text x="208" y="195" class="edge-label">ask</text>
+      <path class="edge clarify" d="M 230,240 V 160" marker-end="url(#arrow-clarify)" />
+      <text x="238" y="205" class="edge-label">resume</text>
+
+      <!-- planning -> active -->
+      <path class="edge accent" d="M 300,120 H 380" marker-end="url(#arrow-accent)" />
+      <text x="340" y="111" text-anchor="middle" class="edge-label">lock_plan</text>
+
+      <!-- active -> review -->
+      <path class="edge accent" d="M 550,120 H 630" marker-end="url(#arrow-accent)" />
+      <text x="590" y="111" text-anchor="middle" class="edge-label">all features pass</text>
+
+      <!-- review -> completed -->
+      <path class="edge accent" d="M 800,120 H 880" marker-end="url(#arrow-accent)" />
+      <text x="840" y="111" text-anchor="middle" class="edge-label">complete</text>
+
+      <!-- review -> active rework -->
+      <path class="edge" d="M 630,140 C 600,170 560,170 550,140" marker-end="url(#arrow)" />
+      <text x="590" y="180" text-anchor="middle" class="edge-label">rework</text>
+
+      <!-- active <-> paused -->
+      <path class="edge" d="M 440,160 V 240" marker-end="url(#arrow)" />
+      <text x="447" y="205" class="edge-label">pause</text>
+      <path class="edge" d="M 490,240 V 160" marker-end="url(#arrow)" />
+      <text x="497" y="205" class="edge-label">resume</text>
+
+      <!-- active -> amend -->
+      <path class="edge amend" d="M 550,140 C 600,180 640,200 670,240" marker-end="url(#arrow-amend)" />
+      <text x="640" y="195" text-anchor="middle" class="edge-label">amend_charter</text>
+      <!-- amend -> planning -->
+      <path class="edge amend" d="M 670,240 C 500,200 380,180 300,140" marker-end="url(#arrow-amend)" />
+
+      <!-- active -> abandoned -->
+      <path class="edge escape" d="M 430,160 V 360" marker-end="url(#arrow-escape)" />
+      <text x="395" y="265" class="edge-label">force_complete</text>
+
+      <!-- active -> budget -->
+      <path class="edge escape" d="M 550,160 C 620,260 660,300 680,360" marker-end="url(#arrow-escape)" />
+
+      <!-- legend -->
+      <g transform="translate(60,455)">
+        <rect width="14" height="10" rx="2" class="node-bg active" /><text x="22" y="9" class="node-sub">active</text>
+        <rect x="80" width="14" height="10" rx="2" class="node-bg review" /><text x="102" y="9" class="node-sub">review</text>
+        <rect x="170" width="14" height="10" rx="2" class="node-bg paused" /><text x="192" y="9" class="node-sub">paused</text>
+        <rect x="260" width="14" height="10" rx="2" class="node-bg amend" /><text x="282" y="9" class="node-sub">amend</text>
+        <rect x="345" width="14" height="10" rx="2" class="node-bg clarify" /><text x="367" y="9" class="node-sub">awaiting-clarification</text>
+        <rect x="500" width="14" height="10" rx="2" class="node-bg terminal-ok" /><text x="522" y="9" class="node-sub">terminal ok</text>
+        <rect x="610" width="14" height="10" rx="2" class="node-bg terminal-bad" /><text x="632" y="9" class="node-sub">terminal escape</text>
+      </g>
+    </svg>
+  </div>
+  <p class="sub">Ralph skip set in v2: <code>paused</code>, <code>awaiting-clarification</code>, <code>completed</code>, <code>abandoned</code>, <code>budget_limited</code>. Ask is planning-only; if active hits a real blocker the right move is <code>pause</code>, not <code>ask</code>.</p>
+
+  <!-- ================================================================= -->
+  <h2>Feature DAG — readiness, impl, review, QA</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1080 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="feature DAG with all four feature kinds">
+      <defs>
+        <marker id="darr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#5a7592" />
+        </marker>
+      </defs>
+
+      <!-- readiness column -->
+      <text x="100" y="30" class="node-sub" font-weight="700" fill="#fcd34d">readiness</text>
+      <g transform="translate(40,50)">
+        <rect class="node-bg readiness" width="140" height="44" rx="8" />
+        <text x="70" y="20" text-anchor="middle" class="node-title">r1-creds</text>
+        <text x="70" y="36" text-anchor="middle" class="node-sub">touches:[]</text>
+      </g>
+      <g transform="translate(40,110)">
+        <rect class="node-bg readiness" width="140" height="44" rx="8" />
+        <text x="70" y="20" text-anchor="middle" class="node-title">r2-db</text>
+        <text x="70" y="36" text-anchor="middle" class="node-sub">touches:[]</text>
+      </g>
+      <g transform="translate(40,170)">
+        <rect class="node-bg readiness" width="140" height="44" rx="8" />
+        <text x="70" y="20" text-anchor="middle" class="node-title">r3-skeleton</text>
+        <text x="70" y="36" text-anchor="middle" class="node-sub">touches:[]</text>
+      </g>
+
+      <!-- m1 impl column -->
+      <text x="320" y="30" class="node-sub" font-weight="700" fill="#7aa7ff">m1-auth · impl</text>
+      <g transform="translate(250,50)">
+        <rect class="node-bg impl" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m1-oauth-callback</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[r1,r3] touches:[app/auth/*]</text>
+      </g>
+      <g transform="translate(250,115)">
+        <rect class="node-bg impl" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m1-session-cookies</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[r2,r3] touches:[app/session/*]</text>
+      </g>
+
+      <!-- m1 review -->
+      <text x="600" y="30" class="node-sub" font-weight="700" fill="#b794ff">m1 · auto-injected reviews</text>
+      <g transform="translate(490,50)">
+        <rect class="node-bg reviewf" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m1-review-oauth-cb</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[m1-oauth-callback]</text>
+      </g>
+      <g transform="translate(490,115)">
+        <rect class="node-bg reviewf" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m1-review-session</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[m1-session-cookies]</text>
+      </g>
+
+      <!-- m1 qa -->
+      <text x="850" y="30" class="node-sub" font-weight="700" fill="#5eead4">m1 · qa gate</text>
+      <g transform="translate(730,80)">
+        <rect class="node-bg qaf" width="200" height="60" rx="8" />
+        <text x="100" y="24" text-anchor="middle" class="node-title">m1-qa</text>
+        <text x="100" y="42" text-anchor="middle" class="node-sub">pre:[all m1 impl + review]</text>
+        <text x="100" y="55" text-anchor="middle" class="node-sub">briefs from docs/qa/*</text>
+      </g>
+
+      <!-- m2 row -->
+      <g transform="translate(250,200)">
+        <rect class="node-bg impl" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m2-dashboard-render</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[r3,m1-session]</text>
+      </g>
+      <g transform="translate(250,265)">
+        <rect class="node-bg impl" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m2-profile-card</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[r3,m1-session]</text>
+      </g>
+      <g transform="translate(490,200)">
+        <rect class="node-bg reviewf" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m2-review-dashboard</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[m2-dashboard-render]</text>
+      </g>
+      <g transform="translate(490,265)">
+        <rect class="node-bg reviewf" width="180" height="50" rx="8" />
+        <text x="90" y="22" text-anchor="middle" class="node-title">m2-review-profile</text>
+        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[m2-profile-card]</text>
+      </g>
+      <g transform="translate(730,225)">
+        <rect class="node-bg qaf" width="200" height="60" rx="8" />
+        <text x="100" y="24" text-anchor="middle" class="node-title">m2-qa</text>
+        <text x="100" y="42" text-anchor="middle" class="node-sub">pre:[all m2 impl + review]</text>
+        <text x="100" y="55" text-anchor="middle" class="node-sub">briefs from docs/qa/*</text>
+      </g>
+
+      <!-- edges (simplified, just key dependencies) -->
+      <path class="edge" d="M 180,72 H 250" marker-end="url(#darr)" />
+      <path class="edge" d="M 180,140 H 250" marker-end="url(#darr)" />
+      <path class="edge" d="M 180,190 C 220,210 230,220 250,220" marker-end="url(#darr)" />
+      <path class="edge" d="M 430,75 H 490" marker-end="url(#darr)" />
+      <path class="edge" d="M 430,140 H 490" marker-end="url(#darr)" />
+      <path class="edge" d="M 670,75 C 700,80 720,90 730,100" marker-end="url(#darr)" />
+      <path class="edge" d="M 670,140 C 700,135 720,125 730,115" marker-end="url(#darr)" />
+      <path class="edge" d="M 430,225 H 490" marker-end="url(#darr)" />
+      <path class="edge" d="M 430,290 H 490" marker-end="url(#darr)" />
+      <path class="edge" d="M 670,225 C 700,235 720,245 730,250" marker-end="url(#darr)" />
+      <path class="edge" d="M 670,290 C 700,280 720,265 730,260" marker-end="url(#darr)" />
+
+      <!-- legend -->
+      <g transform="translate(60,350)">
+        <rect width="14" height="10" rx="2" class="node-bg readiness" /><text x="22" y="9" class="node-sub">readiness</text>
+        <rect x="110" width="14" height="10" rx="2" class="node-bg impl" /><text x="132" y="9" class="node-sub">impl</text>
+        <rect x="190" width="14" height="10" rx="2" class="node-bg reviewf" /><text x="212" y="9" class="node-sub">review (auto-injected)</text>
+        <rect x="370" width="14" height="10" rx="2" class="node-bg qaf" /><text x="392" y="9" class="node-sub">qa (auto-injected milestone gate)</text>
+      </g>
+    </svg>
+  </div>
+  <p class="sub">Milestones are organizational + QA-bundling units, <strong>not</strong> execution barriers. <code>readyNext</code> is feature-level: cross-milestone parallelism is normal. Initial <code>readyNext</code> after lock = <code>[r1, r2, r3]</code> all parallel. Ralph's active prompt encourages parallel <code>fixer</code> dispatch when <code>touches:</code> don't overlap; planner-critic flags overlap during planning.</p>
+
+  <!-- ================================================================= -->
+  <h2>Per-feature validation</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>Inside <code>plan/&lt;feature&gt;.md</code></h3>
+<pre><code>---
+id: m1-oauth-callback
+milestone: m1-auth
+order: 10
+preconditions: [r1-creds, r3-skeleton]
+touches: [app/auth/callback/**]
+review: required
+---
+
+# OAuth callback handler
+
+Implements the GET /auth/callback route. Exchanges code for
+tokens, sets session cookie, redirects to /dashboard.
+
+## Validation
+
+### Happy
+- check: callback-sets-session-cookie
+  command: bun run test:int -- auth/callback.happy
+- check: callback-redirects-to-dashboard
+  command: curl -s -o /dev/null -w "%{http_code}\n" \
+    http://localhost:3000/auth/callback?code=valid \
+    | grep -q 302
+
+### Edge
+- check: callback-rejects-expired-code
+  command: bun run test:int -- auth/callback.expired
+- check: callback-rejects-state-mismatch
+  command: bun run test:int -- auth/callback.csrf
+</code></pre>
+    </div>
+    <div class="card">
+      <h3>Lock-time shape gate</h3>
+      <ul class="tight">
+        <li><strong>Every impl feature</strong> needs ≥1 Happy and ≥1 Edge check.</li>
+        <li>Check IDs are scoped: <code>m1-oauth-callback.callback-sets-session-cookie</code>. Globally unique by construction.</li>
+        <li>Command verifiers preferred; <code>hook</code> and <code>manual</code> kinds still supported for non-determinable behavior.</li>
+        <li><code>charter-planner-critic</code> grades validation <em>depth</em> per feature — returns structured <code>validation-underspecified: [feature-id]</code> when checks read like "we tested it" rather than enumerated failure modes.</li>
+        <li>Underspecified iterations loop with the explorers; cap at 3 rounds, then escalate to <code>awaiting-clarification</code> with a one-line note.</li>
+      </ul>
+      <h3 style="margin-top:18px">No more VAL-*</h3>
+      <p>Charter.md drops the entire <em>Criteria</em> section. <code>criterion-state.json</code> is removed. <code>feature-state.json</code> is single source of truth and nests per-check status under each feature.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <h2>Planning — forcing functions</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1080 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="planning forcing functions pipeline">
+      <defs>
+        <marker id="arrow-step" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7aa7ff" />
+        </marker>
+      </defs>
+
+      <!-- 1. architecture -->
+      <g transform="translate(30,80)">
+        <rect class="node-bg amend" width="200" height="92" rx="10" />
+        <text x="100" y="26" text-anchor="middle" class="node-title">1 · architecture.md</text>
+        <text x="100" y="48" text-anchor="middle" class="node-sub">components · surfaces</text>
+        <text x="100" y="64" text-anchor="middle" class="node-sub">interactions · failure modes</text>
+        <text x="100" y="80" text-anchor="middle" class="node-sub">authored by subagent</text>
+      </g>
+      <text x="130" y="70" text-anchor="middle" class="node-sub" font-weight="700" fill="#b794ff">PLAN-TIME</text>
+
+      <!-- 2. fan-out validation -->
+      <g transform="translate(260,80)">
+        <rect class="node-bg active" width="200" height="92" rx="10" />
+        <text x="100" y="26" text-anchor="middle" class="node-title">2 · validation fan-out</text>
+        <text x="100" y="48" text-anchor="middle" class="node-sub">N explorers · 1 per area</text>
+        <text x="100" y="64" text-anchor="middle" class="node-sub">enumerate testable</text>
+        <text x="100" y="80" text-anchor="middle" class="node-sub">behaviors + failures</text>
+      </g>
+
+      <!-- 3. critic loop -->
+      <g transform="translate(490,80)">
+        <rect class="node-bg active" width="200" height="92" rx="10" />
+        <text x="100" y="26" text-anchor="middle" class="node-title">3 · critic iterate</text>
+        <text x="100" y="48" text-anchor="middle" class="node-sub">depth · readiness · qa</text>
+        <text x="100" y="64" text-anchor="middle" class="node-sub">touch-overlap · skips</text>
+        <text x="100" y="80" text-anchor="middle" class="node-sub">cap 3 → clarify</text>
+      </g>
+
+      <!-- 4. readiness + qa briefs -->
+      <g transform="translate(720,80)">
+        <rect class="node-bg readiness" width="200" height="92" rx="10" />
+        <text x="100" y="26" text-anchor="middle" class="node-title">4 · readiness + qa</text>
+        <text x="100" y="48" text-anchor="middle" class="node-sub">declare matrix</text>
+        <text x="100" y="64" text-anchor="middle" class="node-sub">stage qa/&lt;surface&gt;.md</text>
+        <text x="100" y="80" text-anchor="middle" class="node-sub">in charter dir only</text>
+      </g>
+
+      <!-- lock -->
+      <g transform="translate(950,80)">
+        <rect class="node-bg terminal-ok" width="100" height="92" rx="10" />
+        <text x="50" y="32" text-anchor="middle" class="node-title">lock</text>
+        <text x="50" y="52" text-anchor="middle" class="node-sub">repo still</text>
+        <text x="50" y="68" text-anchor="middle" class="node-sub">untouched</text>
+      </g>
+
+      <!-- arrows -->
+      <path class="edge accent" d="M 230,126 H 260" marker-end="url(#arrow-step)" />
+      <path class="edge accent" d="M 460,126 H 490" marker-end="url(#arrow-step)" />
+      <path class="edge accent" d="M 690,126 H 720" marker-end="url(#arrow-step)" />
+      <path class="edge accent" d="M 920,126 H 950" marker-end="url(#arrow-step)" />
+
+      <!-- critic backwards loop -->
+      <path class="edge" d="M 590,80 C 580,40 470,40 460,80" marker-end="url(#arrow)" />
+      <text x="525" y="32" text-anchor="middle" class="edge-label">underspecified → re-fan-out</text>
+
+      <!-- ask escape -->
+      <path class="edge clarify" d="M 590,172 V 220" marker-end="url(#arrow-clarify)" />
+      <text x="610" y="200" class="edge-label">cap hit → ask</text>
+    </svg>
+  </div>
+  <p class="sub">Lock fails on: missing architecture.md, any <code>blocking</code> readiness item, any feature without Happy+Edge checks, any unanswered clarification entry. Planning is fully reversible — the repo is never written during planning or lock. The first repo writes happen in active phase (impl features producing code).</p>
+
+  <!-- ================================================================= -->
+  <h2>Subagent-authored typed evidence</h2>
+  <div class="diagram">
+    <svg viewBox="0 0 1080 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="typed evidence flow from subagent to charter state">
+      <defs>
+        <marker id="arrow-ev" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7aa7ff" />
+        </marker>
+      </defs>
+
+      <!-- main agent -->
+      <g transform="translate(40,30)">
+        <rect class="node-bg active" width="200" height="76" rx="10" />
+        <text x="100" y="28" text-anchor="middle" class="node-title">main agent</text>
+        <text x="100" y="48" text-anchor="middle" class="node-sub">subagent({ agent: ... })</text>
+        <text x="100" y="64" text-anchor="middle" class="node-sub">label · feature context</text>
+      </g>
+
+      <!-- subagent -->
+      <g transform="translate(310,30)">
+        <rect class="node-bg amend" width="220" height="120" rx="10" />
+        <text x="110" y="28" text-anchor="middle" class="node-title">subagent (reviewer/qa/…)</text>
+        <text x="110" y="50" text-anchor="middle" class="node-sub">reads spec + prior evidence</text>
+        <text x="110" y="66" text-anchor="middle" class="node-sub">runs work · captures artifacts</text>
+        <text x="110" y="86" text-anchor="middle" class="node-sub">writes typed JSON file</text>
+        <text x="110" y="102" text-anchor="middle" class="node-sub">calls charter_record(evidenceFile)</text>
+      </g>
+
+      <!-- json file -->
+      <g transform="translate(600,30)">
+        <rect class="node-bg review" width="220" height="120" rx="10" />
+        <text x="110" y="28" text-anchor="middle" class="node-title">evidence/&lt;feat&gt;/&lt;ts&gt;.kind.json</text>
+        <text x="110" y="52" text-anchor="middle" class="node-sub">kind: command|review|qa|readiness</text>
+        <text x="110" y="70" text-anchor="middle" class="node-sub">outcome · summary</text>
+        <text x="110" y="86" text-anchor="middle" class="node-sub">checkResults / blockingIssues</text>
+        <text x="110" y="102" text-anchor="middle" class="node-sub">subagentSessionId · commitId</text>
+      </g>
+
+      <!-- charter state -->
+      <g transform="translate(880,30)">
+        <rect class="node-bg terminal-ok" width="160" height="120" rx="10" />
+        <text x="80" y="28" text-anchor="middle" class="node-title">feature-state.json</text>
+        <text x="80" y="52" text-anchor="middle" class="node-sub">per-check status</text>
+        <text x="80" y="68" text-anchor="middle" class="node-sub">round counter</text>
+        <text x="80" y="84" text-anchor="middle" class="node-sub">readyNext recomputed</text>
+        <text x="80" y="102" text-anchor="middle" class="node-sub">via charter_status</text>
+      </g>
+
+      <!-- arrows -->
+      <path class="edge accent" d="M 240,68 H 310" marker-end="url(#arrow-ev)" />
+      <text x="275" y="60" text-anchor="middle" class="edge-label">spawn</text>
+      <path class="edge accent" d="M 530,90 H 600" marker-end="url(#arrow-ev)" />
+      <text x="565" y="82" text-anchor="middle" class="edge-label">write</text>
+      <path class="edge accent" d="M 820,90 H 880" marker-end="url(#arrow-ev)" />
+      <text x="850" y="82" text-anchor="middle" class="edge-label">import</text>
+
+      <!-- next round subagent -->
+      <g transform="translate(310,180)">
+        <rect class="node-bg amend" width="220" height="76" rx="10" stroke-dasharray="4 3" opacity="0.85" />
+        <text x="110" y="26" text-anchor="middle" class="node-title">round-2 fix subagent</text>
+        <text x="110" y="44" text-anchor="middle" class="node-sub">reads round-1 JSON directly</text>
+        <text x="110" y="60" text-anchor="middle" class="node-sub">no main-agent paraphrase</text>
+      </g>
+      <path class="edge accent" d="M 710,150 C 580,180 470,180 420,180" marker-end="url(#arrow-ev)" stroke-dasharray="4 3" />
+      <text x="555" y="170" text-anchor="middle" class="edge-label">prior evidence path passed in task prompt</text>
+    </svg>
+  </div>
+  <p class="sub">Main agent stops re-typing subagent output into <code>charter_record</code> fields. Subagent writes the JSON and records it. Main's post-spawn job collapses to: read prose summary for working memory → call <code>charter_status</code> → pick next move. Same-feature races are last-write-wins on idempotent updates.</p>
+
+  <!-- ================================================================= -->
+  <h2>Bundled personas</h2>
+  <div class="grid grid-4">
+    <div class="card tight">
+      <h3>charter-planner-critic <span class="pill accent2">bundled</span></h3>
+      <p>Plan-time critic. Grades validation depth per feature, audits readiness/QA, detects touch overlap, audits <code>review: skip</code> rationales, iterates with explorers to fixed point.</p>
+    </div>
+    <div class="card tight">
+      <h3>charter-reviewer <span class="pill accent2">bundled</span></h3>
+      <p>Per-feature code review. Reads diff + transcript + spec. Writes typed <code>review.json</code>: blocking issues with file/line, non-blocking notes, outcome.</p>
+    </div>
+    <div class="card tight">
+      <h3>charter-qa <span class="pill accent2">bundled</span></h3>
+      <p>Per-milestone agentic QA. Opens the surface, follows briefs from <code>qa/&lt;surface&gt;.md</code>, probes critically, writes typed <code>qa.json</code> + screenshots. Appends <code>## Discovered</code> back to briefs.</p>
+    </div>
+    <div class="card tight">
+      <h3>charter-readiness-probe <span class="pill accent2">bundled</span></h3>
+      <p>Verifies one readiness item per feature. Writes typed <code>readiness.json</code>: dependency name, probe result, fallback applied (if any).</p>
+    </div>
+  </div>
+  <p class="sub"><code>charter-verifier</code> is deprecated — per-criterion LLM judges go away with the criteria collapse. All check verification is command/hook/manual; reviewer/qa do code+UX judgment, not check verification.</p>
+
+  <!-- ================================================================= -->
+  <h2>charter-config.json</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>Schema</h3>
+<pre><code>{
+  "personas": {
+    "planner-critic": { "agent": "charter-planner-critic" },
+    "reviewer":       { "agent": "charter-reviewer",
+                        "model": "claude-sonnet-4-20250514" },
+    "qa":             { "agent": "my-team-qa-agent" },
+    "readiness":      { "agent": "charter-readiness-probe" }
+  },
+  "qaDir": "docs/qa",
+  "policy": "interactive",
+  "criticIterationCap": 3
+}</code></pre>
+    </div>
+    <div class="card">
+      <h3>Resolution</h3>
+      <ul class="tight">
+        <li><strong>Location:</strong> <code>.pi/charter/charter-config.json</code> in cwd. Per-repo. Same pattern as <code>pi-reminders</code> / <code>pi-dag-tasks</code>.</li>
+        <li><strong>Persona agent name</strong> defaults to the bundled <code>charter-*</code> implementation. User overrides by pointing <code>agent</code> at any name the pi-subagents extension knows.</li>
+        <li><strong>Model override</strong> beats the agent's frontmatter model when present.</li>
+        <li><strong>policy:</strong> <code>"interactive"</code> (default) allows <code>charter_manage action=ask</code>. <code>"autonomous"</code> forbids it — agent must self-resolve via subagent research or defer to <code>## Open Questions</code> at completion.</li>
+        <li><strong>qaDir</strong> repointable for teams with existing docs conventions; default <code>docs/qa</code>.</li>
+        <li><strong>BYOA contract</strong> is pi-subagents' surface: user's named agent must accept the documented task-prompt schema and produce the documented typed evidence shape.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <h2>Ralph reprompt loop (unchanged from current v1.5)</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>Trigger + gating</h3>
+      <p>Single <code>SUBAGENT_ALL_IDLE_EVENT</code> from pi-subagents fires when root + every async child are idle. Debounced 10s, send-time gates (<code>ctx.isIdle()</code>, <code>!hasPendingMessages()</code>, <code>liveAsync.size===0</code>), 30s min interval between fires. Stale-ctx handlers wrapped in try/catch.</p>
+      <p>Skip set in v2: <code>paused</code>, <code>awaiting-clarification</code>, <code>completed</code>, <code>abandoned</code>, <code>budget_limited</code>.</p>
+    </div>
+    <div class="card">
+      <h3>Prompt selection</h3>
+      <p><code>buildRalphPromptForCharter()</code> reads bound charter's status and picks: <code>planning</code>, <code>active</code>, <code>paused</code>. New <code>awaiting-clarification</code> case is in the skip set — no reprompt because the agent is blocked on chat, not on idle time.</p>
+      <p>Delivered as custom message type <code>charter-ralph-continue</code> with bordered renderer; visible in scrollback by default.</p>
+    </div>
+  </div>
+
+  <!-- ================================================================= -->
+  <h2>Storage layout</h2>
+<pre><code>&lt;projectDir&gt;/
+├── .pi/
+│   ├── charter/
+│   │   └── charter-config.json         # personas, qaDir, policy
+│   └── charters/&lt;charterId&gt;/
+│       ├── charter.md                  # Objective, Scope, ## QA, ## Readiness, ## References
+│       ├── feature-state.json          # per-feature + per-check status
+│       ├── state.json                  # lifecycle, sessionId reverse, clarification note
+│       ├── plan.json                   # locked plan snapshot
+│       ├── plan/&lt;featureId&gt;.md         # body + ## Validation { Happy / Edge }
+│       ├── library/
+│       │   └── architecture.md         # plan-time only · frozen at lock
+│       ├── qa/&lt;surface&gt;.md             # qa briefs (charter-scoped in v1)
+│       └── evidence/&lt;featureId&gt;/&lt;ts&gt;.&lt;kind&gt;.json
+│
+└── ~/.pi/agent/sessions/&lt;sid&gt;/charter.json   # session ↔ charter reverse binding</code></pre>
+  <p class="sub">v1 → v2 deltas: no <code>criterion-state.json</code>; no separate <em>Criteria</em> section in <code>charter.md</code>; new <code>library/architecture.md</code>; new <code>qa/&lt;surface&gt;.md</code> staging; evidence files are now typed JSON authored by subagents.</p>
+
+  <!-- ================================================================= -->
+  <h2>Tools — v2 surface</h2>
+  <div class="card tight" style="padding: 4px 0 0">
+    <table class="tools">
+      <thead><tr><th>tool</th><th>actions</th><th>v2 notes</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>charter_manage</td>
+          <td>create · pause · resume · complete · force_complete · amend_charter · <strong>ask</strong></td>
+          <td><code>ask</code> flips status to <code>awaiting-clarification</code>; optional one-line note; chat carries the question. Planning-only. Forbidden under <code>policy: autonomous</code>.</td>
+        </tr>
+        <tr>
+          <td>charter_plan</td>
+          <td>view · add_feature · update_feature · lock_plan</td>
+          <td>shape gate at lock: ≥1 Happy + ≥1 Edge per impl feature; review/qa features auto-injected; readiness + architecture + qa briefs required; unanswered clarifications block lock.</td>
+        </tr>
+        <tr>
+          <td>charter_record</td>
+          <td>evidence · verify · handoff_apply</td>
+          <td>new <code>evidenceFile: &lt;path&gt;</code> param imports typed JSON and validates against kind-specific schema; inline params still work for main-agent-authored evidence.</td>
+        </tr>
+        <tr>
+          <td>charter_status</td>
+          <td><em>read-only</em></td>
+          <td>returns drift views computed from <code>feature-state.json</code>: <code>readyNext</code>, <code>blockingForComplete</code>, per-feature check rollups, clarification note when present.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ================================================================= -->
+  <h2>Invariants</h2>
+  <ul class="tight">
+    <li><strong>Source of truth is markdown.</strong> Mutable status never lands in <code>charter.md</code> or <code>plan/*.md</code> frontmatter.</li>
+    <li><strong>Planning never writes to the repo.</strong> First repo writes happen in active phase when impl features land code. QA briefs stay in charter dir until proven useful (no auto-promotion in v1).</li>
+    <li><strong>Atomic writes</strong> for every sidecar: write temp, fsync, rename.</li>
+    <li><strong>Agent is the loop driver.</strong> No auto-spawn scheduler; Ralph steers only the same session that owns the charter.</li>
+    <li><strong>Evidence required before complete.</strong> Subagents author typed JSON; main agent does not re-type.</li>
+    <li><strong>Tactical todos stay in pi-dag-tasks.</strong> Charters are macro contracts.</li>
+    <li><strong>Architecture frozen at lock.</strong> Mutation only allowed during <code>amend_charter</code>.</li>
+    <li><strong>Critic iterates to fixed point</strong> with hard cap 3 before escalating to clarification.</li>
+  </ul>
+
+  <!-- ================================================================= -->
+  <h2>What's left to decide</h2>
+  <div class="card tight">
+    <ul class="tight">
+      <li><strong>v1-of-v2 scope:</strong> typed evidence + per-feature validation + critic mandate + readiness + config + ask state; defer milestone-driven fan-out + architecture-required-always; tunable.</li>
+      <li><strong>One charter or several</strong> to implement the rewrite itself (self-hosting). Probable split: breaking-change bundle + persona/critic bundle.</li>
+      <li><strong>Review-skip threshold</strong>: hard cap (e.g. 50%) + per-skip critic judgment, or pure judgment?</li>
+      <li><strong>Architecture artifact mandate</strong>: every charter, or only ≥3-feature charters?</li>
+      <li><strong>Resume after clarification</strong>: reuse <code>resume</code>, or a dedicated <code>clarified</code> action? Auto-flip on user reply requires chat-layer hook.</li>
+    </ul>
+  </div>
+
+  <footer>
+    Design preview, post-Q&amp;A. Tracks the locked-in v2 decisions. v1 (current shipped extension) docs in <code>src/index.ts</code> and earlier ADRs; v2 ADRs land alongside implementation.
+  </footer>
+</main>
+</body>
+</html>
