@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { lockPlan } from "../src/application/plan-service";
-import { verifyCriterion } from "../src/application/record-service";
-import { createCharter } from "../src/application/service";
+import { lockPlan, viewPlan } from "../src/application/plan-service";
+import { recordEvidenceFromFile, verifyCriterion } from "../src/application/record-service";
+import { createCharter, getCharterStatus } from "../src/application/service";
 import { clearHookSubscribers } from "../src/application/hooks";
 import { __resetSubagentApiForTests, setSubagentApiForBridge } from "../src/application/subagent-api";
 import { charterDir } from "../src/infrastructure/store";
@@ -14,6 +14,12 @@ import type { SpawnRawInput, SubagentExposedAPI } from "../src/infrastructure/su
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const projectDir_ = resolve(testDir, "..");
+const REVIEWER_PERSONA_PATH = join(projectDir_, "agents", "charter-reviewer.md");
+const REVIEWER_V22_SECTIONS = [
+  "## Code Quality Principles",
+  "## Verification Hygiene",
+  "## Returning to orchestrator",
+] as const;
 
 afterEach(() => {
   clearHookSubscribers();
@@ -43,7 +49,7 @@ const VALIDATION_MD = `## Validation
 async function makeSubagentCharter(
   projectDir: string,
   charterId: string,
-  opts: { freshRequired?: boolean } = {},
+  opts: { freshRequired?: boolean; freshSince?: string } = {},
 ): Promise<string> {
   await createCharter(projectDir, { objective: "v2.2 smoke probe", charterId, now: "2026-05-22T00:00:00.000Z" });
   const dir = charterDir(projectDir, charterId);
@@ -57,6 +63,7 @@ async function makeSubagentCharter(
       "Verifier: subagent",
       "Agent: charter-reviewer",
       "Task: Review {featureId} for {charterId} and write typed review evidence.",
+      ...(opts.freshSince ? [`FreshSince: ${opts.freshSince}`] : []),
       `Fresh evidence required: ${opts.freshRequired ? "true" : "false"}`,
       "",
       "## Scope and constraints", "", "- Smoke only.", "",
@@ -72,6 +79,36 @@ async function makeSubagentCharter(
   );
   await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z", legacy: true });
   return dir;
+}
+
+async function reviewerPersonaText(): Promise<string> {
+  return await readFile(REVIEWER_PERSONA_PATH, "utf8");
+}
+
+function reviewerSectionsIn(text: string): string[] {
+  return REVIEWER_V22_SECTIONS.filter((header) => text.includes(header));
+}
+
+function reviewNarrativeFromPersona(personaText: string, runId: string): string {
+  const referencedSections = reviewerSectionsIn(personaText);
+  if (referencedSections.length < 2) {
+    throw new Error(`charter-reviewer persona is missing v2.2 sections: ${REVIEWER_V22_SECTIONS.join(", ")}`);
+  }
+  return [
+    "# Stubbed charter-reviewer smoke review",
+    "",
+    `Run: ${runId}`,
+    "",
+    "This stub read the live agents/charter-reviewer.md persona before writing evidence.",
+    "The smoke narrative deliberately references the v2.2 sections the persona must internalize:",
+    "",
+    ...referencedSections.map((header) => `${header}\n- Referenced from the live charter-reviewer persona.`),
+    "",
+    "## Surprises / Worth noting",
+    "",
+    "- empty if none.",
+    "",
+  ].join("\n");
 }
 
 function installSubagentStub(fn: (input: SpawnRawInput) => Promise<void> | void): { calls: SpawnRawInput[] } {
@@ -104,6 +141,8 @@ async function writeSubagentReviewEvidence(
 ): Promise<string> {
   const runDir = join(dir, "work", featureId, "evidence", runId);
   await mkdir(runDir, { recursive: true });
+  const narrative = reviewNarrativeFromPersona(await reviewerPersonaText(), runId);
+  await writeFile(join(runDir, "review.md"), narrative, "utf8");
   const path = join(runDir, "review.json");
   await writeFile(
     path,
@@ -118,44 +157,7 @@ async function writeSubagentReviewEvidence(
       nonBlockingNotes: [],
       summary: `${outcome} review from ${runId}`,
       because: "stubbed for smoke test",
-    }, null, 2)}\n`,
-    "utf8",
-  );
-  return path;
-}
-
-/**
- * Write a legacy-flat evidence record for the evidence-exists verifier path.
- * loadFeatureEvidence reads work/<featureId>/evidence/<runId>/evidence.json
- * and requires a top-level `ts` field for sorting; evidenceKindFromRecord
- * checks the top-level `kind` field.
- */
-async function writeEvidenceExistsRecord(
-  dir: string,
-  featureId: string,
-  runId: string,
-  outcome: "pass" | "fail",
-  ts: string,
-): Promise<string> {
-  const runDir = join(dir, "work", featureId, "evidence", runId);
-  await mkdir(runDir, { recursive: true });
-  // Use evidence.json — loadFeatureEvidence only picks up this filename from subdirs
-  const path = join(runDir, "evidence.json");
-  await writeFile(
-    path,
-    `${JSON.stringify({
-      kind: "review",
-      featureId,
-      round: 1,
-      reviewedAt: ts,
-      subagentSessionId: `stub-ee-${runId}`,
-      outcome,
-      blockingIssues: [],
-      nonBlockingNotes: [],
-      summary: `${outcome} review`,
-      because: "evidence-exists smoke stub",
-      // ts required by loadFeatureEvidence indexer
-      ts,
+      narrativePath: "review.md",
     }, null, 2)}\n`,
     "utf8",
   );
@@ -176,35 +178,22 @@ describe("v2.2 smoke e2e", () => {
       });
       expect(result.outcome).toBe("pass");
       expect(result.exitCode).toBe(0);
+      const reviewMd = await readFile(join(dir, "work", "f-smoke", "evidence", "2026-05-22T01-00-00-000Z", "review.md"), "utf8");
+      expect(reviewerSectionsIn(reviewMd).length).toBeGreaterThanOrEqual(2);
     });
   });
 
   test("smoke confirms no auto-injected features after lock", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-00000000e215";
-      await createCharter(projectDir, { objective: "No auto-inject smoke", charterId, now: "2026-05-22T00:00:00.000Z" });
-      const dir = charterDir(projectDir, charterId);
-      await writeFile(
-        join(dir, "charter.md"),
-        ["# Charter", "", "## Objective", "", "No auto-inject smoke.", "",
-          "## Criteria", "",
-          "### VAL-NO-INJECT-A — First", "Description: A.", "Verifier: manual", "Because: sign-off A", "",
-          "### VAL-NO-INJECT-B — Second", "Description: B.", "Verifier: manual", "Because: sign-off B", "",
-          "## Scope and constraints", "", "- Smoke only.", ""].join("\n"),
-        "utf8",
-      );
-      await mkdir(join(dir, "plan"), { recursive: true });
-      for (const [id, val] of [["f-alpha", "VAL-NO-INJECT-A"], ["f-beta", "VAL-NO-INJECT-B"]] as const) {
-        await writeFile(
-          join(dir, "plan", `${id}.md`),
-          ["---", `id: ${id}`, "milestone: m1", `order: ${id === "f-alpha" ? 1 : 2}`,
-            "fulfills:", `  - ${val}`, "preconditions: []", "---", "", VALIDATION_MD].join("\n"),
-          "utf8",
-        );
-      }
-      await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z", legacy: true });
+      const dir = await makeSubagentCharter(projectDir, charterId);
+      const plan = await viewPlan(projectDir, { charterId });
       const planFiles = (await readdir(join(dir, "plan"))).filter((f) => f.endsWith(".md"));
-      expect(planFiles).toHaveLength(2);
+      expect(plan.criteria).toHaveLength(1);
+      expect(plan.criteria[0]!.verifierSpec).toMatchObject({ kind: "subagent", agent: "charter-reviewer" });
+      expect(plan.features).toHaveLength(1);
+      expect(plan.features.filter((feature) => feature.kind !== "impl")).toHaveLength(0);
+      expect(planFiles).toEqual(["f-smoke.md"]);
       expect(planFiles.some((f) => f.includes("review") || f.endsWith("-qa.md"))).toBe(false);
     });
   });
@@ -212,10 +201,16 @@ describe("v2.2 smoke e2e", () => {
   test("smoke verifies stale evidence + requireFreshEvidence flips to fail", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-00000000e216";
-      const dir = await makeSubagentCharter(projectDir, charterId, { freshRequired: true });
-      const staleDate = new Date(Date.now() - 86_400_000);
+      const dir = await makeSubagentCharter(projectDir, charterId, {
+        freshRequired: true,
+        freshSince: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      });
+      const staleDate = new Date(Date.now() - (24 * 60 * 60 * 1000) - 60_000);
       const stalePath = await writeSubagentReviewEvidence(dir, "f-smoke", "stale-run", "pass", staleDate.toISOString());
       await utimes(stalePath, staleDate, staleDate);
+      await recordEvidenceFromFile(projectDir, { charterId, evidenceFile: stalePath, now: staleDate.toISOString() });
+      const beforeVerify = await getCharterStatus(projectDir, { charterId });
+      expect(beforeVerify.drift.stale.map((entry) => entry.criterionId)).toContain("VAL-SMOKE-SUBAGENT");
       installSubagentStub(() => undefined); // writes nothing new
       await new Promise<void>((res) => setTimeout(res, 10));
       const result = await verifyCriterion(projectDir, {
@@ -223,6 +218,8 @@ describe("v2.2 smoke e2e", () => {
         now: "2026-05-22T01:00:01.000Z",
       });
       expect(result.outcome).toBe("fail");
+      const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
+      expect(stored.summary).toContain("no fresh typed evidence");
     });
   });
 
@@ -236,6 +233,8 @@ describe("v2.2 smoke e2e", () => {
         join(dir, "charter.md"),
         ["# Charter", "", "## Objective", "", "EE smoke.", "",
           "## Criteria", "",
+          "### VAL-SMOKE-SUBAGENT — Prior persona output", "Description: charter-reviewer writes prior review evidence.",
+          "Verifier: subagent", "Agent: charter-reviewer", "Task: Review {featureId} for evidence-exists follow-up.", "",
           "### VAL-SMOKE-EE — Evidence exists", "Description: Review evidence exists.",
           "Verifier: evidence-exists", "Kind: review", "",
           "## Scope and constraints", "", "- Smoke only.", ""].join("\n"),
@@ -245,16 +244,24 @@ describe("v2.2 smoke e2e", () => {
       await writeFile(
         join(dir, "plan", "f-ee.md"),
         ["---", "id: f-ee", "milestone: m1", "order: 1",
-          "fulfills:", "  - VAL-SMOKE-EE", "preconditions: []", "---", "", VALIDATION_MD].join("\n"),
+          "fulfills:", "  - VAL-SMOKE-SUBAGENT", "  - VAL-SMOKE-EE", "preconditions: []", "---", "", VALIDATION_MD].join("\n"),
         "utf8",
       );
       await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z", legacy: true });
-      await writeEvidenceExistsRecord(dir, "f-ee", "run-pass", "pass", new Date().toISOString());
+      installSubagentStub(async () => {
+        await writeSubagentReviewEvidence(dir, "f-ee", "prior-persona", "pass", new Date().toISOString());
+      });
+      const priorPersonaResult = await verifyCriterion(projectDir, {
+        charterId, criterionId: "VAL-SMOKE-SUBAGENT", featureId: "f-ee",
+        now: "2026-05-22T00:30:00.000Z",
+      });
+      expect(priorPersonaResult.outcome).toBe("pass");
       const passResult = await verifyCriterion(projectDir, {
         charterId, criterionId: "VAL-SMOKE-EE", featureId: "f-ee",
         now: "2026-05-22T01:00:01.000Z",
       });
       expect(passResult.outcome).toBe("pass");
+      expect(passResult.stdout).toContain("evidence.json");
     });
 
     // Fail: no evidence
@@ -288,11 +295,10 @@ describe("v2.2 smoke e2e", () => {
   });
 
   test("smoke confirms persona internalizes v22 sections", () => {
-    const personaPath = join(projectDir_, "agents", "charter-reviewer.md");
-    expect(existsSync(personaPath)).toBe(true);
-    const text = readFileSync(personaPath, "utf8");
-    expect(text).toContain("## Code Quality Principles");
-    expect(text).toContain("## Verification Hygiene");
-    expect(text).toContain("## Returning to orchestrator");
+    expect(existsSync(REVIEWER_PERSONA_PATH)).toBe(true);
+    const text = readFileSync(REVIEWER_PERSONA_PATH, "utf8");
+    for (const section of REVIEWER_V22_SECTIONS) {
+      expect(text).toContain(section);
+    }
   });
 });
