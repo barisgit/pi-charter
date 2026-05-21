@@ -17,7 +17,7 @@ type SetWidgetCall = {
 
 type FakePi = {
   on: (event: string, handler: (event: unknown, ctx: FakeCtx) => Promise<void> | void) => void;
-  events: { on: (event: string, handler: (raw: unknown) => void) => void };
+  events: { on: (event: string, handler: (raw: unknown) => void) => () => void };
   handlers: Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>;
 };
 
@@ -40,7 +40,7 @@ function makeFakePi(): FakePi {
       list.push(handler);
       handlers.set(event, list);
     },
-    events: { on: () => {} },
+    events: { on: () => () => {} },
   };
 }
 

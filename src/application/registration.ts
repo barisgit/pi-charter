@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { complete, StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
@@ -9,15 +9,19 @@ import { amendCharter, completeCharter, createCharter, forceCompleteCharter, get
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
+import { buildRalphPromptForCharter } from "./ralph-service";
 import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
 import { charterDir, loadCharterState } from "../infrastructure/store";
+import { logger } from "../infrastructure/logger";
 import { TERMINAL_STATUSES } from "../domain/types";
 import {
   PI_CHARTER_EXTENSION_ID,
   PI_CHARTER_METADATA_KEYS,
+  SUBAGENT_ALL_IDLE_EVENT,
   SUBAGENT_ASYNC_COMPLETE_EVENT,
   SUBAGENT_ASYNC_STARTED_EVENT,
   SUBAGENT_EXPOSE_API_EVENT,
+  SUBAGENT_LINEAGE_EVENT,
   SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT,
   SUBAGENT_REGISTER_PERSONA_DIR_EVENT,
   SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT,
@@ -26,6 +30,8 @@ import {
   type SubagentAsyncCompletePayload,
   type SubagentAsyncStartedPayload,
   type SubagentExposedAPI,
+  type SubagentLineage,
+  type SubagentLineagePayload,
   type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
@@ -36,6 +42,7 @@ import { buildPickerSnapshot, listAllCharters } from "../ui/picker-snapshot";
 import { listActiveCharters, type CharterListEntry } from "./service";
 import {
   clearSelectionRefresher,
+  type SelectionRefreshCtx,
   getCharterSelection,
   registerSelectionRefresher,
   requestSelectionRefresh,
@@ -294,7 +301,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         // VAL-8: legacy single-entry shape stays supported but emits a deprecation
         // notice so callers can migrate to the batch shape. Literal "deprecated"
         // string is part of the contract — do not reword without updating VAL-8.
-        console.warn("charter_plan action=add_feature: single-entry shape is deprecated; pass a `features: [...]` array instead.");
+        logger.warn("charter_plan action=add_feature: single-entry shape is deprecated; pass a `features: [...]` array instead.");
         const result = await addFeature(ctx.cwd, {
           charterId: status.charterId,
           id: params.id,
@@ -359,7 +366,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         if (!params.summary?.trim()) throw new Error("summary is required for charter_record action=evidence");
         // VAL-8: see add_feature deprecation note above. Literal "deprecated"
         // string is part of the contract.
-        console.warn("charter_record action=evidence: single-entry shape is deprecated; pass an `entries: [...]` array instead.");
+        logger.warn("charter_record action=evidence: single-entry shape is deprecated; pass an `entries: [...]` array instead.");
         const result = await recordEvidence(ctx.cwd, {
           charterId: status.charterId,
           criterionId: params.criterionId,
@@ -691,14 +698,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
  * Returns `undefined` when the caller should NOT proceed (no charter available,
  * or the picker was opened instead).
  */
-type CommandCtxLike = {
-  hasUI: boolean;
-  cwd: string;
-  ui: {
-    notify(message: string, type?: "info" | "warning" | "error"): void;
-  };
-  sessionManager?: { getSessionId?(): string | undefined };
-};
+type CommandCtxLike = Pick<ExtensionCommandContext, "hasUI" | "cwd" | "ui" | "sessionManager">;
 
 async function resolveCharterForVerb(
   pi: ExtensionAPI,
@@ -799,7 +799,7 @@ async function openPicker(
   }
 }
 
-async function requestSelectionRefreshSafe(ctx: { hasUI: boolean; cwd: string; ui: unknown; sessionManager?: { getSessionId?(): string | undefined } }): Promise<void> {
+async function requestSelectionRefreshSafe(ctx: CommandCtxLike): Promise<void> {
   try {
     await requestSelectionRefresh(ctx);
   } catch {
@@ -967,6 +967,214 @@ interface RegisterCharterEvaluatorOptions {
   homeDir?: string;
   /** Test seam: avoid real model calls while exercising registration wiring. */
   modelFn?: EvaluatorModelFn;
+}
+
+/**
+ * Ralph reprompt: dumb deterministic continuation loop.
+ *
+ * Replaces `registerCharterEvaluator`. Fires when pi-subagents reports the
+ * whole session (main + every async child) is idle, looks up the bound
+ * charter, and — if the charter is in a non-terminal status — sends a
+ * status-driven prompt as a steer that triggers the next turn.
+ *
+ * Invariants:
+ *   - The charter never stops on its own. Only paused/completed/abandoned/
+ *     budget_limited states skip the reprompt.
+ *   - No dedupe, no model call, no LLM judgment about whether to continue.
+ *   - Trigger source is `subagent:all-idle`, never `turn_end`, so we don't
+ *     reprompt while async subagents are still running.
+ */
+const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
+
+/**
+ * Debounce window between `subagent:all-idle` and the actual reprompt. Gives
+ * the user a chance to type something instead of getting an instant auto-turn
+ * the moment the agent stops streaming.
+ */
+const RALPH_DEBOUNCE_MS = 10_000;
+
+/**
+ * Minimum wall-clock gap between two ralph sends in the same session. Backstop
+ * against duplicate handlers, runaway debounce timers, and "all-idle fires
+ * twice in a row" edge cases. The send-time idle gate is the real fix; this is
+ * belt-and-suspenders.
+ */
+const RALPH_MIN_INTERVAL_MS = 30_000;
+
+// Module-level counter so we can see at a glance how many loop instances
+// got registered (every /reload re-runs the extension factory; if disposeSubs
+// isn't fully clearing prior subscriptions, the counter will tell us).
+let ralphLoopInstanceCounter = 0;
+
+export function registerCharterRalphLoop(
+  pi: ExtensionAPI,
+  options: { homeDir?: string; debounceMs?: number; minIntervalMs?: number } = {},
+): void {
+  const instanceId = ++ralphLoopInstanceCounter;
+  const log = logger.child({ component: "ralph-loop", instanceId });
+  log.info("registerCharterRalphLoop: init", { totalInstancesEverRegistered: ralphLoopInstanceCounter });
+  const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
+  const minIntervalMs = options.minIntervalMs ?? RALPH_MIN_INTERVAL_MS;
+  // pi.events has no ctx, so cache the latest session ctx from lifecycle
+  // events. SUBAGENT_ALL_IDLE_EVENT fires AFTER turn_end / async children
+  // complete, so this ctx is always populated by the time we need it.
+  let lastCtx: ExtensionContext | undefined;
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  // Track async subagents directly so we have a live busy-or-not snapshot at
+  // send time. `ctx.isIdle()` only covers the root agent; async children are
+  // tracked here in the same way the idle-probe widget does.
+  const liveAsync = new Set<string>();
+  let lastSentAt = 0;
+  const cancelPending = () => {
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimer = undefined;
+    }
+  };
+  const subs: Array<() => void> = [];
+  let disposed = false;
+  const disposeSubs = () => {
+    if (disposed) return;
+    disposed = true;
+    for (const unsubscribe of subs) unsubscribe();
+    subs.length = 0;
+  };
+  const captureCtx = (_event: unknown, ctx: ExtensionContext) => {
+    lastCtx = ctx;
+  };
+  pi.on("session_start", async (event, ctx) => captureCtx(event, ctx));
+  pi.on("agent_start", async (event, ctx) => captureCtx(event, ctx));
+  // Any new busy period invalidates a pending Ralph fire — we don't want to
+  // reprompt while the agent or a subagent is back to work.
+  pi.on("turn_start", async (event, ctx) => {
+    captureCtx(event, ctx);
+    cancelPending();
+  });
+  pi.on("turn_end", async (event, ctx) => captureCtx(event, ctx));
+  pi.on("session_shutdown", async (event) => {
+    log.info("session_shutdown: disposing subs", { reason: event.reason, subCount: subs.length, disposed });
+    cancelPending();
+    liveAsync.clear();
+    disposeSubs();
+  });
+  subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+    const payload = raw as { runId?: string } | undefined;
+    log.debug("event: async-started", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
+    if (payload?.runId) liveAsync.add(payload.runId);
+    cancelPending();
+  }));
+  subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+    const payload = raw as { runId?: string } | undefined;
+    log.debug("event: async-complete", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
+    if (payload?.runId) liveAsync.delete(payload.runId);
+  }));
+
+  subs.push(pi.events.on(SUBAGENT_ALL_IDLE_EVENT, (_payload: unknown) => {
+    log.info("event: all-idle", { disposed, hasCtx: !!lastCtx, liveAsync: liveAsync.size });
+    const ctx = lastCtx;
+    if (!ctx) {
+      log.warn("all-idle: no lastCtx, dropping");
+      return;
+    }
+    if (disposed) {
+      log.warn("all-idle fired on disposed instance (LEAK)");
+      return;
+    }
+    cancelPending();
+    log.debug("all-idle: scheduling reprompt", { debounceMs });
+    pendingTimer = setTimeout(() => {
+      pendingTimer = undefined;
+      log.info("debounce timer fired", {
+        disposed,
+        rootIdle: ctx.isIdle(),
+        pendingMessages: ctx.hasPendingMessages(),
+        liveAsync: liveAsync.size,
+        msSinceLastSend: Date.now() - lastSentAt,
+      });
+      if (disposed) {
+        log.warn("timer fired on disposed instance (LEAK)");
+        return;
+      }
+      if (!ctx.isIdle()) {
+        log.info("reprompt skipped: root not idle");
+        return;
+      }
+      if (ctx.hasPendingMessages()) {
+        log.info("reprompt skipped: pending user message");
+        return;
+      }
+      if (liveAsync.size > 0) {
+        log.info("reprompt skipped: async subagents running", { count: liveAsync.size });
+        return;
+      }
+      const now = Date.now();
+      if (now - lastSentAt < minIntervalMs) {
+        log.info("reprompt skipped: min interval not elapsed", {
+          elapsedMs: now - lastSentAt,
+          minIntervalMs,
+        });
+        return;
+      }
+      lastSentAt = now;
+      log.info("SENDING reprompt");
+      void runRalphReprompt(pi, ctx, options, log).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn("runRalphReprompt threw", { error: message });
+      });
+    }, debounceMs);
+  }));
+}
+
+async function runRalphReprompt(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  options: { homeDir?: string },
+  log: ReturnType<typeof logger.child> = logger.child({ component: "ralph-loop" }),
+): Promise<void> {
+  const sessionId = ctx.sessionManager.getSessionId?.();
+  log.debug("runRalphReprompt enter", { sessionId });
+  if (!sessionId) {
+    log.warn("runRalphReprompt: no sessionId");
+    return;
+  }
+  const binding = await readSessionBinding({ sessionId, homeDir: options.homeDir });
+  if (!binding) {
+    log.debug("runRalphReprompt: no session binding");
+    return;
+  }
+  log.debug("runRalphReprompt: binding", { charterId: binding.charterId, role: binding.role });
+
+  // Participant child sessions never auto-continue — the host owns the
+  // ralph loop. Keep the ambient reminder fresh and bail.
+  if (binding.role === "participant") {
+    log.debug("runRalphReprompt: participant role, syncing reminder and bailing");
+    await trySyncCharterReminder(pi, binding.projectDir, binding.charterId);
+    return;
+  }
+
+  const built = await buildRalphPromptForCharter({
+    projectDir: binding.projectDir,
+    charterId: binding.charterId,
+  });
+  if (!built) {
+    log.info("runRalphReprompt: status terminal/dormant, skip", { charterId: binding.charterId });
+    return;
+  }
+
+  log.info("pi.sendMessage: ralph steer", { charterId: binding.charterId, promptCase: built.promptCase });
+  pi.sendMessage(
+    {
+      customType: RALPH_CUSTOM_TYPE,
+      content: built.content,
+      // Visible in scrollback so the user can see the Ralph loop firing.
+      // Codex hides the equivalent message, but here the loop is the whole
+      // point of the charter UX — hiding it makes the auto-continuation feel
+      // like a black box.
+      display: true,
+      details: { charterId: binding.charterId, promptCase: built.promptCase },
+    },
+    { deliverAs: "steer", triggerTurn: true },
+  );
 }
 
 export function registerCharterEvaluator(pi: ExtensionAPI, options: RegisterCharterEvaluatorOptions = {}): void {
@@ -1188,11 +1396,19 @@ export function registerCharterSubagentBridge(pi: ExtensionAPI): void {
   // Reset on each registration so repeated extension loads in tests/dev
   // don't keep a stale handle from a prior pi-subagents lifecycle.
   subagentApi = undefined;
-  pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (raw: unknown) => {
+  const subs: Array<() => void> = [];
+  let disposed = false;
+  pi.on("session_shutdown", () => {
+    if (disposed) return;
+    disposed = true;
+    for (const unsubscribe of subs) unsubscribe();
+    subs.length = 0;
+  });
+  subs.push(pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (raw: unknown) => {
     const api = raw as SubagentExposedAPI | undefined;
     if (!api || typeof api.spawnRaw !== "function") return;
     subagentApi = api;
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,24 +1416,30 @@ export function registerCharterSubagentBridge(pi: ExtensionAPI): void {
 // ---------------------------------------------------------------------------
 
 export function registerCharterAsyncBridge(pi: ExtensionAPI): void {
-  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+  const subs: Array<() => void> = [];
+  let disposed = false;
+  pi.on("session_shutdown", () => {
+    if (disposed) return;
+    disposed = true;
+    for (const unsubscribe of subs) unsubscribe();
+    subs.length = 0;
+  });
+  subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
     const payload = raw as SubagentAsyncStartedPayload | undefined;
     if (!payload) return;
     void handleAsyncStarted({ payload }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      // eslint-disable-next-line no-console
-      console.warn(`[pi-charter] async-bridge feature_started skipped: ${message}`);
+      logger.warn("async-bridge feature_started skipped", { error: message });
     });
-  });
-  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+  }));
+  subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
     const payload = raw as SubagentAsyncCompletePayload | undefined;
     if (!payload) return;
     void handleAsyncComplete({ payload }).catch((error) => {
       const message = error instanceof Error ? error.message : String(error);
-      // eslint-disable-next-line no-console
-      console.warn(`[pi-charter] async-bridge feature_completed skipped: ${message}`);
+      logger.warn("async-bridge feature_completed skipped", { error: message });
     });
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,6 +1460,8 @@ function resolveAgentsDir(): string {
 
 export function registerCharterPersonas(pi: ExtensionAPI): void {
   const agentsDir = resolveAgentsDir();
+  const subs: Array<() => void> = [];
+  let disposed = false;
 
   const registerPayload: RegisterPersonaDirPayload = {
     extensionId: PI_CHARTER_EXTENSION_ID,
@@ -1251,14 +1475,13 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
   // Surface collisions to the UI; pi-subagents emits this on persona-name
   // conflict and never throws (originating extension is responsible for
   // failing its own startup).
-  pi.events.on(SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT, (raw: unknown) => {
+  subs.push(pi.events.on(SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT, (raw: unknown) => {
     const payload = raw as PersonaDirErrorPayload | undefined;
     if (!payload || payload.extensionId !== PI_CHARTER_EXTENSION_ID) return;
-    // No ctx here; events.on has no UI handle. Best-effort: console.warn so
-    // the conflict is at least visible in the dev tail.
-    // eslint-disable-next-line no-console
-    console.warn(`[pi-charter] persona dir registration failed: ${payload.message}`);
-  });
+    // No ctx here; events.on has no UI handle. Best-effort file log so the
+    // conflict is visible without writing to stdout/stderr.
+    logger.warn("persona dir registration failed", { error: payload.message });
+  }));
 
   // Emit at startup …
   pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, registerPayload);
@@ -1270,6 +1493,11 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", () => {
+    if (!disposed) {
+      disposed = true;
+      for (const unsubscribe of subs) unsubscribe();
+      subs.length = 0;
+    }
     pi.events.emit(SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT, unregisterPayload);
   });
 }
@@ -1284,44 +1512,173 @@ export function registerCharterPersonas(pi: ExtensionAPI): void {
 /** VM key for `ctx.ui.setWidget` while a charter is bound to this session. */
 const DETAIL_WIDGET_KEY = "charter-detail";
 
-interface WidgetTuiLike {
-  terminal?: { columns?: number };
-  requestRender?: () => void;
-}
-type WidgetThemeLike = { fg(color: string, text: string): string };
-type WidgetFactory = (
-  tui: WidgetTuiLike,
-  theme: WidgetThemeLike,
-) => { render(): string[]; invalidate(): void; dispose?(): void };
-interface WidgetUiLike {
-  setWidget(
-    key: string,
-    content: undefined | WidgetFactory,
-    options?: { placement?: "aboveEditor" | "belowEditor" },
-  ): void;
-}
-
 interface RegisterCharterWidgetOptions {
   /** Test seam: keep production bound to the normal home directory. */
   homeDir?: string;
 }
 
+const IDLE_PROBE_WIDGET_KEY = "charter-idle-probe";
+
+export function registerCharterIdleProbeWidget(pi: ExtensionAPI): void {
+  const subs: Array<() => void> = [];
+  let disposed = false;
+  let rootWorking = false;
+  // Live count of pi-subagents async runs in flight. Sourced from
+  // subagent:async-started / subagent:async-complete and snapped to 0 by
+  // subagent:all-idle (which pi-subagents emits when the whole session is
+  // truly idle).
+  let asyncInFlight = 0;
+  // Lifetime event counters — surfaced in the widget so we can spot the
+  // provider double-firing in real time. Reset only by `session_shutdown`
+  // disposal (per-process), not by /reload (the new factory rebinds and the
+  // count starts over with the new instance).
+  let allIdleCount = 0;
+  let asyncStartedCount = 0;
+  let asyncCompleteCount = 0;
+  let agentStartCount = 0;
+  let agentEndCount = 0;
+  let turnStartCount = 0;
+  // Cached lineage from subagent:lineage (or expose-api). Used to tag the
+  // widget with the current agent name when we are a child session.
+  let lineage: SubagentLineage | null = null;
+  let lastCtx: ExtensionContext | undefined;
+
+  const render = (ctx: ExtensionContext | undefined): void => {
+    if (!ctx?.hasUI) return;
+    ctx.ui.setWidget(
+      IDLE_PROBE_WIDGET_KEY,
+      (_tui, theme) => ({
+        render: () => {
+          const busy = rootWorking || asyncInFlight > 0;
+          let color: "error" | "accent" | "success";
+          let label: string;
+          if (rootWorking) {
+            color = "error";
+            label = "agent working";
+          } else if (asyncInFlight > 0) {
+            color = "accent";
+            label = `agent idle, ${asyncInFlight} async in flight`;
+          } else {
+            color = "success";
+            label = "agent idle";
+          }
+          // Tag child sessions with the agent name so nested subagent widgets
+          // are distinguishable from the host.
+          if (lineage && lineage.role === "child" && lineage.currentAgent) {
+            label = `${label} · ${lineage.currentAgent}`;
+          }
+          // Event tallies: allIdle / asyncStart / asyncComplete / turnStart /
+          // agentStart / agentEnd. If the provider double-fires we will see
+          // the counter climb without any actual user activity.
+          const counters = `[idle:${allIdleCount} a+:${asyncStartedCount} a-:${asyncCompleteCount} ts:${turnStartCount} as:${agentStartCount} ae:${agentEndCount}]`;
+          return [theme.fg(color, `● ${label} ${counters}`)];
+        },
+        invalidate: () => {},
+      }),
+      { placement: "belowEditor" },
+    );
+  };
+
+  const setRootWorking = (next: boolean, ctx: ExtensionContext): void => {
+    rootWorking = next;
+    lastCtx = ctx;
+    render(ctx);
+  };
+
+  pi.on("session_start", async (_event, ctx) => setRootWorking(false, ctx));
+  pi.on("agent_start", async (_event, ctx) => {
+    agentStartCount += 1;
+    logger.debug("idle-probe: agent_start", { agentStartCount });
+    setRootWorking(true, ctx);
+  });
+  pi.on("turn_start", async (_event, ctx) => {
+    turnStartCount += 1;
+    logger.debug("idle-probe: turn_start", { turnStartCount });
+    setRootWorking(true, ctx);
+  });
+  pi.on("agent_end", async (_event, ctx) => {
+    agentEndCount += 1;
+    logger.debug("idle-probe: agent_end", { agentEndCount });
+    setRootWorking(false, ctx);
+  });
+  pi.on("session_shutdown", () => {
+    rootWorking = false;
+    asyncInFlight = 0;
+    lineage = null;
+    if (lastCtx?.hasUI) lastCtx.ui.setWidget(IDLE_PROBE_WIDGET_KEY, undefined);
+    lastCtx = undefined;
+    if (!disposed) {
+      disposed = true;
+      for (const unsubscribe of subs) unsubscribe();
+      subs.length = 0;
+    }
+  });
+
+  // pi-subagents async lifecycle: count what is in flight on THIS session's
+  // pi.events bus. Child sessions get their own subscription via this same
+  // activate path, so each session's widget tracks only its own children.
+  subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (_payload: unknown) => {
+    asyncStartedCount += 1;
+    asyncInFlight += 1;
+    logger.debug("idle-probe: async-started", { asyncStartedCount, asyncInFlight });
+    render(lastCtx);
+  }));
+  subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (_payload: unknown) => {
+    asyncCompleteCount += 1;
+    asyncInFlight = Math.max(0, asyncInFlight - 1);
+    logger.debug("idle-probe: async-complete", { asyncCompleteCount, asyncInFlight });
+    render(lastCtx);
+  }));
+  subs.push(pi.events.on(SUBAGENT_ALL_IDLE_EVENT, (_payload: unknown) => {
+    allIdleCount += 1;
+    logger.info("idle-probe: all-idle event", { allIdleCount, asyncInFlight, rootWorking });
+    // Defensive snap: pi-subagents only emits this once turn is over AND no
+    // async is in flight, so the counter should already be 0 — but reset to
+    // 0 in case we missed a start/complete pair during a reload.
+    asyncInFlight = 0;
+    render(lastCtx);
+  }));
+
+  // pi-subagents lineage: cache the current session's lineage so we can
+  // distinguish host vs child widgets at a glance.
+  subs.push(pi.events.on(SUBAGENT_LINEAGE_EVENT, (payload: unknown) => {
+    const p = payload as SubagentLineagePayload | undefined;
+    if (p?.lineage) {
+      lineage = p.lineage;
+      render(lastCtx);
+    }
+  }));
+  subs.push(pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (payload: unknown) => {
+    try {
+      const p = payload as { subagentApi?: SubagentExposedAPI } | undefined;
+      const next = p?.subagentApi?.lineage?.();
+      if (next) {
+        lineage = next;
+        render(lastCtx);
+      }
+    } catch {
+      // Older pi-subagents builds may not expose lineage(); ignore.
+    }
+  }));
+}
+
 export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharterWidgetOptions = {}): void {
   const runningSubagents = new RunningSubagentRegistry();
+  const subs: Array<() => void> = [];
+  let disposed = false;
 
-  const refresh = async (ctx: { hasUI: boolean; cwd: string; ui: unknown; sessionManager?: { getSessionId?(): string | undefined } }): Promise<void> => {
+  const refresh = async (ctx: SelectionRefreshCtx): Promise<void> => {
     if (!ctx.hasUI) return;
-    const ui = ctx.ui as WidgetUiLike;
 
-    const sessionId = ctx.sessionManager?.getSessionId?.();
-    if (!sessionId) { ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    const sessionId = ctx.sessionManager.getSessionId?.();
+    if (!sessionId) { ctx.ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
     const binding = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
-    if (!binding) { ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    if (!binding) { ctx.ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
     const charterId = binding.charterId;
     const snapshot = await loadCharterSnapshot({ projectDir: ctx.cwd, charterId, runningSubagents: runningSubagents.forCharter(charterId) });
-    if (!snapshot) { ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    if (!snapshot) { ctx.ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
 
-    ui.setWidget(
+    ctx.ui.setWidget(
       DETAIL_WIDGET_KEY,
       (tui, theme) => ({
         render: () => renderCharterWidget({ width: tui.terminal?.columns ?? 100, theme, vm: snapshot }),
@@ -1332,7 +1689,7 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   };
 
   registerSelectionRefresher(async (ctx) => {
-    await refresh(ctx as { hasUI: boolean; cwd: string; ui: unknown; sessionManager?: { getSessionId?(): string | undefined } });
+    await refresh(ctx);
   });
 
   pi.on("session_start", async (_event, ctx) => {
@@ -1346,6 +1703,11 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   pi.on("session_shutdown", () => {
     resetCharterSelection();
     clearSelectionRefresher();
+    if (!disposed) {
+      disposed = true;
+      for (const unsubscribe of subs) unsubscribe();
+      subs.length = 0;
+    }
   });
 
   // Subagent lifecycle: update the in-memory registry first so the next
@@ -1354,7 +1716,7 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   // fires right after the async dispatch) will pick it up. Async-complete
   // also triggers a feature_state write in the async bridge, so turn_end is
   // the right beat anyway.
-  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+  subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
     const payload = raw as SubagentAsyncStartedPayload | undefined;
     if (!payload) return;
     // Older spawns that pre-date the charterId stamp (or non-charter spawns
@@ -1369,12 +1731,12 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
       metadata: payload.metadata,
       startedAt: payload.startedAt !== undefined ? new Date(payload.startedAt).toISOString() : undefined,
     });
-  });
-  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+  }));
+  subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
     const payload = raw as SubagentAsyncCompletePayload | undefined;
     if (!payload) return;
     runningSubagents.complete(payload.runId);
-  });
+  }));
 }
 
 async function tryUpsertCharterReminder(pi: ExtensionAPI, projectDir: string, charterId: string): Promise<void> {

@@ -13,10 +13,10 @@
  *   2. literal default `dad4fe3a-6cc8-4911-a747-4f39f12c51fb` if active,
  *   3. first row of `listActiveCharters` otherwise.
  *
- * Prints three sections to stdout (header line then content):
- *   === listActiveCharters ===   JSON.stringify(list, null, 2)
- *   === charter-multi ===        rendered string[] joined by \n
- *   === charter-detail (<name>) ===  rendered string[] joined by \n
+ * Writes three sections to the pi-charter file log (never stdout/stderr):
+ *   listActiveCharters   JSON.stringify(list, null, 2)
+ *   charter-multi        rendered string[] joined by \n
+ *   charter-detail (<name>)  rendered string[] joined by \n
  *
  * Exits 0 on success, non-zero on error.
  */
@@ -26,11 +26,12 @@ import { loadCharterSnapshot } from "../src/ui/widget-service";
 import { buildMultiCharterViewModel } from "../src/ui/widget-state";
 import { renderMultiCharterWidget } from "../src/ui/multi-charter-widget";
 import { renderCharterWidget } from "../src/ui/widget";
+import { logger } from "../src/infrastructure/logger";
 
 const DEFAULT_DOGFOOD_CHARTER_ID = "dad4fe3a-6cc8-4911-a747-4f39f12c51fb";
 const RENDER_WIDTH = 80;
 
-// Identity theme — strips ANSI color noise so stdout stays grep-able.
+// Identity theme — strips ANSI color noise so file-log output stays grep-able.
 const theme = { fg: (_color: string, text: string) => text };
 
 function parseArgs(argv: readonly string[]): { projectDir: string; explicitCharterId?: string } {
@@ -59,8 +60,7 @@ async function main(): Promise<void> {
   const { projectDir, explicitCharterId } = parseArgs(process.argv.slice(2));
 
   const active = await listActiveCharters(projectDir);
-  process.stdout.write("=== listActiveCharters ===\n");
-  process.stdout.write(`${JSON.stringify(active, null, 2)}\n\n`);
+  logger.info("dogfood-render", { section: "listActiveCharters", active });
 
   // Resolve the detail charter id per the documented order.
   let detailId: string | undefined;
@@ -89,27 +89,22 @@ async function main(): Promise<void> {
     runningSubagentsByCharter: new Map(),
   });
   const multiLines = renderMultiCharterWidget(multiVm, theme, RENDER_WIDTH);
-  process.stdout.write("=== charter-multi ===\n");
-  process.stdout.write(`${multiLines.join("\n")}\n\n`);
+  logger.info("dogfood-render", { section: "charter-multi", lines: multiLines });
 
   if (detailId) {
     const detailVm = snapshotsById.get(detailId);
     if (detailVm) {
       const detailLines = renderCharterWidget({ width: RENDER_WIDTH, theme, vm: detailVm });
-      process.stdout.write(`=== charter-detail (${detailVm.displayName}) ===\n`);
-      process.stdout.write(`${detailLines.join("\n")}\n`);
+      logger.info("dogfood-render", { section: "charter-detail", displayName: detailVm.displayName, lines: detailLines });
     } else {
-      process.stdout.write(`=== charter-detail (${detailId}) ===\n`);
-      process.stdout.write("(no snapshot)\n");
+      logger.info("dogfood-render", { section: "charter-detail", charterId: detailId, lines: ["(no snapshot)"] });
     }
   } else {
-    process.stdout.write("=== charter-detail (none) ===\n");
-    process.stdout.write("(no active charter)\n");
+    logger.info("dogfood-render", { section: "charter-detail", lines: ["(no active charter)"] });
   }
 }
 
 main().catch((error) => {
-  // eslint-disable-next-line no-console
-  console.error(`[dogfood-render] failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+  logger.error("dogfood-render failed", error instanceof Error ? error : new Error(String(error)));
   process.exit(1);
 });

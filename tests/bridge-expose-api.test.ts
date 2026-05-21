@@ -22,6 +22,10 @@ function makeFakePi() {
         const list = listeners.get(channel) ?? [];
         list.push(handler);
         listeners.set(channel, list);
+        return () => {
+          const current = listeners.get(channel) ?? [];
+          listeners.set(channel, current.filter((l) => l !== handler));
+        };
       },
     },
     on() {

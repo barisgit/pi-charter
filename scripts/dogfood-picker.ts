@@ -2,11 +2,12 @@
 
 import { listAllCharters, buildPickerSnapshot, type PickerSnapshot } from "../src/ui/picker-snapshot";
 import { CharterPickerComponent } from "../src/ui/charter-picker";
+import { logger } from "../src/infrastructure/logger";
 
 const cwd = process.cwd();
 const charters = await listAllCharters(cwd);
 if (charters.length < 2) {
-  console.error("dogfood-picker: need ≥2 charters under .pi/charters/ (have", charters.length, ")");
+  logger.error("dogfood-picker: need at least 2 charters under .pi/charters", undefined, { count: charters.length });
   process.exit(1);
 }
 const snapshotPairs = await Promise.all(
@@ -14,7 +15,7 @@ const snapshotPairs = await Promise.all(
 );
 const validPairs = snapshotPairs.filter((pair): pair is readonly [string, PickerSnapshot] => pair[1] !== null);
 if (validPairs.length < 1) {
-  console.error("dogfood-picker: no buildable snapshots");
+  logger.error("dogfood-picker: no buildable snapshots");
   process.exit(1);
 }
 const snapshots = new Map(validPairs);
@@ -30,12 +31,18 @@ const component = new CharterPickerComponent({
   onDone: () => {},
 });
 
-console.log("=== listAllCharters ===");
-console.log(JSON.stringify(charters, null, 2));
-console.log("\n=== picker render (folded) ===");
-for (const line of component.render(160)) console.log(line);
+logger.info("dogfood-picker render", {
+  section: "listAllCharters",
+  charters,
+});
+logger.info("dogfood-picker render", {
+  section: "picker render (folded)",
+  lines: component.render(160),
+});
 component.handleInput?.("\t");
 component.handleInput?.(" ");
-console.log("\n=== picker render (expanded) ===");
-for (const line of component.render(160)) console.log(line);
+logger.info("dogfood-picker render", {
+  section: "picker render (expanded)",
+  lines: component.render(160),
+});
 process.exit(0);

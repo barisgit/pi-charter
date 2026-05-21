@@ -1,3 +1,5 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+
 /**
  * Tri-value selection state shared by the `/charters` slash command verbs
  * (`select <id>`, `select none`, picker confirm).
@@ -38,12 +40,7 @@ export function resetCharterSelection(): void {
   current = { kind: "unset" };
 }
 
-export type SelectionRefreshCtx = {
-  hasUI: boolean;
-  cwd: string;
-  ui: unknown;
-  sessionManager?: { getSessionId?(): string | undefined };
-};
+export type SelectionRefreshCtx = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "sessionManager">;
 
 type RefreshFn = (ctx: SelectionRefreshCtx) => Promise<void> | void;
 

@@ -36,7 +36,7 @@ All four required surfaces ship on the pi-subagents side, and the three pi-chart
 
 - pi-subagents commits (in order): `e35aed7` (internal scope), `fff442c` (metadata passthrough), `dd54225` (expose API), `5beb3d4` (register-persona-dir), `b3a03f8` (CI vocabulary guard).
 - pi-charter side:
-  - `registerCharterPersonas` — emits `SUBAGENT_REGISTER_PERSONA_DIR_EVENT` at startup, re-emits on `session_start`, and emits `SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT` on `session_shutdown`. Subscribes to `SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT` and surfaces collisions via `console.warn` (pi-coding-agent has no `ctx.ui` in `pi.events.on` handlers).
+  - `registerCharterPersonas` — emits `SUBAGENT_REGISTER_PERSONA_DIR_EVENT` at startup, re-emits on `session_start`, and emits `SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT` on `session_shutdown`. Subscribes to `SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT` and surfaces collisions via the pi-charter file logger (pi-coding-agent has no `ctx.ui` in `pi.events.on` handlers, and stdout/stderr are off limits).
   - `registerCharterSubagentBridge` — subscribes to `SUBAGENT_EXPOSE_API_EVENT` and caches the `SubagentExposedAPI` bag in module state. `getSubagentApi()` returns the handle (or `undefined` when pi-subagents is absent). The evaluator still uses inline `complete()` by default; `spawnRaw` routing is a future opt-in.
   - `registerCharterAsyncBridge` — subscribes to `SUBAGENT_ASYNC_STARTED_EVENT` and `SUBAGENT_ASYNC_COMPLETE_EVENT`. When payload `metadata` carries `pi-charter.projectDir` + `pi-charter.charterId` (and optionally `pi-charter.featureId` / `pi-charter.criterionId`), appends `feature_started` / `feature_completed` / `feature_failed` to the charter's `events.jsonl`. `exitCode !== 0` maps to `feature_failed`.
 

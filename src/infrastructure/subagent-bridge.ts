@@ -21,6 +21,8 @@ export const SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT = "subagent:unregister-person
 export const SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT = "subagent:register-persona-dir-error";
 export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
+export const SUBAGENT_LINEAGE_EVENT = "subagent:lineage";
+export const SUBAGENT_ALL_IDLE_EVENT = "subagent:all-idle";
 
 // ---------------------------------------------------------------------------
 // Bridge identity / metadata key prefix
@@ -100,6 +102,12 @@ export interface SubagentPersonaInfo {
 export interface SubagentExposedAPI {
   spawnRaw(input: SpawnRawInput): Promise<SpawnRawResult>;
   list(options?: { includeInternal?: boolean }): SubagentPersonaInfo[];
+  /**
+   * Returns the lineage entry for the session that owns this published API,
+   * or `null` while still being claimed. Available on both host and child
+   * publications. Mirror of pi-subagents SubagentExposedAPI.lineage().
+   */
+  lineage?(): SubagentLineage | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,4 +129,37 @@ export interface SubagentAsyncCompletePayload {
   summary?: string;
   metadata?: SubagentMetadata;
   endedAt?: number;
+}
+
+// ---------------------------------------------------------------------------
+// Lineage + idle payloads (subagent:lineage, subagent:all-idle)
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes the role of the current session in the subagent tree. Published
+ * on `subagent:lineage` and reachable via `SubagentExposedAPI.lineage()`.
+ * `role: "host"` is the user's root session; `role: "child"` is any session
+ * spawned via the subagent tool.
+ */
+export interface SubagentLineage {
+  role: "host" | "child";
+  currentAgent: string;
+  parentAgent?: string;
+  parentSessionId?: string;
+  rootSessionId: string | null;
+  depth: number;
+  runId?: string;
+}
+
+export interface SubagentLineagePayload {
+  sessionId: string | null;
+  lineage: SubagentLineage;
+}
+
+/**
+ * Fires when THIS session goes fully idle: the main agent is not mid-turn
+ * AND no async subagents are in flight. Payload carries the emit timestamp.
+ */
+export interface SubagentAllIdlePayload {
+  ts: number;
 }

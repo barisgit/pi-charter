@@ -4,7 +4,7 @@
  * Legacy callers of `charter_plan action=add_feature` and
  * `charter_record action=evidence` keep working when they pass the old
  * inline scalar fields (no `features` / `entries` array). Every such call
- * emits ONE `console.warn` that contains the literal string `"deprecated"`
+ * emits ONE file-log warning that contains the literal string `"deprecated"`
  * so callers can grep and migrate. The literal `"deprecated"` is part of
  * the public contract (do not reword without bumping VAL-8).
  */
@@ -19,6 +19,7 @@ import { lockPlan } from "../src/application/plan-service";
 // lockPlan re-used in the batch-no-warn test for the active-state evidence call.
 import { registerCharterTools } from "../src/application/registration";
 import { createCharter } from "../src/application/service";
+import { logger, type LogEntry } from "../src/infrastructure/logger";
 
 beforeEach(() => clearHookSubscribers());
 
@@ -160,11 +161,12 @@ interface WarnSpy {
 
 function spyOnWarn(): WarnSpy {
   const calls: string[] = [];
-  const original = console.warn;
-  console.warn = (...args: unknown[]) => {
-    calls.push(args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+  const handler = (entry: LogEntry) => {
+    if (entry.level !== "warn") return;
+    calls.push(entry.message);
   };
-  return { calls, restore: () => { console.warn = original; } };
+  logger.addHandler(handler);
+  return { calls, restore: () => { logger.clearHandlers(); } };
 }
 
 let activeSpy: WarnSpy | undefined;

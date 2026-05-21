@@ -17,7 +17,7 @@ type Handler = (event: unknown, ctx?: unknown) => unknown;
 interface FakePi {
   events: {
     emit: (channel: string, data: unknown) => void;
-    on: (channel: string, handler: (data: unknown) => void) => void;
+    on: (channel: string, handler: (data: unknown) => void) => () => void;
   };
   on: (event: string, handler: Handler) => void;
   // tracking
@@ -41,6 +41,10 @@ function makeFakePi(): FakePi {
         const list = eventListeners.get(channel) ?? [];
         list.push(handler);
         eventListeners.set(channel, list);
+        return () => {
+          const current = eventListeners.get(channel) ?? [];
+          eventListeners.set(channel, current.filter((l) => l !== handler));
+        };
       },
     },
     on(event: string, handler: Handler) {
