@@ -37,6 +37,7 @@ export const RALPH_SKIP_STATUSES = new Set<CharterStatus>([
   "completed",
   "abandoned",
   "paused",
+  "awaiting-clarification",
   "budget_limited",
 ]);
 

@@ -5,9 +5,10 @@ import { parseCharterMarkdown } from "../domain/charter-md";
 import type { CharterCriterion, CharterStatus, ParseWarning } from "../domain/types";
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { appendEvent, charterDir, loadCharterState, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
-import { nextActionsForStatus, type NextAction } from "./service";
+import { assertNotV1NeedsReplan, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
+import { inspectArchitectureGate } from "./architecture-gate";
 
 const FEATURE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
 
@@ -26,6 +27,8 @@ export interface PlanView {
 
 export async function viewPlan(projectDir: string, input: { charterId: string }): Promise<PlanView> {
   const dir = charterDir(projectDir, input.charterId);
+  const state = await loadCharterState(projectDir, input.charterId);
+  assertNotV1NeedsReplan(state);
   const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
   const features = await readFeatures(join(dir, "plan"));
   const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
@@ -98,6 +101,7 @@ export async function lockPlan(
   input: { charterId: string; now?: string; legacy?: boolean },
 ): Promise<LockPlanResult> {
   const state = await loadCharterState(projectDir, input.charterId);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "planning") {
     throw new CharterToolError(`Cannot lock_plan from status ${state.status}; only planning is eligible.`, {
       code: "lock_plan.bad_status",
@@ -122,6 +126,10 @@ export async function lockPlan(
   if (validationShapeFailures.length) {
     const refs = validationShapeFailures.map((row) => `${row.featureId} missing ${row.missing.join(" and ")}`).join(", ");
     failures.push(`impl features missing validation checks: ${refs}`);
+  }
+  const architectureGate = await inspectArchitectureGate(projectDir, input.charterId, plan.features);
+  if (architectureGate.required && !architectureGate.present) {
+    failures.push(`missing architecture.md: ${architectureGate.expectedPath}`);
   }
   const cycle = detectPreconditionCycle(plan.features);
   if (cycle) failures.push(`precondition cycle: ${cycle.join(" -> ")}`);
@@ -150,6 +158,7 @@ export async function lockPlan(
     if (plan.criteria.length === 0) code = "lock_plan.empty_criteria";
     else if (plan.features.length === 0) code = "lock_plan.empty_features";
     else if (cycle) code = "lock_plan.cycle";
+    else if (architectureGate.required && !architectureGate.present) code = "lock_plan.missing_architecture";
     else if (!input.legacy) {
       const missing = plan.warnings.filter((w) => w.reason === "missing-verifier");
       const weak = plan.criteria.filter((c) => c.verifier === "manual" && !c.because);
@@ -222,6 +231,7 @@ export interface FeatureWriteResult {
 export async function addFeature(projectDir: string, input: AddFeatureInput): Promise<FeatureWriteResult> {
   validateFeatureInput(input);
   const state = await loadCharterState(projectDir, input.charterId);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "planning") {
     throw new CharterToolError(`Cannot add_feature from status ${state.status}; only planning is eligible.`, {
       code: "add_feature.bad_status",
@@ -359,6 +369,7 @@ export async function addFeatureBatch(
   }
 
   const state = await loadCharterState(projectDir, input.charterId);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "planning") {
     throw new CharterToolError(`Cannot add_feature from status ${state.status}; only planning is eligible.`, {
       code: "add_feature.bad_status",
@@ -497,6 +508,7 @@ export async function updateFeature(projectDir: string, input: UpdateFeatureInpu
     });
   }
   const state = await loadCharterState(projectDir, input.charterId);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "planning") {
     throw new CharterToolError(`Cannot update_feature from status ${state.status}; only planning is eligible.`, {
       code: "update_feature.bad_status",

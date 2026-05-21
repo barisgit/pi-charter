@@ -121,6 +121,15 @@ export interface SubagentAsyncStartedPayload {
   startedAt?: number;
 }
 
+export interface SubagentUsage {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost?: number;
+  turns?: number;
+}
+
 export interface SubagentAsyncCompletePayload {
   runId: string;
   agent?: string;
@@ -129,6 +138,12 @@ export interface SubagentAsyncCompletePayload {
   summary?: string;
   metadata?: SubagentMetadata;
   endedAt?: number;
+  /**
+   * Canonical run-level usage aggregate. Sum across all child agents
+   * (chain/parallel) plus nested sub-subagent descendants. Mirrors
+   * the shape pi-bar consumes from `details.totalUsage`.
+   */
+  totalUsage?: SubagentUsage;
 }
 
 // ---------------------------------------------------------------------------

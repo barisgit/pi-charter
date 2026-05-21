@@ -3,6 +3,7 @@ export type CharterStatus =
   | "active"
   | "review"
   | "paused"
+  | "awaiting-clarification"
   | "completed"
   | "budget_limited"
   | "abandoned";
@@ -12,6 +13,8 @@ export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStat
   "budget_limited",
   "abandoned",
 ]);
+
+export type CharterSchemaVersion = "v2" | "v1-needs-replan";
 
 export interface NextAction {
   tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status" | "subagent";
@@ -36,6 +39,7 @@ export interface Budget {
 
 export interface CharterState {
   charterId: string;
+  schemaVersion?: CharterSchemaVersion;
   /**
    * Optional short human-friendly slug shown in widget headers and status
    * output. When absent, callers should fall back to `charterId.slice(0,8)`.
@@ -51,6 +55,7 @@ export interface CharterState {
   sessionId?: string;
   budget?: Budget;
   previousStatus?: CharterStatus;
+  clarificationNote?: string;
   completedAt?: string;
   terminatedAt?: string;
   completionReason?: string;

@@ -21,7 +21,7 @@ import {
 import { loadFeatureState, writeFeatureState } from "../persistence/feature-state";
 export type { FeatureCheckState, FeatureCheckStatus, FeatureStateFile, FeatureStateRecord } from "../persistence/feature-state";
 export { loadFeatureState } from "../persistence/feature-state";
-import { nextActionsForStatus, type NextAction } from "./service";
+import { assertNotV1NeedsReplan, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 
 export type EvidenceOutcome = "pass" | "fail" | "partial";
@@ -121,6 +121,7 @@ async function recordEvidenceLocked(
   }
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "active" && state.status !== "review") {
     throw new CharterToolError(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`, {
       code: "evidence.bad_status",
@@ -252,6 +253,7 @@ async function recordEvidenceBatchLocked(
   }
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "active" && state.status !== "review") {
     throw new CharterToolError(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`, {
       code: "evidence.bad_status",
@@ -490,6 +492,7 @@ export async function verifyCriterion(
 ): Promise<VerifyCriterionResult> {
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "active" && state.status !== "review") {
     throw new CharterToolError(`Cannot verify in status ${state.status}; charter must be active or in review.`, {
       code: "verify.bad_status",
@@ -649,6 +652,7 @@ async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput):
   // the single source of truth for these four field validations.
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "active" && state.status !== "review") {
     throw new CharterToolError(`Cannot apply handoff in status ${state.status}; charter must be active or in review.`, {
       code: "handoff_apply.bad_status",

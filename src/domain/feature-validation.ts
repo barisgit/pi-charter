@@ -65,7 +65,7 @@ function validationBlock(markdown: string): string | undefined {
 
   let end = lines.length;
   for (let i = start; i < lines.length; i++) {
-    if (/^##\s+/.test(lines[i])) {
+    if (/^##(?!#)\s+/.test(lines[i])) {
       end = i;
       break;
     }

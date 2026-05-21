@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { addFeature, addFeatureBatch, lockPlan, updateFeature, viewPlan, type FeatureEntry } from "./plan-service";
 import { applyHandoff, recordEvidence, recordEvidenceBatch, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
-import { amendCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
+import { amendCharter, askCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
 import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
@@ -50,10 +50,11 @@ import {
 } from "../ui/charter-selection";
 
 type CharterManageInput = {
-  action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter";
+  action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter" | "ask";
   charterId?: string;
   name?: string;
   objective?: string;
+  note?: string;
   reason?: string;
   completionNote?: string;
   target?: "completed" | "abandoned" | "budget_limited" | "planning" | "review";
@@ -96,10 +97,11 @@ type CharterRecordInput = {
 };
 
 const CharterManageParams = Type.Object({
-  action: StringEnum(["create", "pause", "resume", "complete", "force_complete", "amend_charter"] as const),
+  action: StringEnum(["create", "pause", "resume", "complete", "force_complete", "amend_charter", "ask"] as const),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional for every action except create; when omitted, resolves to the charter bound to the current session." })),
   name: Type.Optional(Type.String({ description: "Optional short slug shown in widget headers and status (e.g. 'headless-click-pid'). Lowercased; non-slug chars stripped; clamped to 32 chars. Falls back to the first 8 chars of the charterId when omitted." })),
   objective: Type.Optional(Type.String({ description: "Required for action=create. The desired outcome, not a spec path." })),
+  note: Type.Optional(Type.String({ description: "One-line clarification note stored in state.json for action=ask." })),
   reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
   completionNote: Type.Optional(Type.String({ description: "Completion note for action=complete." })),
   target: Type.Optional(StringEnum(["completed", "abandoned", "budget_limited", "planning", "review"] as const)),
@@ -176,7 +178,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
   pi.registerTool({
     name: "charter_manage",
     label: "Charter Manage",
-    description: "Manage pi-charter lifecycle actions: create, pause, resume, complete, force_complete, amend_charter.",
+    description: "Manage pi-charter lifecycle actions: create, pause, resume, ask, complete, force_complete, amend_charter.",
     promptSnippet: "Manage a durable charter lifecycle with minimal create input and evidence-gated completion.",
     promptGuidelines: [
       "Use charter_manage action=create when the user asks for durable charter-bound work; provide only objective, optional budget, and optional idempotencyKey.",
@@ -208,6 +210,12 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         case "pause": {
           const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
           const result = await pauseCharter(ctx.cwd, { charterId: resolved.charterId, reason: params.reason });
+          await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
+          return toolResult(result.message, result);
+        }
+        case "ask": {
+          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
+          const result = await askCharter(ctx.cwd, { charterId: resolved.charterId, note: params.note });
           await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
@@ -503,6 +511,8 @@ export function formatCharterStatusText(result: {
   status: string;
   phase: string;
   objective: string;
+  clarificationNote?: string;
+  migrationHint?: string;
   drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[] }[] };
   qaBriefs?: string[];
   nextActions: { tool: string; action?: string; hint: string }[];
@@ -517,6 +527,12 @@ export function formatCharterStatusText(result: {
   const idLabel = result.name ? `${result.name} (${result.charterId})` : result.charterId;
   lines.push(`Charter ${idLabel} [${result.status} · phase=${result.phase}]`);
   lines.push(`  objective: ${trimmedObjective}`);
+  if (result.clarificationNote) {
+    lines.push(`  clarification: ${result.clarificationNote}`);
+  }
+  if (result.migrationHint) {
+    lines.push(`  migration: ${result.migrationHint}`);
+  }
   lines.push(
     `  drift: uncovered=${result.drift.uncovered.length} stuck=${result.drift.stuck.length} stale=${result.drift.stale.length} readyNext=${result.drift.readyNext.length}`,
   );
@@ -966,6 +982,7 @@ const EVALUATOR_SKIP_STATUSES = new Set([
   "completed",
   "abandoned",
   "paused",
+  "awaiting-clarification",
   "budget_limited",
 ]);
 

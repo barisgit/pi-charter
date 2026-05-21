@@ -60,6 +60,7 @@ export async function createCharterWorkspace(
   const dir = charterDir(projectDir, input.charterId);
   const state: CharterState = {
     charterId: input.charterId,
+    schemaVersion: "v2",
     name: input.name,
     objective: input.objective.trim(),
     status: "planning",
@@ -90,7 +91,26 @@ export async function createCharterWorkspace(
 export async function loadCharterState(dirOrProject: string, charterId?: string): Promise<CharterState> {
   const dir = charterId ? charterDir(dirOrProject, charterId) : dirOrProject;
   const parsed = JSON.parse(await readFile(join(dir, "state.json"), "utf8")) as unknown;
-  return normalizeCharterState(parsed);
+  const state = normalizeCharterState(parsed);
+  if (state.schemaVersion === "v2" || state.schemaVersion === "v1-needs-replan") return state;
+  if (await isV1CharterDir(dir)) return { ...state, schemaVersion: "v1-needs-replan" };
+  return state;
+}
+
+export async function isV1Charter(projectDir: string, charterId: string): Promise<boolean> {
+  return isV1CharterDir(charterDir(projectDir, charterId));
+}
+
+async function isV1CharterDir(dir: string): Promise<boolean> {
+  let charterMarkdown = "";
+  try {
+    charterMarkdown = await readFile(join(dir, "charter.md"), "utf8");
+    await readFile(join(dir, "criterion-state.json"), "utf8");
+  } catch {
+    return false;
+  }
+  const criteriaSection = /(?:^|\n)##\s+Criteria\s*(?:\n|$)([\s\S]*?)(?=\n##\s+|$)/i.exec(charterMarkdown)?.[1] ?? "";
+  return /(?:^|\n)###\s+VAL-[A-Z0-9-]+\b/i.test(criteriaSection);
 }
 
 export async function writeCharterState(dir: string, state: CharterState): Promise<void> {
@@ -207,6 +227,7 @@ function normalizeCharterState(value: unknown): CharterState {
   const now = new Date().toISOString();
   return {
     charterId: raw.charterId,
+    schemaVersion: raw.schemaVersion === "v2" || raw.schemaVersion === "v1-needs-replan" ? raw.schemaVersion : undefined,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
     objective: raw.objective.trim(),
     status: raw.status,
@@ -217,6 +238,7 @@ function normalizeCharterState(value: unknown): CharterState {
     sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
     budget: typeof raw.budget === "object" && raw.budget ? (raw.budget as Budget) : undefined,
     previousStatus: isStatus(raw.previousStatus) ? raw.previousStatus : undefined,
+    clarificationNote: typeof raw.clarificationNote === "string" ? raw.clarificationNote : undefined,
     completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
     completionReason: typeof raw.completionReason === "string" ? raw.completionReason : undefined,
@@ -229,6 +251,7 @@ function isStatus(value: unknown): value is CharterState["status"] {
     value === "active" ||
     value === "review" ||
     value === "paused" ||
+    value === "awaiting-clarification" ||
     value === "completed" ||
     value === "budget_limited" ||
     value === "abandoned"

@@ -97,6 +97,8 @@ async function seedDogfoodCharter(projectDir: string): Promise<string> {
       "utf8",
     );
   }
+  await mkdir(join(dir, "library"), { recursive: true });
+  await writeFile(join(dir, "library", "architecture.md"), `# Architecture\n\n${"Dogfood architecture. ".repeat(12)}`, "utf8");
   await lockPlan(projectDir, { charterId: CHARTER_DOG, now: "2026-05-15T00:30:00.000Z" });
   return dir;
 }

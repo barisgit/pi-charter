@@ -13,6 +13,7 @@ import {
 import { registerCharterRemindersBridge } from "./application/reminders-bridge";
 
 export { CharterToolError } from "./application/errors";
+export * from "./domain/evidence-schemas";
 
 /**
  * pi-charter extension entrypoint.

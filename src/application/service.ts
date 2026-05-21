@@ -9,7 +9,9 @@ import { dispatchHook } from "./hooks";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { trustRank } from "../domain/trust-rank";
 import { TERMINAL_STATUSES, type Budget, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction } from "../domain/types";
+import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
+import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
 
 export type { NextAction };
 
@@ -41,10 +43,14 @@ export interface CharterStatusDetails {
 export interface CharterStatusResult {
   charterId: string;
   name?: string;
+  schemaVersion?: CharterState["schemaVersion"];
   status: CharterStatus;
   phase: "planning" | "active" | "review" | "terminal";
   objective: string;
+  migrationHint?: string;
   budget?: Budget;
+  clarificationNote?: string;
+  architecturePresent: boolean;
   evaluator: { lastVerdict?: string; lastReason?: string; lastTs?: string };
   drift: {
     uncovered: { criterionId: string; reason: string }[];
@@ -96,20 +102,48 @@ export async function getCharterStatus(
   const blockingForComplete = await computeBlockingForCompleteSafely(dir, charterId);
   const milestoneReviewActions = await computeMilestoneReviewNextActionsSafely(dir);
   const qaBriefs = await listQaBriefs(dir);
+  const architecturePresent = await hasNonTrivialArchitecture(architectureMarkdownPath(projectDir, charterId));
+  const migrationHint = migrationHintForState(state);
   return {
     charterId: state.charterId,
     name: state.name,
+    schemaVersion: state.schemaVersion,
     status: state.status,
     phase: phaseForStatus(state.status),
     objective: state.objective,
+    migrationHint,
     budget: state.budget,
+    clarificationNote: state.clarificationNote,
+    architecturePresent,
     evaluator: {},
     drift,
-    guidelines: guidelinesForStatus(state.status),
-    nextActions: [...nextActionsForStatus(state.status), ...milestoneReviewActions],
+    guidelines: migrationHint ? [migrationHint, ...guidelinesForStatus(state.status)] : guidelinesForStatus(state.status),
+    nextActions: migrationHint ? migrationReplanNextActions() : state.status === "awaiting-clarification" ? nextActionsForStatus(state.status) : [...nextActionsForStatus(state.status), ...milestoneReviewActions],
     details: { blockingForComplete },
     qaBriefs,
   };
+}
+
+export const V1_REPLAN_REQUIRED_HINT = "This charter has the pi-charter v1 disk shape (charter.md ## Criteria + criterion-state.json). v2 will not auto-migrate it; initiate a replan with charter_manage action=amend_charter and manually port checks using docs/v1-to-v2-migration.md, or force_complete/abandon it if it should not continue.";
+
+function migrationHintForState(state: CharterState): string | undefined {
+  return state.schemaVersion === "v1-needs-replan" ? V1_REPLAN_REQUIRED_HINT : undefined;
+}
+
+export function migrationReplanNextActions(): NextAction[] {
+  return [
+    { tool: "charter_manage", action: "amend_charter", hint: "Start the required v2 replan. Rewrite charter.md/plan entries manually using docs/v1-to-v2-migration.md; no automatic data migration will run." },
+    { tool: "charter_manage", action: "force_complete", hint: "Abandon or terminally close this v1-shaped charter if it should not be replanned." },
+    { tool: "charter_status", hint: "Re-read migration guidance before choosing the replan or force-complete path." },
+  ];
+}
+
+export function assertNotV1NeedsReplan(state: CharterState): void {
+  if (state.schemaVersion !== "v1-needs-replan") return;
+  throw new CharterToolError("migration.replan_required: this v1-shaped charter must be replanned before mutating records, plan, or completion state.", {
+    code: "migration.replan_required",
+    nextActions: migrationReplanNextActions(),
+  });
 }
 
 async function listQaBriefs(dir: string): Promise<string[]> {
@@ -310,6 +344,48 @@ export async function pauseCharter(
   };
 }
 
+export async function askCharter(
+  projectDir: string,
+  input: { charterId?: string; now?: string; note?: string },
+): Promise<CharterServiceResult<CharterState>> {
+  if (loadCharterConfig(projectDir).policy === "autonomous") {
+    throw new CharterToolError("Cannot ask for clarification when charter policy is autonomous.", {
+      code: "ask.policy_autonomous",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect the charter and continue autonomously, or change policy before asking the user." },
+      ],
+    });
+  }
+
+  const charterId = await resolveCharterId(projectDir, input.charterId);
+  const dir = charterDir(projectDir, charterId);
+  const state = await loadCharterState(dir);
+  if (state.status !== "planning") {
+    throw new CharterToolError(`Cannot ask for clarification in status ${state.status}; ask is only legal from planning.`, {
+      code: "ask.not_planning",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; ask is only legal while planning." },
+        { tool: "charter_manage", action: "pause", hint: "Pause instead if an active charter is blocked or waiting on user input." },
+      ],
+    });
+  }
+
+  const now = input.now ?? new Date().toISOString();
+  const note = input.note?.trim().replace(/\s+/g, " ") || undefined;
+  state.status = "awaiting-clarification";
+  state.clarificationNote = note;
+  state.updatedAt = now;
+  await writeCharterState(dir, state);
+  await appendEvent(dir, { type: "charter_asked", ts: now, charterId: state.charterId, note });
+  return {
+    charterId: state.charterId,
+    status: state.status,
+    message: `Charter ${state.charterId} is awaiting clarification.`,
+    data: state,
+    nextActions: nextActionsForStatus(state.status),
+  };
+}
+
 export async function completeCharter(
   projectDir: string,
   input: { charterId?: string; completionNote?: string; now?: string },
@@ -317,6 +393,7 @@ export async function completeCharter(
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
+  assertNotV1NeedsReplan(state);
   if (state.status !== "active" && state.status !== "review") {
     throw new CharterToolError(`Cannot complete charter in status ${state.status}; resume or amend first.`, {
       code: "complete.wrong_state",
@@ -543,6 +620,7 @@ export async function amendCharter(
     state.terminatedAt = undefined;
     state.completionReason = undefined;
   }
+  if (state.schemaVersion === "v1-needs-replan") state.schemaVersion = "v2";
   await writeCharterState(dir, state);
   await appendEvent(dir, { type: "charter_amended", ts: now, charterId, from, to: target, reason });
   return {
@@ -833,17 +911,21 @@ export async function resumeCharter(
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
-  if (state.status !== "paused") {
+  const resumeTo = state.status === "awaiting-clarification"
+    ? "planning"
+    : state.previousStatus && !isTerminal(state.previousStatus) ? state.previousStatus : "active";
+  if (state.status !== "paused" && state.status !== "awaiting-clarification") {
     throw new CharterToolError(`Cannot resume charter in status ${state.status}`, {
       code: "lifecycle.wrong_state",
       nextActions: [
-        { tool: "charter_status", hint: "Inspect current status; resume is only legal from `paused`." },
+        { tool: "charter_status", hint: "Inspect current status; resume is only legal from `paused` or `awaiting-clarification`." },
         { tool: "charter_manage", action: "pause", hint: "Pause the charter first if you want to later resume it." },
       ],
     });
   }
-  state.status = state.previousStatus && !isTerminal(state.previousStatus) ? state.previousStatus : "active";
+  state.status = resumeTo;
   state.previousStatus = undefined;
+  state.clarificationNote = undefined;
   state.updatedAt = input.now ?? new Date().toISOString();
   await writeCharterState(dir, state);
   await appendEvent(dir, { type: "charter_resumed", ts: state.updatedAt, charterId: state.charterId });
@@ -882,6 +964,10 @@ export function nextActionsForStatus(status: CharterStatus): NextAction[] {
         { tool: "charter_manage", action: "resume", hint: "Resume the paused charter." },
         { tool: "charter_status", hint: "Inspect current charter state." },
       ];
+    case "awaiting-clarification":
+      return [
+        { tool: "charter_manage", action: "resume", hint: "Resume after the user provides clarification." },
+      ];
     default:
       return [
         { tool: "charter_status", hint: "Inspect terminal charter result." },
@@ -900,7 +986,7 @@ async function resolveCharterId(projectDir: string, explicit?: string): Promise<
 }
 
 function phaseForStatus(status: CharterStatus): CharterStatusResult["phase"] {
-  if (status === "planning") return "planning";
+  if (status === "planning" || status === "awaiting-clarification") return "planning";
   if (status === "active" || status === "paused") return "active";
   if (status === "review") return "review";
   return "terminal";
@@ -920,6 +1006,7 @@ function guidelinesForStatus(status: CharterStatus): string[] {
   ];
   if (status === "review") return ["Inspect evidence before completing; evaluator done is not a gate."];
   if (status === "paused") return ["Resume before recording new evidence or changing plan state."];
+  if (status === "awaiting-clarification") return ["Awaiting user clarification. Do not take further charter action until the user responds, then call charter_manage action=resume."];
   return ["Terminal charters are read-only except explicit follow-up/new charter actions."];
 }
 
@@ -955,6 +1042,7 @@ const NON_TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>
   "active",
   "review",
   "paused",
+  "awaiting-clarification",
 ]);
 
 /**
