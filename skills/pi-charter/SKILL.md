@@ -12,7 +12,7 @@ pass evidence. Four phases, driven in one continuous run:
 ```
 1. CREATE    charter_manage action=create
 2. PLAN      edit charter.md (criteria) -> add_feature -> planner-critic -> lock_plan
-3. EXECUTE   per feature: implement -> charter-verifier -> evidence recorded
+3. EXECUTE   per feature: implement -> charter-reviewer / charter-qa / charter-readiness-probe -> evidence recorded
 4. COMPLETE  charter_manage action=complete    (gated on pass evidence)
 ```
 
@@ -44,7 +44,9 @@ goes to a subagent:
 | Job                                          | Subagent                  |
 |----------------------------------------------|---------------------------|
 | Plan critique before `lock_plan`             | `charter-planner-critic`  |
-| Per-criterion verification + evidence write  | `charter-verifier`        |
+| Per-feature code review + evidence write     | `charter-reviewer`        |
+| Per-milestone agentic QA + evidence write    | `charter-qa`              |
+| Readiness probe verification + evidence write| `charter-readiness-probe` |
 | Code/file recon, symbol tracing              | `explorer`                |
 | External research (vendor docs, library API) | `explorer`                |
 | Bounded implementation                       | `fixer`                   |
@@ -65,7 +67,7 @@ subagent({
 })
 ```
 
-`charter-verifier` records exactly one `charter_record action=evidence`.
+Each v2 persona (reviewer / qa / readiness-probe) writes a typed JSON evidence file and calls `charter_record action=evidence evidenceFile=<path>` itself.
 `charter-planner-critic` returns `PASS | BLOCK | ADVISORY`.
 
 **Default to `async: true`** for anything you don't need synchronously to
@@ -124,7 +126,7 @@ Fresh evidence required: true
 ```
 
 Verifier kinds: `command` (exit 0 = pass), `manual` (person or
-`charter-verifier` records evidence), `hook` / `prompt` (advanced).
+v2 personas record typed evidence via `evidenceFile`), `hook` / `prompt` (advanced).
 
 Fill in `## Scope and constraints` if the stub left it empty.
 
@@ -178,7 +180,7 @@ Drive every feature to evidence without stopping. Per feature:
 
 1. Pull the next ready feature from `charter_status` (`drift.readyNext[]`).
 2. Implement (delegate bounded work to `fixer`). Run local checks as you go.
-3. For each `VAL-*` the feature fulfills, dispatch `charter-verifier`
+3. For each feature, dispatch the matching v2 persona (`charter-reviewer` for code review, `charter-qa` for milestone agentic QA, `charter-readiness-probe` for readiness probes)
    (async by default) with `featureId` + `criterionId` in metadata. It
    runs the verifier or its own equivalent checks and writes one
    `charter_record action=evidence`.
@@ -197,7 +199,7 @@ charter_record action=evidence {
 ```
 
 You can also `charter_record action=verify` to run a criterion's command
-verifier inline, but prefer `charter-verifier` for context hygiene.
+verifier inline, but prefer the v2 reviewer/qa personas for context hygiene.
 
 ## Phase 4: Complete
 
@@ -237,7 +239,7 @@ turn-to-turn surface.
 
 - **Stopping after planning** to ask "should I implement now?". No. The
   locked plan is your authorization.
-- **Verifying inline** instead of delegating to `charter-verifier`.
+- **Verifying inline** instead of delegating to the matching v2 persona (charter-reviewer / charter-qa / charter-readiness-probe).
   Burns main-agent context on long charters.
 - **Writing `charter.md` / `plan/*.md` at the repo root** — they live
   under `.pi/charters/<id>/`, and the tools own `plan/*.md`.
@@ -271,4 +273,4 @@ turn-to-turn surface.
 | Persona                  | Use when                                                 |
 |--------------------------|----------------------------------------------------------|
 | `charter-planner-critic` | Before `lock_plan`. Resolve every `BLOCK`. Sync.         |
-| `charter-verifier`       | Per-criterion verification + evidence. Async by default. |
+| `charter-reviewer`       | Per-feature code review + typed evidence. Async by default. |
