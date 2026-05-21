@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, writeCharterState } from "../infrastructure/store";
 import { loadCriterionState, loadFeatureState, type CriterionStateFile, type CriterionStateRecord, type FeatureStateFile } from "./record-service";
 import { parseFeatureMarkdown } from "../domain/feature-md";
@@ -55,6 +55,7 @@ export interface CharterStatusResult {
   guidelines: string[];
   nextActions: NextAction[];
   details?: CharterStatusDetails;
+  qaBriefs: string[];
 }
 
 export async function createCharter(
@@ -94,6 +95,7 @@ export async function getCharterStatus(
   const drift = await computeDrift(projectDir, { charterId });
   const blockingForComplete = await computeBlockingForCompleteSafely(dir, charterId);
   const milestoneReviewActions = await computeMilestoneReviewNextActionsSafely(dir);
+  const qaBriefs = await listQaBriefs(dir);
   return {
     charterId: state.charterId,
     name: state.name,
@@ -106,7 +108,20 @@ export async function getCharterStatus(
     guidelines: guidelinesForStatus(state.status),
     nextActions: [...nextActionsForStatus(state.status), ...milestoneReviewActions],
     details: { blockingForComplete },
+    qaBriefs,
   };
+}
+
+async function listQaBriefs(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(join(dir, "qa"), { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+      .map((entry) => basename(entry.name, ".md"))
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
 }
 
 /**

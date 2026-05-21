@@ -70,6 +70,7 @@ export async function createCharterWorkspace(
   };
 
   await mkdir(join(dir, "plan"), { recursive: true });
+  await mkdir(join(dir, "qa"), { recursive: true });
   await writeTextAtomic(join(dir, "charter.md"), renderInitialCharterMarkdown(state.objective));
   await writeJsonAtomic(join(dir, "state.json"), state);
   await writeJsonAtomic(join(dir, "plan.json"), { charterId: input.charterId, milestones: [], features: [] });

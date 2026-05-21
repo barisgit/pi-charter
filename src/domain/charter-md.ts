@@ -65,7 +65,9 @@ export function parseCharterMarkdown(markdown: string, _options: ParseCharterOpt
   const warnings: ParseWarning[] = [];
   const criteria = parseCriteria(sections.get("criteria") ?? "", warnings);
   const constraints = parseConstraints(sections.get("scope and constraints") ?? "");
-  return { objective, criteria, constraints, warnings };
+  const qaSection = sections.has("qa") ? sections.get("qa") : undefined;
+  const readinessSection = sections.has("readiness") ? sections.get("readiness") : undefined;
+  return { objective, criteria, constraints, qaSection, readinessSection, warnings };
 }
 
 function splitH2Sections(markdown: string): Map<string, string> {

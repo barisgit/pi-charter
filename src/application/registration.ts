@@ -504,6 +504,7 @@ export function formatCharterStatusText(result: {
   phase: string;
   objective: string;
   drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[] }[] };
+  qaBriefs?: string[];
   nextActions: { tool: string; action?: string; hint: string }[];
   guidelines: string[];
   details?: { blockingForComplete?: { criterionId: string; reason: string }[] };
@@ -523,6 +524,9 @@ export function formatCharterStatusText(result: {
   if (blocking.length > 0) {
     const preview = blocking.map((row) => `${row.criterionId}(${row.reason})`).join(", ");
     lines.push(`  blocking-for-complete: ${blocking.length} VAL(s): ${preview}`);
+  }
+  if ((result.qaBriefs?.length ?? 0) > 0) {
+    lines.push(`  qa briefs: ${result.qaBriefs!.join(", ")}`);
   }
   if (result.drift.readyNext.length > 0) {
     const preview = result.drift.readyNext

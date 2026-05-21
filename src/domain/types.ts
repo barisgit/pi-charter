@@ -92,6 +92,8 @@ export interface ParsedCharterMarkdown {
   objective: string;
   criteria: CharterCriterion[];
   constraints: string[];
+  qaSection?: string;
+  readinessSection?: string;
   warnings: ParseWarning[];
 }
 

@@ -1,9 +1,15 @@
+import { parseFeatureValidation, type FeatureValidationChecks } from "./feature-validation";
+
+export type FeatureKind = "impl" | "readiness" | "review" | "qa";
+
 export interface FeatureDefinition {
   id: string;
   milestone: string;
   order: number;
   fulfills: string[];
   preconditions: string[];
+  kind: FeatureKind;
+  checks: FeatureValidationChecks;
   body: string;
 }
 
@@ -13,13 +19,16 @@ export function parseFeatureMarkdown(markdown: string): FeatureDefinition {
   const fields = parseFrontmatter(match[1]);
   const id = stringField(fields, "id");
   const milestone = stringField(fields, "milestone");
+  const body = match[2].trim();
   return {
     id,
     milestone,
     order: numberField(fields, "order"),
     fulfills: arrayField(fields, "fulfills"),
     preconditions: arrayField(fields, "preconditions"),
-    body: match[2].trim(),
+    kind: kindField(fields),
+    checks: parseFeatureValidation(body, id),
+    body,
   };
 }
 
@@ -70,6 +79,15 @@ function numberField(fields: Map<string, string | string[]>, key: string): numbe
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`Feature frontmatter ${key} must be a number`);
   return parsed;
+}
+
+function kindField(fields: Map<string, string | string[]>): FeatureKind {
+  const value = fields.get("kind");
+  if (value === undefined) return "impl";
+  if (typeof value !== "string") throw new Error("Feature frontmatter unknown feature kind");
+  const kind = value.trim();
+  if (kind === "impl" || kind === "readiness" || kind === "review" || kind === "qa") return kind;
+  throw new Error(`Feature frontmatter unknown feature kind "${kind}"`);
 }
 
 function arrayField(fields: Map<string, string | string[]>, key: string): string[] {
