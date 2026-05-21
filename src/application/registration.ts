@@ -21,7 +21,6 @@ import {
   SUBAGENT_ASYNC_COMPLETE_EVENT,
   SUBAGENT_ASYNC_STARTED_EVENT,
   SUBAGENT_EXPOSE_API_EVENT,
-  SUBAGENT_LINEAGE_EVENT,
   SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT,
   SUBAGENT_REGISTER_PERSONA_DIR_EVENT,
   SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT,
@@ -30,8 +29,6 @@ import {
   type SubagentAsyncCompletePayload,
   type SubagentAsyncStartedPayload,
   type SubagentExposedAPI,
-  type SubagentLineage,
-  type SubagentLineagePayload,
   type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
@@ -1517,149 +1514,72 @@ interface RegisterCharterWidgetOptions {
   homeDir?: string;
 }
 
-const IDLE_PROBE_WIDGET_KEY = "charter-idle-probe";
-
-export function registerCharterIdleProbeWidget(pi: ExtensionAPI): void {
-  const subs: Array<() => void> = [];
-  let disposed = false;
-  let rootWorking = false;
-  // Live count of pi-subagents async runs in flight. Sourced from
-  // subagent:async-started / subagent:async-complete and snapped to 0 by
-  // subagent:all-idle (which pi-subagents emits when the whole session is
-  // truly idle).
-  let asyncInFlight = 0;
-  // Lifetime event counters — surfaced in the widget so we can spot the
-  // provider double-firing in real time. Reset only by `session_shutdown`
-  // disposal (per-process), not by /reload (the new factory rebinds and the
-  // count starts over with the new instance).
-  let allIdleCount = 0;
-  let asyncStartedCount = 0;
-  let asyncCompleteCount = 0;
-  let agentStartCount = 0;
-  let agentEndCount = 0;
-  let turnStartCount = 0;
-  // Cached lineage from subagent:lineage (or expose-api). Used to tag the
-  // widget with the current agent name when we are a child session.
-  let lineage: SubagentLineage | null = null;
-  let lastCtx: ExtensionContext | undefined;
-
-  const render = (ctx: ExtensionContext | undefined): void => {
-    if (!ctx?.hasUI) return;
-    ctx.ui.setWidget(
-      IDLE_PROBE_WIDGET_KEY,
-      (_tui, theme) => ({
-        render: () => {
-          const busy = rootWorking || asyncInFlight > 0;
-          let color: "error" | "accent" | "success";
-          let label: string;
-          if (rootWorking) {
-            color = "error";
-            label = "agent working";
-          } else if (asyncInFlight > 0) {
-            color = "accent";
-            label = `agent idle, ${asyncInFlight} async in flight`;
-          } else {
-            color = "success";
-            label = "agent idle";
-          }
-          // Tag child sessions with the agent name so nested subagent widgets
-          // are distinguishable from the host.
-          if (lineage && lineage.role === "child" && lineage.currentAgent) {
-            label = `${label} · ${lineage.currentAgent}`;
-          }
-          // Event tallies: allIdle / asyncStart / asyncComplete / turnStart /
-          // agentStart / agentEnd. If the provider double-fires we will see
-          // the counter climb without any actual user activity.
-          const counters = `[idle:${allIdleCount} a+:${asyncStartedCount} a-:${asyncCompleteCount} ts:${turnStartCount} as:${agentStartCount} ae:${agentEndCount}]`;
-          return [theme.fg(color, `● ${label} ${counters}`)];
-        },
+/**
+ * Custom renderer for the `charter-ralph-continue` steer.
+ *
+ * The Ralph loop is intentionally visible in scrollback (the auto-continuation
+ * is the whole point of the UX), but the full prompt body is large and the
+ * user usually only needs to know "the loop fired" plus the prompt case.
+ *
+ * Collapsed: single-line note with the prompt case and charter id.
+ * Expanded: collapsed header + full prompt body in a bordered block.
+ *
+ * Border color is `info` to differentiate from `pi-reminders` which uses
+ * `accent` — if both extensions are installed the two systems should be
+ * visually distinct.
+ */
+export function registerCharterRalphMessageRenderer(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer<RalphMessageDetails>(
+    RALPH_CUSTOM_TYPE,
+    (message, options, theme) => {
+      const details = (message.details ?? {}) as RalphMessageDetails;
+      const promptCase = details.promptCase ?? "unknown";
+      const charterId = details.charterId ?? "";
+      const shortId = charterId ? charterId.slice(0, 8) : "—";
+      const header = `● ralph loop fired · ${promptCase} · ${shortId}`;
+      const content = typeof message.content === "string" ? message.content : "";
+      // Different palette from pi-reminders (`accent`): use
+      // `customMessageLabel` for the header text and `mdCodeBlockBorder` for
+      // the expanded body box so both extensions are visually distinct.
+      const headerColor = "customMessageLabel" as const;
+      const borderColor = "mdCodeBlockBorder" as const;
+      return {
         invalidate: () => {},
-      }),
-      { placement: "belowEditor" },
-    );
-  };
+        render: (width: number): string[] => {
+          if (!options.expanded) {
+            return [theme.fg(headerColor, header)];
+          }
+          const lines: string[] = [theme.fg(headerColor, header)];
+          if (!content) return lines;
+          const bodyWidth = Math.max(20, width - 2);
+          const border = (value: string) => theme.fg(borderColor, value);
+          lines.push(border(`╭${"─".repeat(bodyWidth)}╮`));
+          for (const rawLine of content.split("\n")) {
+            for (const wrapped of wrapHardLine(rawLine, bodyWidth)) {
+              const padded = wrapped + " ".repeat(Math.max(0, bodyWidth - wrapped.length));
+              lines.push(border("│") + padded + border("│"));
+            }
+          }
+          lines.push(border(`╰${"─".repeat(bodyWidth)}╯`));
+          return lines;
+        },
+      };
+    },
+  );
+}
 
-  const setRootWorking = (next: boolean, ctx: ExtensionContext): void => {
-    rootWorking = next;
-    lastCtx = ctx;
-    render(ctx);
-  };
+interface RalphMessageDetails {
+  charterId?: string;
+  promptCase?: string;
+}
 
-  pi.on("session_start", async (_event, ctx) => setRootWorking(false, ctx));
-  pi.on("agent_start", async (_event, ctx) => {
-    agentStartCount += 1;
-    logger.debug("idle-probe: agent_start", { agentStartCount });
-    setRootWorking(true, ctx);
-  });
-  pi.on("turn_start", async (_event, ctx) => {
-    turnStartCount += 1;
-    logger.debug("idle-probe: turn_start", { turnStartCount });
-    setRootWorking(true, ctx);
-  });
-  pi.on("agent_end", async (_event, ctx) => {
-    agentEndCount += 1;
-    logger.debug("idle-probe: agent_end", { agentEndCount });
-    setRootWorking(false, ctx);
-  });
-  pi.on("session_shutdown", () => {
-    rootWorking = false;
-    asyncInFlight = 0;
-    lineage = null;
-    if (lastCtx?.hasUI) lastCtx.ui.setWidget(IDLE_PROBE_WIDGET_KEY, undefined);
-    lastCtx = undefined;
-    if (!disposed) {
-      disposed = true;
-      for (const unsubscribe of subs) unsubscribe();
-      subs.length = 0;
-    }
-  });
-
-  // pi-subagents async lifecycle: count what is in flight on THIS session's
-  // pi.events bus. Child sessions get their own subscription via this same
-  // activate path, so each session's widget tracks only its own children.
-  subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (_payload: unknown) => {
-    asyncStartedCount += 1;
-    asyncInFlight += 1;
-    logger.debug("idle-probe: async-started", { asyncStartedCount, asyncInFlight });
-    render(lastCtx);
-  }));
-  subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (_payload: unknown) => {
-    asyncCompleteCount += 1;
-    asyncInFlight = Math.max(0, asyncInFlight - 1);
-    logger.debug("idle-probe: async-complete", { asyncCompleteCount, asyncInFlight });
-    render(lastCtx);
-  }));
-  subs.push(pi.events.on(SUBAGENT_ALL_IDLE_EVENT, (_payload: unknown) => {
-    allIdleCount += 1;
-    logger.info("idle-probe: all-idle event", { allIdleCount, asyncInFlight, rootWorking });
-    // Defensive snap: pi-subagents only emits this once turn is over AND no
-    // async is in flight, so the counter should already be 0 — but reset to
-    // 0 in case we missed a start/complete pair during a reload.
-    asyncInFlight = 0;
-    render(lastCtx);
-  }));
-
-  // pi-subagents lineage: cache the current session's lineage so we can
-  // distinguish host vs child widgets at a glance.
-  subs.push(pi.events.on(SUBAGENT_LINEAGE_EVENT, (payload: unknown) => {
-    const p = payload as SubagentLineagePayload | undefined;
-    if (p?.lineage) {
-      lineage = p.lineage;
-      render(lastCtx);
-    }
-  }));
-  subs.push(pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (payload: unknown) => {
-    try {
-      const p = payload as { subagentApi?: SubagentExposedAPI } | undefined;
-      const next = p?.subagentApi?.lineage?.();
-      if (next) {
-        lineage = next;
-        render(lastCtx);
-      }
-    } catch {
-      // Older pi-subagents builds may not expose lineage(); ignore.
-    }
-  }));
+function wrapHardLine(line: string, width: number): string[] {
+  if (line.length === 0) return [""];
+  const out: string[] = [];
+  for (let i = 0; i < line.length; i += width) {
+    out.push(line.slice(i, i + width));
+  }
+  return out;
 }
 
 export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharterWidgetOptions = {}): void {
