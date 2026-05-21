@@ -325,6 +325,18 @@ For every feature, the plan body must independently answer:
      non-critical review skip concerns). The plan CAN be locked but the host
      should surface these to the user.
 
+## Returning to orchestrator
+
+Return control to the orchestrator instead of continuing locally when any trigger applies:
+
+- blocked by missing dependency
+- scope violation
+- broken upstream state can't restore
+- service won't healthcheck
+- decision needed from main agent
+
+Must-not-spin rule: do not retry infrastructure fixes the persona can't resolve. After 1 attempt to fix and re-verify, return with the reason.
+
 ## Hard rules
 
 - You are read-only. You may NOT call `charter_plan action=add_feature` or

@@ -33,6 +33,18 @@ Apply these principles while assessing the assigned feature:
 
 When running tests or validators, never pipe test/validator output through truncation commands such as `| tail`, `| head`, etc. This masks exit codes because the shell reports the truncation command's status, hiding test or validator failures. Prefer narrower test selection over output truncation. For `bun test -t` commands, use `scripts/charter-named-test.sh` so filtered runs fail when no tests match.
 
+## Returning to orchestrator
+
+Return control to the orchestrator instead of continuing locally when any trigger applies:
+
+- blocked by missing dependency
+- scope violation
+- broken upstream state can't restore
+- service won't healthcheck
+- decision needed from main agent
+
+Must-not-spin rule: do not retry infrastructure fixes the persona can't resolve. After 1 attempt to fix and re-verify, return with the reason.
+
 ## Surface-specific capture choice
 
 1. Read each `qa-briefs/<feature>.md` file before running QA.

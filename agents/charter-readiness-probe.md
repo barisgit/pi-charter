@@ -91,6 +91,18 @@ Every `readiness.md` must end with:
 
 If there were no surprises, leave the section present and say `- empty if none.`.
 
+## Returning to orchestrator
+
+Return control to the orchestrator instead of continuing locally when any trigger applies:
+
+- blocked by missing dependency
+- scope violation
+- broken upstream state can't restore
+- service won't healthcheck
+- decision needed from main agent
+
+Must-not-spin rule: do not retry infrastructure fixes the persona can't resolve. After 1 attempt to fix and re-verify, return with the reason.
+
 ## Role contract
 
 Verify readiness; do not implement fixes. A readiness pass means every readiness item is `verified` or deliberately `deferred-with-fallback`, no item is `blocking`, and the evidence/narrative artifacts obey the naming/parity rules above.

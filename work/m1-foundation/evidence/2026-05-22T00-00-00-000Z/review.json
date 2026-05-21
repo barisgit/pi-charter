@@ -1,0 +1,21 @@
+{
+  "kind": "review",
+  "featureId": "m1-foundation",
+  "round": 1,
+  "reviewedAt": "2026-05-22T00:00:00.000Z",
+  "subagentSessionId": "charter-reviewer-m1-foundation",
+  "outcome": "pass",
+  "blockingIssues": [],
+  "nonBlockingNotes": [
+    "f1: feature-state.ts diff showed no changes (file was already clean of auto-injected flag in the reader). The spec pointed at src/infrastructure/feature-state.ts but the file lives at src/persistence/feature-state.ts. The normalizeFeatures function correctly drops unknown fields including auto-injected, so the migration goal is met even though the path in the spec was slightly stale.",
+    "f1: plan-service.ts drops `targets: [...feature.targets].sort()` from digestFeatures without a comment; this is harmless since targets is removed from FeatureDefinition, but a brief comment noting the removal would aid future readers.",
+    "f2: parseCommands keys are lowercased (line 64: key.trim().toLowerCase()) which is consistent and desirable. Authors writing 'Build: ...' will get 'build'. This is by design but not mentioned in the spec; worth documenting.",
+    "f2: formatCommandsInline uses '=' separator (key=value) while the charter.md source uses ':' (key: value). The test expects 'commands: build=bun run build'. This is intentional formatting for the status surface but is mildly surprising; non-blocking.",
+    "f3: The evidence-exists parser reads Kind: field into evidenceKind and FreshSince: into freshSince. Case-normalized via normalizeHeading so 'freshsince' matches 'FreshSince:' correctly. No test exercises evidence-exists parsing from charter.md text — spec only required the subagent parsing test. Non-blocking since VAL-VERIFIER-EVIDENCE-EXISTS is a schema criterion and the evidence-exists parse path mirrors the subagent path.",
+    "f3: SubagentVerifier and EvidenceExistsVerifier types are exported from verifier.ts and referenced in record-service.ts — clean separation, no god-file expansion.",
+    "Scope: record-service.ts gained ~340 lines (verifySubagentCriterion + verifyEvidenceExistsCriterion + helpers). This is the largest single-file growth. The functions are cohesive and in-scope for f3 (schema) + the dispatch features f4/f5. The dispatch implementations are likely landing here even though f4/f5 are separate features — acceptable since they are in the same milestone and tightly coupled."
+  ],
+  "summary": "All three m1-foundation features (f1-drop-auto-inject, f2-commands-section, f3-verifier-schema-extension) are correctly implemented. All 14 named tests pass, bun run check-types is clean, no regressions detected.",
+  "because": "f1: synthesizeAutoInjectedFeatures is fully removed from plan-service.ts; FeatureReviewPolicy/review/targets/reviewSkipRationale removed from feature-md.ts; milestone-readiness in record-service now treats all feature kinds uniformly (removed kind==='impl' filter); normalizeFeatures in feature-state reader drops the auto-injected flag via structural whitelist — all four spec boundaries satisfied. f2: parseCommands handles absence, duplicate keys (last-write-wins + warning), malformed lines (warning + skip), and empty values (warning). commands field is returned in ParsedCharterMarkdown, surfaced in charter status, included in subagent bootstrap prompt. All 5 named tests pass. f3: verifier.ts adds SubagentVerifierSchema and EvidenceExistsVerifierSchema as TypeBox discriminated union members; validateVerifier dispatches by kind; charter-md.ts parseVerifier switch extended for 'subagent' and 'evidence-exists' with per-kind field extraction; parse-time validation via validateVerifier throws on missing required fields. All 5 named tests pass.",
+  "narrativePath": "review.md"
+}

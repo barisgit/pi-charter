@@ -1,0 +1,17 @@
+{
+  "kind": "review",
+  "featureId": "f13-showcase-v22",
+  "round": 1,
+  "reviewedAt": "2026-05-21T22:24:38Z",
+  "subagentSessionId": "charter-reviewer-f13",
+  "outcome": "pass",
+  "blockingIssues": [],
+  "nonBlockingNotes": [
+    "docs/showcase.html:656 — <h2>## Commands</h2> heading contains a literal '##' prefix. This is intentional (spec says '## Commands section') and the test asserts `<h2>## Commands</h2>`, but the rendered page will display '## Commands' as the visible heading. Minor cosmetic oddity; the test explicitly validates this string so it is a deliberate choice matching spec.",
+    "docs/showcase.html:342 — Only m1-review-oauth-cb SVG node carries the 'Verifier: subagent { agent: charter-reviewer }' annotation. m1-review-session (line ~345) does not, but the spec only requires the DAG *example* to show planner-authored review with the Verifier annotation; one annotated node is sufficient to illustrate the pattern.",
+    "tests/v22-showcase.test.ts:49 — The 'does NOT reference auto-injection outside historical note' test uses a regex replace on one match only. If the historical note appeared twice the replacement would only strip the first occurrence. This is a latent test fragility; in practice there is only one historical note so the test passes correctly."
+  ],
+  "summary": "All 5 showcase tests pass. Diff is surgical (73 additions, 16 deletions on a doc with ~800 lines). All required spec elements present: planner-authored DAG label, Verifier:subagent annotation on m1-review-oauth-cb, all 6 verifier kinds card grid, ## Commands worked example, historical note on auto-injection removal, dir-per-run evidence layout in 3 places.",
+  "because": "Diff checked against f13-showcase-v22.md spec: (1) DAG label changed to 'planner-authored reviews' and m1-review-oauth-cb node now shows 'Verifier: subagent { agent: charter-reviewer }'; (2) Verifier kinds section lists all 6 kinds with <h3> headings and a summary paragraph; (3) ## Commands section added with worked example card; (4) Historical note at line 408 references auto-injection removal with v2.2; (5) dir-per-run evidence path 'work/<featureId>/evidence/<ts>/' appears in SVG node (line 594), prose (line 630), and fs-tree (line 738). No rewrite — edits are scoped inserts/replacements. 'auto-inject' appears only once, inside the historical note. All 5 named tests pass. No unrelated behavior changes. No god-file expansion concerns (docs only).",
+  "narrativePath": "review.md"
+}

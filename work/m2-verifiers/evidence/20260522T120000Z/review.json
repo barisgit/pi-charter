@@ -1,0 +1,18 @@
+{
+  "kind": "review",
+  "featureId": "m2-verifiers",
+  "round": 1,
+  "reviewedAt": "2026-05-22T12:00:00.000Z",
+  "subagentSessionId": "charter-reviewer-m2-verifiers-20260522",
+  "outcome": "pass",
+  "blockingIssues": [],
+  "nonBlockingNotes": [
+    "record-service.ts is now 1655 lines (+325 from wave 2). Growth is spec-directed (spec explicitly targets this file for both new verifier branches) and architecturally consistent with the existing command-verifier pattern. Not a god-file violation, but worth watching if more verifier kinds land in the same module.",
+    "The test named 'subagent dispatch honors requireFreshEvidence with stale evidence' tests the dispatch-timestamp freshness cutoff, not the criterion.requireFreshEvidence flag (which is checked separately at the completion gate in service.ts). The test name is slightly misleading but the behavior is correct per spec: 'requireFreshEvidence honored: read newest evidence record written AFTER dispatch timestamp'.",
+    "partial outcome from subagent evidence is correctly mapped to 'fail' via outcomeFromEvidenceFile but is not covered by an explicit test. The spec's named-test list does not require it, so this is consistent.",
+    "Empty-agent edge case: if 'Agent:' is present but blank in charter.md, TypeBox accepts empty string and verifySubagentCriterion would pass agent='' to the systemPrompt. Planner responsibility to supply a valid name; schema does not enforce non-empty."
+  ],
+  "summary": "Both features implement their dispatcher branches correctly. All 10 spec-named tests pass (5 for f4, 5 for f5). Type check is clean. Evidence-exists reuses loadFeatureEvidence as required, handles both dir-per-run and legacy flat layouts, freshSince filtering, and kind mismatch. Subagent dispatch correctly sets dispatchStartedAt before spawn, sorts candidates by evidenceTimeMs descending, maps partial→fail, records typed evidence into criterion-state, and interpolates the full template including commands.<key>.",
+  "because": "Diff inspected against f4 and f5 specs line by line. Test output shows 10/10 pass with no truncation. TypeScript compiler emits no errors. Logic walkthrough confirms: (1) evidenceKindFromRecord handles root-level and nested kind fields; (2) newestTypedEvidenceAfterDispatch uses Math.max(evidenceTimeMs, fileStat.mtimeMs) >= dispatchStartedAt for freshness; (3) verifier schema guards in charter-md.ts/verifier.ts reject malformed subagent/evidence-exists specs at parse time; (4) both branches call recordEvidence (not recordEvidenceLocked) so no nested-lock issues; (5) all five spec-named tests per feature are present with correct assertions.",
+  "narrativePath": "review.md"
+}

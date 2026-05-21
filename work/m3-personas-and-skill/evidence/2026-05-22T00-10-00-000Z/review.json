@@ -1,0 +1,16 @@
+{
+  "kind": "review",
+  "featureId": "f6-critic-four-question-gate",
+  "round": 1,
+  "reviewedAt": "2026-05-22T00:10:00.000Z",
+  "subagentSessionId": "charter-reviewer-m3-f6",
+  "outcome": "pass",
+  "blockingIssues": [],
+  "nonBlockingNotes": [
+    "The four-question block sits outside the ordered-list indentation (lines 53-56 are flush-left while surrounding steps are indented). This is cosmetic and does not affect test assertions or LLM prompt consumption.",
+    "whichQuestion enum is presented inline as a prose literal; a separate verdict-shape example block (as used for other BLOCK kinds later in the file) would be more consistent — non-blocking since all three test assertions pass."
+  ],
+  "summary": "f6-critic-four-question-gate is correctly implemented. All three named tests pass; the exact verbatim strings the tests assert are present in agents/charter-planner-critic.md.",
+  "because": "Static review of agents/charter-planner-critic.md confirms: (1) verbatim four-question block present at lines 53-56; (2) 'BLOCK feature-underspecified' and 'whichQuestion: \\'does\\'|\\'boundaries\\'|\\'complexity\\'|\\'verification\\'' present at lines 59-61; (3) 'FEATURE PLAN BODY', 'The four-question gate applies to FEATURE PLAN BODY content', and 'does NOT apply to charter.md' all present at lines 50-51. bun test tests/v22-critic-four-question.test.ts → 3 pass 0 fail.",
+  "narrativePath": "review.md"
+}
