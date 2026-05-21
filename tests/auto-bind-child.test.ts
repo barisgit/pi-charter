@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindCharterToSession, readSessionBinding, writeChildBinding } from "../src/application/binding-service";
-import { autoBindChildSession } from "../src/application/registration";
+import { autoBindChildFromLineage } from "../src/application/registration";
 import { createCharter, forceCompleteCharter } from "../src/application/service";
 
 async function withTempProject<T>(fn: (projectDir: string, homeDir: string) => Promise<T>): Promise<T> {
@@ -35,30 +35,12 @@ function statePath(projectDir: string, charterId: string): string {
   return join(projectDir, ".pi/charters", charterId, "state.json");
 }
 
-let previousRootSid: string | undefined;
-let previousForkSid: string | undefined;
-
-beforeEach(() => {
-  previousRootSid = process.env.PI_SUBAGENT_ROOT_SESSION_ID;
-  previousForkSid = process.env.PI_SUBAGENT_FORK_SESSION_ID;
-  delete process.env.PI_SUBAGENT_ROOT_SESSION_ID;
-  delete process.env.PI_SUBAGENT_FORK_SESSION_ID;
-});
-
-afterEach(() => {
-  if (previousRootSid === undefined) delete process.env.PI_SUBAGENT_ROOT_SESSION_ID;
-  else process.env.PI_SUBAGENT_ROOT_SESSION_ID = previousRootSid;
-  if (previousForkSid === undefined) delete process.env.PI_SUBAGENT_FORK_SESSION_ID;
-  else process.env.PI_SUBAGENT_FORK_SESSION_ID = previousForkSid;
-});
-
-describe("child session auto-bind", () => {
+describe("child session auto-bind from lineage", () => {
   it("writes a participant binding from the root binding", async () => {
     await withTempProject(async (projectDir, homeDir) => {
       const charter = await createRootBinding(projectDir, homeDir);
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "root1";
 
-      await autoBindChildSession({ currentSid: "child1", homeDir });
+      await autoBindChildFromLineage({ childSid: "child1", rootSid: "root1", homeDir });
 
       const child = await readSessionBinding({ sessionId: "child1", homeDir });
       expect(child).toMatchObject({
@@ -70,49 +52,27 @@ describe("child session auto-bind", () => {
     });
   });
 
-  it("does not write without a root env var", async () => {
-    await withTempProject(async (projectDir, homeDir) => {
-      await createRootBinding(projectDir, homeDir);
-
-      const result = await autoBindChildSession({ currentSid: "child1", homeDir });
-
-      expect(result).toBeNull();
-      expect(await readSessionBinding({ sessionId: "child1", homeDir })).toBeNull();
-    });
-  });
-
   it("does not write or throw for an unknown root sessionId", async () => {
     await withTempProject(async (projectDir, homeDir) => {
       await createRootBinding(projectDir, homeDir);
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "nope";
 
-      await expect(autoBindChildSession({ currentSid: "child1", homeDir })).resolves.toBeNull();
+      await expect(
+        autoBindChildFromLineage({ childSid: "child1", rootSid: "nope", homeDir }),
+      ).resolves.toBeNull();
       expect(await readSessionBinding({ sessionId: "child1", homeDir })).toBeNull();
     });
   });
 
-  it("does not self-bind when the root env var equals the current sessionId", async () => {
+  it("does not self-bind when childSid equals rootSid", async () => {
     await withTempProject(async (projectDir, homeDir) => {
       await createRootBinding(projectDir, homeDir);
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "child1";
 
-      const result = await autoBindChildSession({ currentSid: "child1", homeDir });
-
-      expect(result).toBeNull();
-      expect(await readSessionBinding({ sessionId: "child1", homeDir })).toBeNull();
-    });
-  });
-
-  it("does not write for fork sessions", async () => {
-    await withTempProject(async (projectDir, homeDir) => {
-      await createRootBinding(projectDir, homeDir);
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "root1";
-      process.env.PI_SUBAGENT_FORK_SESSION_ID = "child1";
-
-      const result = await autoBindChildSession({ currentSid: "child1", homeDir });
+      const result = await autoBindChildFromLineage({ childSid: "root1", rootSid: "root1", homeDir });
 
       expect(result).toBeNull();
-      expect(await readSessionBinding({ sessionId: "child1", homeDir })).toBeNull();
+      // The root's own binding (written by createRootBinding) stays as 'owner'.
+      const root = await readSessionBinding({ sessionId: "root1", homeDir });
+      expect(root?.role).toBe("owner");
     });
   });
 
@@ -127,9 +87,8 @@ describe("child session auto-bind", () => {
         homeDir,
         boundAt: "2026-05-18T00:02:00.000Z",
       });
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "root1";
 
-      const result = await autoBindChildSession({ currentSid: "child1", homeDir });
+      const result = await autoBindChildFromLineage({ childSid: "child1", rootSid: "root1", homeDir });
 
       expect(result).toBeNull();
       const child = await readSessionBinding({ sessionId: "child1", homeDir });
@@ -152,9 +111,8 @@ describe("child session auto-bind", () => {
         reason: "test",
         now: "2026-05-18T00:03:00.000Z",
       });
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "root1";
 
-      const result = await autoBindChildSession({ currentSid: "child1", homeDir });
+      const result = await autoBindChildFromLineage({ childSid: "child1", rootSid: "root1", homeDir });
 
       expect(result).toBeNull();
       expect(await readSessionBinding({ sessionId: "child1", homeDir })).toBeNull();
@@ -164,9 +122,8 @@ describe("child session auto-bind", () => {
   it("leaves the root forward pointer unchanged after auto-bind", async () => {
     await withTempProject(async (projectDir, homeDir) => {
       const charter = await createRootBinding(projectDir, homeDir);
-      process.env.PI_SUBAGENT_ROOT_SESSION_ID = "root1";
 
-      await autoBindChildSession({ currentSid: "child1", homeDir });
+      await autoBindChildFromLineage({ childSid: "child1", rootSid: "root1", homeDir });
 
       const state = JSON.parse(await readFile(statePath(projectDir, charter.charterId), "utf8"));
       expect(state.sessionId).toBe("root1");

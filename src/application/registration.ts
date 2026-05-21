@@ -21,6 +21,7 @@ import {
   SUBAGENT_ASYNC_COMPLETE_EVENT,
   SUBAGENT_ASYNC_STARTED_EVENT,
   SUBAGENT_EXPOSE_API_EVENT,
+  SUBAGENT_LINEAGE_EVENT,
   SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT,
   SUBAGENT_REGISTER_PERSONA_DIR_EVENT,
   SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT,
@@ -29,6 +30,7 @@ import {
   type SubagentAsyncCompletePayload,
   type SubagentAsyncStartedPayload,
   type SubagentExposedAPI,
+  type SubagentLineagePayload,
   type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
@@ -809,28 +811,38 @@ interface RegisterCharterFlagsOptions {
   homeDir?: string;
 }
 
-export async function autoBindChildSession(input: {
-  currentSid: string;
+/**
+ * Bind a child session to its root's charter using lineage payload from
+ * pi-subagents. Replaces the legacy env-var path: when pi-subagents was a
+ * separate process the child inherited `PI_SUBAGENT_ROOT_SESSION_ID`, but
+ * with the in-process spawner that env channel no longer exists. The
+ * `subagent:lineage` event carries the same information and fires on every
+ * child session_start.
+ *
+ * No-ops when:
+ *   - the session is already bound (idempotent on re-emit / reload),
+ *   - the lineage payload has no rootSessionId (root session itself),
+ *   - the root session has no charter binding,
+ *   - the root's charter is in a terminal status (don't poison new children
+ *     with a dead charter while the root's reverse pointer hasn't cleared).
+ */
+export async function autoBindChildFromLineage(input: {
+  childSid: string;
+  rootSid: string;
   homeDir?: string;
 }): Promise<SessionBindingRecord | null> {
-  const existing = await readSessionBinding({ sessionId: input.currentSid, homeDir: input.homeDir });
+  if (!input.childSid || !input.rootSid || input.childSid === input.rootSid) return null;
+  const existing = await readSessionBinding({ sessionId: input.childSid, homeDir: input.homeDir });
   if (existing) return null;
 
-  const rootSid = process.env.PI_SUBAGENT_ROOT_SESSION_ID;
-  const forkSid = process.env.PI_SUBAGENT_FORK_SESSION_ID;
-  if (!rootSid || rootSid === input.currentSid || forkSid === input.currentSid) return null;
-
-  const rootBinding = await readSessionBinding({ sessionId: rootSid, homeDir: input.homeDir });
+  const rootBinding = await readSessionBinding({ sessionId: input.rootSid, homeDir: input.homeDir });
   if (!rootBinding) return null;
 
-  // Skip when the root binding points at a terminal charter — the owner has
-  // not yet had session_start fire to clear its reverse pointer, but children
-  // spawned in the meantime must not inherit a dead charter.
   const rootState = await loadCharterState(charterDir(rootBinding.projectDir, rootBinding.charterId)).catch(() => undefined);
   if (rootState && TERMINAL_STATUSES.has(rootState.status)) return null;
 
   return writeChildBinding({
-    sessionId: input.currentSid,
+    sessionId: input.childSid,
     charterId: rootBinding.charterId,
     projectDir: rootBinding.projectDir,
     role: "participant",
@@ -857,8 +869,12 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
     // charter (e.g. after compaction or process restart), restore the forward
     // pointer in state.json before any other action.
     if (sessionId) {
+      // Auto-binding of child sessions now happens in the subagent-bridge
+      // lineage handler (event-driven), not here. session_start can't read
+      // the lineage cache because the lineage event may arrive after this
+      // handler returns.
       const reconciled = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
-      const binding = reconciled ?? await autoBindChildSession({ currentSid: sessionId, homeDir: options.homeDir });
+      const binding = reconciled;
       if (binding) {
         // Drop the session binding if it points at a terminal charter so the
         // reminder bus doesn't keep refreshing a dead charter on reload.
@@ -1055,70 +1071,104 @@ export function registerCharterRalphLoop(
     disposeSubs();
   });
   subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
-    const payload = raw as { runId?: string } | undefined;
-    log.debug("event: async-started", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
-    if (payload?.runId) liveAsync.add(payload.runId);
-    cancelPending();
+    try {
+      const payload = raw as { runId?: string } | undefined;
+      log.debug("event: async-started", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
+      if (payload?.runId) liveAsync.add(payload.runId);
+      cancelPending();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn("async-started handler threw", { error: message });
+    }
   }));
   subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
-    const payload = raw as { runId?: string } | undefined;
-    log.debug("event: async-complete", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
-    if (payload?.runId) liveAsync.delete(payload.runId);
+    try {
+      const payload = raw as { runId?: string } | undefined;
+      log.debug("event: async-complete", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
+      if (payload?.runId) liveAsync.delete(payload.runId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn("async-complete handler threw", { error: message });
+    }
   }));
 
   subs.push(pi.events.on(SUBAGENT_ALL_IDLE_EVENT, (_payload: unknown) => {
-    log.info("event: all-idle", { disposed, hasCtx: !!lastCtx, liveAsync: liveAsync.size });
-    const ctx = lastCtx;
-    if (!ctx) {
-      log.warn("all-idle: no lastCtx, dropping");
-      return;
-    }
-    if (disposed) {
-      log.warn("all-idle fired on disposed instance (LEAK)");
-      return;
-    }
-    cancelPending();
+    try {
+      log.info("event: all-idle", { disposed, hasCtx: !!lastCtx, liveAsync: liveAsync.size });
+      const ctx = lastCtx;
+      if (!ctx) {
+        log.warn("all-idle: no lastCtx, dropping");
+        return;
+      }
+      if (disposed) {
+        log.warn("all-idle fired on disposed instance (LEAK)");
+        return;
+      }
+      cancelPending();
     log.debug("all-idle: scheduling reprompt", { debounceMs });
     pendingTimer = setTimeout(() => {
       pendingTimer = undefined;
-      log.info("debounce timer fired", {
-        disposed,
-        rootIdle: ctx.isIdle(),
-        pendingMessages: ctx.hasPendingMessages(),
-        liveAsync: liveAsync.size,
-        msSinceLastSend: Date.now() - lastSentAt,
-      });
-      if (disposed) {
-        log.warn("timer fired on disposed instance (LEAK)");
-        return;
-      }
-      if (!ctx.isIdle()) {
-        log.info("reprompt skipped: root not idle");
-        return;
-      }
-      if (ctx.hasPendingMessages()) {
-        log.info("reprompt skipped: pending user message");
-        return;
-      }
-      if (liveAsync.size > 0) {
-        log.info("reprompt skipped: async subagents running", { count: liveAsync.size });
-        return;
-      }
-      const now = Date.now();
-      if (now - lastSentAt < minIntervalMs) {
-        log.info("reprompt skipped: min interval not elapsed", {
-          elapsedMs: now - lastSentAt,
-          minIntervalMs,
+      // The captured ctx may be stale by now (reload, session swap,
+      // subagent ctx replacement). Wrap every ctx.* call so a stale-ctx
+      // throw is logged as a skipped reprompt instead of crashing the
+      // process via uncaughtException.
+      try {
+        if (disposed) {
+          log.warn("timer fired on disposed instance (LEAK)");
+          return;
+        }
+        let rootIdle: boolean;
+        let pendingMessages: boolean;
+        try {
+          rootIdle = ctx.isIdle();
+          pendingMessages = ctx.hasPendingMessages();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn("reprompt skipped: stale ctx at gate check", { error: message });
+          return;
+        }
+        log.info("debounce timer fired", {
+          disposed,
+          rootIdle,
+          pendingMessages,
+          liveAsync: liveAsync.size,
+          msSinceLastSend: Date.now() - lastSentAt,
         });
-        return;
-      }
-      lastSentAt = now;
-      log.info("SENDING reprompt");
-      void runRalphReprompt(pi, ctx, options, log).catch((error) => {
+        if (!rootIdle) {
+          log.info("reprompt skipped: root not idle");
+          return;
+        }
+        if (pendingMessages) {
+          log.info("reprompt skipped: pending user message");
+          return;
+        }
+        if (liveAsync.size > 0) {
+          log.info("reprompt skipped: async subagents running", { count: liveAsync.size });
+          return;
+        }
+        const now = Date.now();
+        if (now - lastSentAt < minIntervalMs) {
+          log.info("reprompt skipped: min interval not elapsed", {
+            elapsedMs: now - lastSentAt,
+            minIntervalMs,
+          });
+          return;
+        }
+        lastSentAt = now;
+        log.info("SENDING reprompt");
+        void runRalphReprompt(pi, ctx, options, log).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          log.warn("runRalphReprompt threw", { error: message });
+        });
+      } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        log.warn("runRalphReprompt threw", { error: message });
-      });
+        log.warn("ralph debounce timer threw", { error: message });
+      }
     }, debounceMs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn("all-idle handler threw", { error: message });
+    }
   }));
 }
 
@@ -1405,6 +1455,25 @@ export function registerCharterSubagentBridge(pi: ExtensionAPI): void {
     const api = raw as SubagentExposedAPI | undefined;
     if (!api || typeof api.spawnRaw !== "function") return;
     subagentApi = api;
+  }));
+  // Auto-bind participant children via subagent:lineage. The in-process
+  // spawner cannot propagate env vars, so this event is the only way the
+  // charter extension learns the root→child session id mapping.
+  subs.push(pi.events.on(SUBAGENT_LINEAGE_EVENT, (raw: unknown) => {
+    try {
+      const payload = raw as SubagentLineagePayload | undefined;
+      if (!payload?.lineage || payload.lineage.role !== "child") return;
+      const childSid = payload.sessionId ?? undefined;
+      const rootSid = payload.lineage.rootSessionId ?? undefined;
+      if (!childSid || !rootSid) return;
+      void autoBindChildFromLineage({ childSid, rootSid }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("auto-bind child from lineage skipped", { error: message });
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("lineage handler threw", { error: message });
+    }
   }));
 }
 
