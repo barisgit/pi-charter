@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { registerCharterCommands } from "../src/application/registration";
 import type { CharterStatus } from "../src/domain/types";
 import { CharterPickerComponent } from "../src/ui/charter-picker";
+import { DEFAULT_LEFT_FRACTION, LEFT_PANE_CAP, MIN_LEFT_PANE } from "../src/ui/charter-picker-constants";
 import type { CharterListRow, PickerSnapshot } from "../src/ui/picker-snapshot";
 
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
 function leftWidthFor(width: number): number {
-  return Math.max(28, Math.min(50, Math.floor((width - 3) * 0.32)));
+  return Math.max(MIN_LEFT_PANE, Math.min(LEFT_PANE_CAP, Math.round((width - 3) * DEFAULT_LEFT_FRACTION)));
 }
 
 function charter(id: string, overrides: Partial<CharterListRow> = {}): CharterListRow {
@@ -208,6 +209,8 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(left).toMatch(/pgup\/pgdn\s+jump a page/);
     expect(left).toMatch(/g \/ G\s+top \/ end/);
     expect(left).toMatch(/tab\s+switch pane/);
+    expect(left).toMatch(/\[ \/ \]\s+resize split/);
+    expect(left).toMatch(/s\s+toggle sidebar/);
     expect(left).toMatch(/O\s+open charter dir/);
     expect(left).toMatch(/y\s+copy charterId/);
     expect(left).toMatch(/esc\s+close picker/);
@@ -220,6 +223,119 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(bottom).toMatch(/1\/3/);
     expect(bottom).toMatch(/space:fold/);
     expect(bottom).toMatch(/o:obj/);
+  });
+
+  test("VAL-PICKER-RENDER-006: left list hides progress bars and then status under pressure", () => {
+    const picker = makePicker();
+    const mediumLeft = picker.render(120).slice(1, 4).map((line) => leftCell(line, 120)).join("\n");
+    expect(mediumLeft).not.toContain("█");
+    expect(mediumLeft).not.toContain("░");
+    expect(mediumLeft).toMatch(/active/);
+
+    const tight = makePicker({ charters: [
+      charter("done-a", { status: "completed" as CharterStatus, passCount: 10, totalCount: 10 }),
+      charter("done-b", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
+    ] });
+    const tightLeft = tight.render(72).slice(1, 3).map((line) => leftCell(line, 72)).join("\n");
+    expect(tightLeft).not.toContain("█");
+    expect(tightLeft).not.toContain("░");
+    expect(tightLeft).toMatch(/10\/10/);
+    expect(tightLeft).not.toMatch(/completed|abandoned/);
+  });
+
+  test("VAL-PICKER-NAV-004: arrow keys mirror j/k without legend entries", () => {
+    const picker = makePicker({ height: 8 });
+    picker.render(80);
+    picker.handleInput("\u001b[B");
+    expect((picker as any).cursorIndex).toBe(1);
+    picker.handleInput("\u001b[A");
+    expect((picker as any).cursorIndex).toBe(0);
+
+    picker.handleInput("\t");
+    picker.handleInput("\u001b[B");
+    expect((picker as any).rightScrollLine).toBeGreaterThan(0);
+    picker.handleInput("\u001b[A");
+    expect((picker as any).rightScrollLine).toBe(0);
+
+    const left = picker.render(160).slice(1, -1).map((line) => leftCell(line, 160)).join("\n");
+    expect(left).not.toMatch(/up|down|arrow/i);
+  });
+
+  test("VAL-PICKER-RENDER-007: top border stays aligned at minimum left split", () => {
+    const picker = makePicker({ charters: [
+      charter("depth2-smoke", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
+      charter("autobind-smoke", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
+      charter("subagent-binding", { status: "completed" as CharterStatus, passCount: 6, totalCount: 6 }),
+    ] });
+    let lines = picker.render(120);
+    for (let i = 0; i < 8; i++) picker.handleInput("[");
+    lines = picker.render(120);
+    const bodyDivider = lines[1]!.indexOf("│", 1);
+    expect(lines[0]!.length).toBe(120);
+    expect(lines[0]![bodyDivider]).toBe("┬");
+    expect(lines[0]!.slice(1, bodyDivider)).not.toContain("active /");
+  });
+
+  test("VAL-PICKER-RENDER-008: right pane uses available space for evidence and wraps fields", () => {
+    const manyEvidence = Array.from({ length: 8 }, (_, i) => ({
+      ts: `2026-05-15T09:${String(10 + i).padStart(2, "0")}:00.000Z`,
+      criterionId: `VAL-LONG-${i}`,
+      outcome: "pass" as const,
+      recordedBy: `subagent:charter-verifier:session-${i}`,
+    }));
+    const longCriterion = "A very long criterion title that should wrap instead of disappearing past the right border";
+    const picker = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", {
+      planTree: [{ milestoneId: "m1", features: [{
+        featureId: "f1-long-wrap",
+        status: "completed",
+        passCount: 1,
+        totalCount: 1,
+        criteria: [{ criterionId: "VAL-WRAP", titleFromH3: longCriterion, outcome: "pass" }],
+      }] }],
+      recentEvidence: manyEvidence,
+    })]]) });
+    picker.handleInput("\t");
+    picker.handleInput(" ");
+    const right = picker.render(120).slice(1, -1).map((line) => rightCell(line, 120)).join("\n");
+    expect(right.match(/VAL-LONG-/g)?.length).toBeGreaterThan(5);
+    expect(right).toContain("charter-verifier:session-0");
+    expect(right).toContain("disappearing past");
+  });
+
+  test("VAL-PICKER-NAV-005: s collapses and restores the sidebar", () => {
+    const picker = makePicker();
+    const expanded = picker.render(100);
+    const expandedDivider = expanded[1]!.indexOf("│", 1);
+    expect(expandedDivider).toBeGreaterThan(1);
+    picker.handleInput("s");
+    const collapsed = picker.render(100);
+    expect(collapsed[1]!.indexOf("│", 1)).toBe(99);
+    expect((picker as any).focus).toBe("right");
+    picker.handleInput("s");
+    const restored = picker.render(100);
+    expect(restored[1]!.indexOf("│", 1)).toBe(expandedDivider);
+  });
+
+  test("VAL-PICKER-NAV-006: bracket keys resize split using last rendered width", () => {
+    const picker = makePicker();
+    let lines = picker.render(80);
+    const dividerIndex = (rendered: string[]) => rendered[1]!.indexOf("│", 1);
+    const initial = dividerIndex(lines);
+
+    picker.handleInput("[");
+    lines = picker.render(80);
+    expect(dividerIndex(lines)).toBeLessThan(initial);
+
+    picker.handleInput("]");
+    lines = picker.render(80);
+    expect(dividerIndex(lines)).toBe(initial);
+
+    const wide = makePicker();
+    lines = wide.render(160);
+    const wideInitial = dividerIndex(lines);
+    for (let i = 0; i < 8; i++) wide.handleInput("]");
+    lines = wide.render(160);
+    expect(dividerIndex(lines)).toBeGreaterThan(wideInitial);
   });
 
   test("VAL-PICKER-WIRE-001: bare /charters opens top-left fullscreen overlay", async () => {

@@ -1,7 +1,30 @@
 import { spawn } from "node:child_process";
-import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { CharterStatus } from "../domain/types";
+import {
+  BANNED_PRINTABLE,
+  DEFAULT_LEFT_FRACTION,
+  FLASH_TTL_RENDERS,
+  LEFT_FOOTER,
+  LEFT_PANE_CAP,
+  LEFT_ROW_BAR_MIN_NAME_W,
+  LEFT_ROW_BAR_W,
+  LEFT_ROW_COUNT_W,
+  LEFT_ROW_GAP_BAR_COUNT,
+  LEFT_ROW_GAP_COUNT_STATUS,
+  LEFT_ROW_MIN_NAME_W,
+  LEFT_ROW_PREFIX_W,
+  LEGEND_ENTRIES,
+  LEGEND_KEY_W,
+  MIN_LEFT_PANE,
+  MIN_RIGHT_PANE,
+  PAGE_SIZE,
+  RIGHT_FOOTER,
+  RIGHT_PANE_HINT,
+  SPLIT_STEP_COLS,
+  TERMINAL_STATUSES,
+} from "./charter-picker-constants";
 import type { CharterListRow, PickerSnapshot, PlanCriterionNode, PlanFeatureNode } from "./picker-snapshot";
 
 interface ThemeLike {
@@ -27,33 +50,6 @@ export interface CharterPickerOptions {
   host?: PickerHostHooks;
 }
 
-const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
-  "completed",
-  "abandoned",
-  "budget_limited",
-]);
-
-// Shared legend lives in the left pane's third section. Only the keys that work
-// regardless of focus belong here; pane-specific keys (`space`, `o`) go in the
-// right pane's bottom-border footer so users see them where they apply.
-const LEGEND_ENTRIES: ReadonlyArray<readonly [string, string]> = [
-  ["j/k",        "move cursor"],
-  ["pgup/pgdn",  "jump a page"],
-  ["g / G",      "top / end"],
-  ["tab",        "switch pane"],
-  ["O",          "open charter dir"],
-  ["y",          "copy charterId"],
-  ["esc",        "close picker"],
-];
-const LEGEND_KEY_W = 10;
-// Right-pane-only keybind hint, embedded in the right bottom-border segment.
-const RIGHT_PANE_HINT = "space:fold  o:obj";
-const LEFT_FOOTER = "j/k  pgup/pgdn  g/G  esc";
-const RIGHT_FOOTER = "j/k  space:fold  o:obj  O:dir  y:id";
-const PAGE_SIZE = 10;
-const BANNED_PRINTABLE = new Set(["b", "r", "p", "a", "c"]);
-const FLASH_TTL_RENDERS = 6;
-
 export class CharterPickerComponent implements Component {
   private readonly charters: CharterListRow[];
   private readonly snapshots: Map<string, PickerSnapshot>;
@@ -67,8 +63,11 @@ export class CharterPickerComponent implements Component {
   private allExpanded = false;
   private objectiveExpanded = false;
   private rightScrollLine = 0;
+  private splitFraction = DEFAULT_LEFT_FRACTION;
+  private sidebarCollapsed = false;
   private finished = false;
   private lastRightMaxScroll = 0;
+  private lastRenderWidth = 120;
   private flashMessage: { text: string; kind: "info" | "warning" | "error"; rendersLeft: number } | null = null;
 
   constructor(opts: CharterPickerOptions) {
@@ -88,13 +87,28 @@ export class CharterPickerComponent implements Component {
 
   render(width: number): string[] {
     const totalWidth = Math.max(3, Math.floor(width));
+    this.lastRenderWidth = totalWidth;
     const height = Math.max(2, Math.floor(this.heightProvider()));
-    const interiorWidth = Math.max(0, totalWidth - 3);
-    let leftWidth = clamp(Math.floor(interiorWidth * 0.32), 28, 50);
-    if (leftWidth > interiorWidth) leftWidth = interiorWidth;
-    const rightWidth = interiorWidth - leftWidth;
-    // Top + bottom rows carry titles (widget-style).
     const bodyHeight = Math.max(0, height - 2);
+    const cursor = this.charters[this.cursorIndex];
+    const snapshot = cursor ? this.snapshots.get(cursor.charterId) : undefined;
+
+    if (this.sidebarCollapsed) {
+      const rightWidth = Math.max(1, totalWidth - 2);
+      const rightContent = this.buildRightPane(rightWidth, bodyHeight);
+      this.lastRightMaxScroll = Math.max(0, rightContent.length - bodyHeight);
+      this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
+      const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + bodyHeight);
+      const rows: string[] = [this.singleTopBorder(rightWidth, snapshot)];
+      for (let i = 0; i < bodyHeight; i++) rows.push(this.singleBodyRow(rightVisible[i] ?? "", rightWidth));
+      rows.push(this.singleBottomBorder(rightWidth));
+      return rows.map((line) => padRight(line, totalWidth));
+    }
+
+    const interiorWidth = Math.max(0, totalWidth - 3);
+    const leftWidth = this.computeLeftWidth(totalWidth);
+    const rightWidth = Math.max(0, interiorWidth - leftWidth);
+    // Top + bottom rows carry titles (widget-style).
     // Left pane has three stacked sections: list (top) / info (middle) / legend
     // (bottom). Each pair is separated by one flatRule divider row. Info and
     // legend size to their actual content so there's no padding gap above the
@@ -105,9 +119,6 @@ export class CharterPickerComponent implements Component {
     const infoHeight = clamp(infoContent.length, 3, 14);
     const listHeight = Math.max(1, bodyHeight - infoHeight - legendHeight - 2); // -2 for two dividers
 
-    const cursor = this.charters[this.cursorIndex];
-    const snapshot = cursor ? this.snapshots.get(cursor.charterId) : undefined;
-
     // Tick down the flash message lifetime once per render.
     if (this.flashMessage) {
       this.flashMessage.rendersLeft -= 1;
@@ -115,7 +126,7 @@ export class CharterPickerComponent implements Component {
     }
 
     const listContent = this.buildLeftPane(leftWidth);
-    const rightContent = this.buildRightPane(rightWidth);
+    const rightContent = this.buildRightPane(rightWidth, bodyHeight);
     this.lastRightMaxScroll = Math.max(0, rightContent.length - bodyHeight);
     this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
     const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + bodyHeight);
@@ -159,22 +170,12 @@ export class CharterPickerComponent implements Component {
       this.focus = this.focus === "left" ? "right" : "left";
       return;
     }
-    if (matchesPrintable(data, "j")) {
-      if (this.focus === "left") {
-        this.cursorIndex = Math.min(Math.max(0, this.charters.length - 1), this.cursorIndex + 1);
-        this.rightScrollLine = 0;
-      } else {
-        this.rightScrollLine = clamp(this.rightScrollLine + 1, 0, this.lastRightMaxScroll);
-      }
+    if (matchesPrintable(data, "j") || matchesKey(data, "down") || data === "\u001b[B") {
+      this.moveVertical(1);
       return;
     }
-    if (matchesPrintable(data, "k")) {
-      if (this.focus === "left") {
-        this.cursorIndex = Math.max(0, this.cursorIndex - 1);
-        this.rightScrollLine = 0;
-      } else {
-        this.rightScrollLine = Math.max(0, this.rightScrollLine - 1);
-      }
+    if (matchesPrintable(data, "k") || matchesKey(data, "up") || data === "\u001b[A") {
+      this.moveVertical(-1);
       return;
     }
     if (matchesKey(data, "space") && this.focus === "right") {
@@ -185,6 +186,19 @@ export class CharterPickerComponent implements Component {
     if (matchesPrintable(data, "o") && this.focus === "right") {
       this.objectiveExpanded = !this.objectiveExpanded;
       this.rightScrollLine = 0;
+      return;
+    }
+    if (matchesPrintable(data, "s")) {
+      this.sidebarCollapsed = !this.sidebarCollapsed;
+      if (this.sidebarCollapsed) this.focus = "right";
+      return;
+    }
+    if (matchesPrintable(data, "[")) {
+      this.shiftSplit(-1);
+      return;
+    }
+    if (matchesPrintable(data, "]")) {
+      this.shiftSplit(1);
       return;
     }
     if (matchesKey(data, "pageDown")) {
@@ -379,31 +393,70 @@ export class CharterPickerComponent implements Component {
     const cursorMark = isCursor ? this.color("accent", "►") : " ";
     const boundMark = row.charterId === this.boundCharterId ? this.color("accent", "*") : " ";
     const prefix = `${cursorMark}${boundMark} `;
-    const PREFIX_W = 3;
-    const BAR_W = 8;
-    const COUNT_W = 7; // fits up to "999/999"
-    const GAP_BAR_COUNT = 1;
-    const GAP_COUNT_STATUS = 2;
     const STATUS_W = Math.max(6, Math.min(10, Math.max(...this.charters.map((r) => r.status.length))));
-    let nameWidth = width - PREFIX_W - BAR_W - GAP_BAR_COUNT - COUNT_W - GAP_COUNT_STATUS - STATUS_W;
-    if (nameWidth < 4) nameWidth = Math.max(0, width - PREFIX_W - BAR_W - GAP_BAR_COUNT - COUNT_W - GAP_COUNT_STATUS);
+    const countText = `${row.passCount}/${row.totalCount}`;
+    const countPadded = countText.padStart(LEFT_ROW_COUNT_W);
+    const count = this.color(this.passCountColor(row.passCount, row.totalCount), countPadded);
+    const fixedWithBar = LEFT_ROW_PREFIX_W + LEFT_ROW_BAR_W + LEFT_ROW_GAP_BAR_COUNT + LEFT_ROW_COUNT_W + LEFT_ROW_GAP_COUNT_STATUS + STATUS_W;
+    const fixedWithoutBar = LEFT_ROW_PREFIX_W + LEFT_ROW_COUNT_W + LEFT_ROW_GAP_COUNT_STATUS + STATUS_W;
+    const fixedWithoutStatus = LEFT_ROW_PREFIX_W + LEFT_ROW_COUNT_W;
+    const showBar = width - fixedWithBar >= LEFT_ROW_BAR_MIN_NAME_W;
+    const showStatus = !showBar && width - fixedWithoutBar >= LEFT_ROW_MIN_NAME_W;
+    const nameWidth = Math.max(0, width - (showBar ? fixedWithBar : showStatus ? fixedWithoutBar : fixedWithoutStatus));
     const nameText = row.name.length > nameWidth
       ? clipText(`${row.name.slice(0, Math.max(0, nameWidth - 1))}…`, nameWidth)
       : row.name;
     const namePart = padRight(nameText, nameWidth);
     const styledName = dim ? this.color("dim", namePart) : (isCursor ? this.theme.bold(namePart) : namePart);
-    const bar = dim
-      ? this.color("dim", progressBar(row.passCount, row.totalCount, BAR_W))
-      : this.coloredBar(row.passCount, row.totalCount, BAR_W);
-    const countText = `${row.passCount}/${row.totalCount}`;
-    const countPadded = countText.padStart(COUNT_W);
-    const count = this.color(this.passCountColor(row.passCount, row.totalCount), countPadded);
-    const statusRaw = clipText(row.status, STATUS_W);
-    const status = this.color(statusColor(row.status), statusRaw);
-    return `${prefix}${styledName}${bar} ${count}  ${status}`;
+    const bar = showBar
+      ? dim
+        ? this.color("dim", progressBar(row.passCount, row.totalCount, LEFT_ROW_BAR_W))
+        : this.coloredBar(row.passCount, row.totalCount, LEFT_ROW_BAR_W)
+      : "";
+    const barPart = showBar ? `${bar}${" ".repeat(LEFT_ROW_GAP_BAR_COUNT)}` : "";
+    const statusPart = showStatus || showBar
+      ? `${" ".repeat(LEFT_ROW_GAP_COUNT_STATUS)}${this.color(statusColor(row.status), clipText(row.status, STATUS_W))}`
+      : "";
+    return clipStyled(`${prefix}${styledName}${barPart}${count}${statusPart}`, width);
   }
 
-  private buildRightPane(width: number): string[] {
+  private computeLeftWidth(totalWidth: number): number {
+    const interiorWidth = Math.max(0, totalWidth - 3);
+    if (interiorWidth <= 0) return 0;
+    const raw = Math.round(interiorWidth * this.splitFraction);
+    const capped = Math.min(LEFT_PANE_CAP, Math.max(0, interiorWidth - MIN_RIGHT_PANE));
+    const maxLeft = capped > 0 ? capped : interiorWidth;
+    const minLeft = Math.min(MIN_LEFT_PANE, maxLeft);
+    return clamp(raw, minLeft, maxLeft);
+  }
+
+  private shiftSplit(direction: -1 | 1): void {
+    const totalWidth = this.lastRenderWidth;
+    const currentLeft = this.computeLeftWidth(totalWidth);
+    const interiorWidth = Math.max(1, totalWidth - 3);
+    const targetLeft = currentLeft + (direction * SPLIT_STEP_COLS);
+    const next = clamp(targetLeft / interiorWidth, 0.2, 0.7);
+    const previous = this.splitFraction;
+    this.splitFraction = next;
+    if (this.computeLeftWidth(totalWidth) === currentLeft) {
+      this.splitFraction = previous;
+    }
+  }
+
+  private moveVertical(direction: -1 | 1): void {
+    if (this.focus === "left") {
+      this.cursorIndex = direction > 0
+        ? Math.min(Math.max(0, this.charters.length - 1), this.cursorIndex + 1)
+        : Math.max(0, this.cursorIndex - 1);
+      this.rightScrollLine = 0;
+    } else {
+      this.rightScrollLine = direction > 0
+        ? clamp(this.rightScrollLine + 1, 0, this.lastRightMaxScroll)
+        : Math.max(0, this.rightScrollLine - 1);
+    }
+  }
+
+  private buildRightPane(width: number, bodyHeight: number): string[] {
     if (width <= 0) return [];
     const row = this.charters[this.cursorIndex];
     if (!row) return [this.color("dim", "No charters.")];
@@ -469,9 +522,9 @@ export class CharterPickerComponent implements Component {
     for (const milestone of snapshot.planTree) {
       lines.push(`  ${this.theme.bold(this.color("text", milestone.milestoneId))}`);
       for (const feature of milestone.features) {
-        lines.push(this.featureLine(feature));
+        lines.push(...this.featureLines(feature, width));
         if (this.allExpanded) {
-          for (const criterion of feature.criteria) lines.push(this.criterionLine(criterion));
+          for (const criterion of feature.criteria) lines.push(...this.criterionLines(criterion, width));
         }
       }
     }
@@ -479,15 +532,11 @@ export class CharterPickerComponent implements Component {
     // Recent evidence section.
     lines.push("");
     lines.push(sectionHeading("Recent evidence"));
-    const MAX_EVIDENCE = 5;
-    const evidenceShown = snapshot.recentEvidence.slice(0, MAX_EVIDENCE);
-    for (const evidence of evidenceShown) {
-      const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
-      const outcome = this.color(outcomeColor, evidence.outcome.padEnd(7));
-      lines.push(`${this.color("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}  ${this.color("dim", evidence.recordedBy)}`);
-    }
-    if (snapshot.recentEvidence.length > MAX_EVIDENCE) {
-      lines.push(this.color("dim", `… +${snapshot.recentEvidence.length - MAX_EVIDENCE} more`));
+    const remainingRows = Math.max(5, bodyHeight - lines.length - 1);
+    const evidenceShown = snapshot.recentEvidence.slice(0, Math.max(5, remainingRows));
+    for (const evidence of evidenceShown) lines.push(...this.evidenceLines(evidence, width));
+    if (snapshot.recentEvidence.length > evidenceShown.length) {
+      lines.push(this.color("dim", `… +${snapshot.recentEvidence.length - evidenceShown.length} more`));
     }
     return lines;
   }
@@ -500,26 +549,45 @@ export class CharterPickerComponent implements Component {
     return this.color(filledColor, "█".repeat(filled)) + this.color("dim", "░".repeat(empty));
   }
 
-  private featureLine(feature: PlanFeatureNode): string {
+  private featureLines(feature: PlanFeatureNode, width: number): string[] {
     const glyph = feature.status === "completed"
       ? this.color("success", "✓")
       : feature.status === "in_progress"
         ? this.color("accent", "●")
         : this.color("dim", "○");
-    const bar = this.coloredBar(feature.passCount, feature.totalCount, 4);
+    const bar = width >= 44 ? `${this.coloredBar(feature.passCount, feature.totalCount, 4)} ` : "";
     const statusWord = this.color(featureStatusColor(feature.status), feature.status);
     const counter = this.color(this.passCountColor(feature.passCount, feature.totalCount), `${feature.passCount}/${feature.totalCount}`);
-    return `    ${glyph} ${feature.featureId.padEnd(12)} ${bar} ${counter}  ${statusWord}`;
+    return [`    ${glyph} ${feature.featureId.padEnd(12)} ${bar}${counter}  ${statusWord}`];
   }
 
-  private criterionLine(criterion: PlanCriterionNode): string {
+  private criterionLines(criterion: PlanCriterionNode, width: number): string[] {
     const glyph = criterion.outcome === "pass"
       ? this.color("success", "✓")
       : criterion.outcome === "fail"
         ? this.color("error", "✗")
         : this.color("dim", "○");
-    const title = criterion.titleFromH3 ? `  ${criterion.titleFromH3}` : "";
-    return `        ${glyph} ${criterion.criterionId}${title}`;
+    const head = `        ${glyph} ${criterion.criterionId}`;
+    if (!criterion.titleFromH3) return [head];
+    const titleWidth = Math.max(8, width - visibleWidth(head) - 2);
+    const wrapped = wrapText(criterion.titleFromH3, titleWidth);
+    return [
+      `${head}  ${wrapped[0] ?? ""}`,
+      ...wrapped.slice(1).map((line) => `          ${line}`),
+    ];
+  }
+
+  private evidenceLines(evidence: PickerSnapshot["recentEvidence"][number], width: number): string[] {
+    const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
+    const outcome = this.color(outcomeColor, evidence.outcome.padEnd(7));
+    const prefix = `${this.color("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}`;
+    const by = compactRecordedBy(evidence.recordedBy);
+    const byWidth = Math.max(8, width - visibleWidth(prefix) - 2);
+    const wrapped = wrapText(by, byWidth);
+    return [
+      `${prefix}  ${this.color("dim", wrapped[0] ?? "")}`,
+      ...wrapped.slice(1).map((line) => this.color("dim", `                            ${line}`)),
+    ];
   }
 
   private topBorder(leftWidth: number, rightWidth: number, snapshot: PickerSnapshot | undefined): string {
@@ -566,6 +634,30 @@ export class CharterPickerComponent implements Component {
     return `${corner("╭")}${leftSegment}${corner("┬")}${rightSegment}${corner("╮")}`;
   }
 
+  private singleTopBorder(rightWidth: number, snapshot: PickerSnapshot | undefined): string {
+    const label = snapshot?.header.name ?? "(no selection)";
+    const corner = (s: string) => this.color("dim", s);
+    return `${corner("╭")}${this.titledTopSegment({
+      width: rightWidth,
+      label,
+      labelColor: "accent",
+      labelBold: true,
+    })}${corner("╮")}`;
+  }
+
+  private singleBottomBorder(rightWidth: number): string {
+    const hint = this.lastRightMaxScroll > 0
+      ? `${RIGHT_PANE_HINT}  ${this.rightScrollLine}/${this.lastRightMaxScroll}`
+      : RIGHT_PANE_HINT;
+    const corner = (s: string) => this.color("dim", s);
+    return `${corner("╰")}${this.titledBottomSegment(rightWidth, hint, true)}${corner("╯")}`;
+  }
+
+  private singleBodyRow(right: string, rightWidth: number): string {
+    const v = this.color("dim", "│");
+    return `${v}${padRight(clipStyled(right, rightWidth), rightWidth)}${v}`;
+  }
+
   private bottomBorder(leftWidth: number, rightWidth: number): string {
     // Left bottom carries only the cursor position (the shared legend covers the
     // keys). Right bottom carries the right-pane-only keybinds plus, when
@@ -593,21 +685,28 @@ export class CharterPickerComponent implements Component {
     tailColor?: ThemeColorName;
     labelBold?: boolean;
   }): string {
+    const width = Math.max(0, opts.width);
     const dash = (n: number) => this.color("dim", "─".repeat(Math.max(0, n)));
-    const labelText = clipText(opts.label, Math.max(0, opts.width - 6));
+    if (width <= 0) return "";
+    if (width <= 2) return dash(width);
+
+    const tailPlain = opts.tailPlain ?? opts.tail ?? "";
+    const tailRendered = opts.tailRendered ?? (opts.tail !== undefined ? this.color(opts.tailColor ?? "dim", opts.tail) : "");
+    const tailLen = visibleWidth(tailPlain);
+    const canShowTail = tailLen > 0 && width - tailLen >= 14;
+    const labelBudget = Math.max(0, width - (canShowTail ? tailLen + 6 : 4));
+    const labelText = clipText(opts.label, labelBudget);
+    const labelLen = visibleWidth(labelText);
+    if (labelLen === 0) return dash(width);
     const labelStyled = opts.labelBold
       ? this.theme.bold(this.color(opts.labelColor, labelText))
       : this.color(opts.labelColor, labelText);
-    const tailPlain = opts.tailPlain ?? opts.tail ?? "";
-    const tailRendered = opts.tailRendered ?? (opts.tail !== undefined ? this.color(opts.tailColor ?? "dim", opts.tail) : "");
-    const labelLen = visibleWidth(labelText);
-    const tailLen = visibleWidth(tailPlain);
-    const fixedCost = 1 + 1 + labelLen + 1 + 1 + tailLen + (tailLen > 0 ? 1 : 0) + 1;
-    const fillDashes = Math.max(1, opts.width - fixedCost);
-    if (tailLen > 0) {
-      return `${dash(1)} ${labelStyled} ${dash(fillDashes)} ${tailRendered} ${dash(1)}`;
+    if (canShowTail) {
+      const fillDashes = Math.max(1, width - labelLen - tailLen - 6);
+      return clipStyled(`${dash(1)} ${labelStyled} ${dash(fillDashes)} ${tailRendered} ${dash(1)}`, width);
     }
-    return `${dash(1)} ${labelStyled} ${dash(fillDashes + 2)}${dash(1)}`;
+    const fillDashes = Math.max(1, width - labelLen - 3);
+    return clipStyled(`${dash(1)} ${labelStyled} ${dash(fillDashes)}`, width);
   }
 
   private titledBottomSegment(width: number, hint: string, focused: boolean): string {
@@ -629,7 +728,9 @@ export class CharterPickerComponent implements Component {
   private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
     // All borders are uniformly dim to match the embedded title dashes + the glance widget.
     const v = this.color("dim", "│");
-    return `${v}${padRight(left, leftWidth)}${v}${padRight(right, rightWidth)}${v}`;
+    const leftCell = padRight(clipStyled(left, leftWidth), leftWidth);
+    const rightCell = padRight(clipStyled(right, rightWidth), rightWidth);
+    return `${v}${leftCell}${v}${rightCell}${v}`;
   }
 
   private color(color: ThemeColorName, text: string): string {
@@ -696,9 +797,15 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function padRight(text: string, width: number): string {
-  const clipped = visibleWidth(text) > width ? clipText(text, width) : text;
+  const clipped = visibleWidth(text) > width ? clipStyled(text, width) : text;
   const pad = Math.max(0, width - visibleWidth(clipped));
   return clipped + " ".repeat(pad);
+}
+
+function clipStyled(text: string, width: number): string {
+  if (width <= 0) return "";
+  if (!text.includes("\u001b[")) return clipText(text, width);
+  return truncateToWidth(text, width, "");
 }
 
 function clipText(text: string, width: number): string {
@@ -760,6 +867,13 @@ function wrapText(text: string, width: number): string[] {
     if (line) out.push(line);
   }
   return out.length > 0 ? out : [""];
+}
+
+function compactRecordedBy(recordedBy: string): string {
+  return recordedBy
+    .replace(/^subagent:charter-verifier:/, "charter-verifier:")
+    .replace(/^subagent:/, "")
+    .replace(/^agent:/, "");
 }
 
 function formatElapsed(ms: number): string {
