@@ -1,0 +1,16 @@
+{
+  "kind": "review",
+  "featureId": "f10-named-test-helper",
+  "round": 1,
+  "reviewedAt": "2026-05-21T21:00:00Z",
+  "subagentSessionId": "charter-reviewer-m1-schema-f10",
+  "outcome": "pass",
+  "blockingIssues": [],
+  "nonBlockingNotes": [
+    "1-arg invocation form (phrase only, no file) is undocumented and untested — additive, no spec violation.",
+    "set +e/set -e guards around bun invocation are correct pattern for exit-code capture."
+  ],
+  "summary": "Script correctly guards 0-match, fail, and missing-args cases. All 4 plan-anchored test names present and passing (4/4, 11 assertions).",
+  "because": "charter-named-test.sh awk parsing for pass/fail counts confirmed correct. Failure check precedes zero-match check — correct ordering. Fixtures are real. Test names verbatim-match plan anchors.",
+  "narrativePath": "review.md"
+}

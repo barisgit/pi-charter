@@ -1,0 +1,18 @@
+{
+  "kind": "review",
+  "charterId": "a252b21d-9451-4dda-af1d-f7b02bd22b7f",
+  "featureId": "f11-planner-critic-rewrite",
+  "criterionId": "VAL-PLANNER-CRITIC-REWRITE",
+  "outcome": "pass",
+  "blocking": [],
+  "notes": [
+    "(a) Depth-grading rubric: PASS. agents/charter-planner-critic.md lines 113-133 have full rubric; >=1 happy + >=1 edge requirement stated; BLOCK validation-underspecified for zero edge. Tests 'critic flags feature with zero edge checks as validation-underspecified' and 'critic mandates >=1 happy + >=1 edge per feature' pass.",
+    "(b) validation-underspecified verdict shape: PASS. Shape {kind:'validation-underspecified', featureId, missing:[...]} at agent lines 124-125 and 169. Test 'critic flags shallow plan with validation-underspecified entry' passes.",
+    "(c) Verifier-robustness + grandfather clause: PASS. [BLOCK] verifier-not-robust for schemaVersion >= 2.2, [ADVISORY] verifier-not-robust + grandfathered for schemaVersion < 2.2. Tests 'critic flags bun test -t without charter-named-test.sh wrapper for post-f10 plans' and 'critic grandfathers pre-f10 plans for bun-test rule as ADVISORY not BLOCK' pass.",
+    "(d) Touch-overlap detection: PASS. ### Touch-overlap detection at agent lines 146-151. Test 'critic documents touch-overlap detection rule' greps for Touch-overlap detection, touches[], BLOCK obvious conflicting — passes.",
+    "(e) review:skip audit: PASS. ### review:skip audit at agent lines 154-157. Test 'critic documents review skip-list audit rule' greps for review:skip audit, review: skip, concrete rationale — passes.",
+    "All 6 spec-named -t filter phrases now match exactly 1 test each (verified). All 10 tests pass, 0 fail.",
+    "Prior review (2026-05-21T20-56-54-000Z) found 3 blockers: test name mismatches, missing touch-overlap tests, missing review-skip tests. All fixed in tests/v21-planner-critic-rewrite.test.ts."
+  ],
+  "artifacts": ["review.json", "review.md"]
+}

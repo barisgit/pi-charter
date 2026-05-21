@@ -1,0 +1,39 @@
+{
+  "kind": "review",
+  "charterId": "a252b21d-9451-4dda-af1d-f7b02bd22b7f",
+  "featureId": "f11-planner-critic-rewrite",
+  "criterionId": "VAL-PLANNER-CRITIC-REWRITE",
+  "outcome": "fail",
+  "blocking": [
+    {
+      "path": "tests/v21-planner-critic-rewrite.test.ts",
+      "line": 1,
+      "summary": "All 6 spec-named check phrases (from plan/f11-planner-critic-rewrite.md ### Happy and ### Edge sections) match 0 tests in the test file. Every `bun test -t '<phrase>'` verifier command in the spec exits non-zero (0-match error). The test names shipped are completely different from the names the spec mandates. Without charter-named-test.sh protection these would silently pass; with it they correctly fail — but the real issue is the test names were never written."
+    },
+    {
+      "path": "tests/v21-planner-critic-rewrite.test.ts",
+      "line": 1,
+      "summary": "Touch-overlap detection: agents/charter-planner-critic.md has the ### Touch-overlap detection section (lines 146-151) but no test in v21-planner-critic-rewrite.test.ts greps for any touch-overlap keyword (touches, touch-overlap, Touch-overlap). Spec mandate (d) requires the test suite to cover this rule."
+    },
+    {
+      "path": "tests/v21-planner-critic-rewrite.test.ts",
+      "line": 1,
+      "summary": "review:skip audit: agents/charter-planner-critic.md has the ### review:skip audit section (lines 154-157) but no test in v21-planner-critic-rewrite.test.ts greps for any review-skip keyword. Spec mandate (e) requires the test suite to cover this rule."
+    }
+  ],
+  "notes": [
+    "Mandate (a) PASS: depth-grading rubric fully present in agent prompt (lines 113-133). ≥1 happy + ≥1 edge requirement, count happy/edge checks, validation-depth grading, BLOCK validation-underspecified for zero edge. Tests at lines 29-33 and 61-66 grep correctly.",
+    "Mandate (b) PASS: validation-underspecified verdict shape documented at agent lines 124-125 and 168-169 with correct JSON shape. Tests at lines 54-58 grep for both required strings.",
+    "Mandate (c) PASS: verifier-robustness rule at agent lines 80-93. [BLOCK] for post-f10, [ADVISORY] + grandfather clause for pre-f10. schemaVersion >= 2.2 and schemaVersion < 2.2 both present. Tests at lines 36-43 and 44-51 cover all required strings.",
+    "Mandate (d) PARTIAL: touch-overlap detection is documented in agent prompt (lines 146-151) but has zero test coverage.",
+    "Mandate (e) PARTIAL: review:skip audit is documented in agent prompt (lines 154-157) but has zero test coverage.",
+    "All 6 existing tests pass (bun test ran cleanly, 6 pass, 0 fail). The issue is test name mismatch with spec-defined check names and missing coverage for mandates d and e.",
+    "Spec check 'critic-returns-verdict-on-shallow-plan' requires test named 'critic flags shallow plan with validation-underspecified entry' — not present.",
+    "Spec check 'critic-flags-bun-test-without-helper' requires test named 'critic flags bun test -t without charter-named-test.sh wrapper for post-f10 plans' — not present.",
+    "Spec check 'critic-flags-unverifier-backed-verification-prose' requires test named 'critic flags Verification prose not backed by VAL' — not present.",
+    "Spec check 'critic-passes-well-specified-plan' requires test named 'critic passes well-specified plan with no validation-underspecified' — not present.",
+    "Spec check 'critic-flags-feature-with-zero-edge-checks' requires test named 'critic flags feature with zero edge checks as validation-underspecified' — not present (existing test is named 'critic flags feature with zero edge checks' — close but missing suffix).",
+    "Spec check 'critic-grandfathers-pre-f10-plans' requires test named 'critic grandfathers pre-f10 plans for bun-test rule as ADVISORY not BLOCK' — not present (existing test named 'critic grandfathers pre-f10 plans on verifier-robustness')."
+  ],
+  "artifacts": ["review.json", "review.md"]
+}

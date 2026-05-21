@@ -1,0 +1,17 @@
+{
+  "kind": "review",
+  "featureId": "f3-md-companions",
+  "round": 1,
+  "reviewedAt": "2026-05-21T20:55:58Z",
+  "subagentSessionId": "charter-reviewer-m2-companions",
+  "outcome": "pass",
+  "blockingIssues": [],
+  "nonBlockingNotes": [
+    "Spec Validation commands reference tests/v21-md-companion.test.ts (singular) but actual file is tests/v21-md-companions.test.ts (plural); criterion Command: in charter.md would fail verbatim.",
+    "validateNarrativePath() does not reject '../' traversal at schema level; only the import-time validateNarrativeCompanionPath() blocks it. Consistent with lazy-check design but worth noting.",
+    "No test covers JSON-only evidence (missing sibling .md); spec says it is valid; implementation handles it correctly but test coverage for that path is absent."
+  ],
+  "summary": "All five spec requirements (optional relative narrativePath, absolute rejection, outside-dir rejection, deep-dir round-trip, both qa.md and review.md) verified by code inspection and 6/6 tests green.",
+  "because": "Code reading confirms schema optional field on all four evidence kinds, correct relative-path validation logic, and sibling auto-detection for both qa and review kinds. Test suite runs 6 pass 0 fail with 17 assertions.",
+  "narrativePath": "review.md"
+}
