@@ -239,6 +239,7 @@ function normalizeCharterState(value: unknown): CharterState {
     budget: typeof raw.budget === "object" && raw.budget ? (raw.budget as Budget) : undefined,
     previousStatus: isStatus(raw.previousStatus) ? raw.previousStatus : undefined,
     clarificationNote: typeof raw.clarificationNote === "string" ? raw.clarificationNote : undefined,
+    unansweredClarification: typeof raw.unansweredClarification === "boolean" ? raw.unansweredClarification : undefined,
     completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
     completionReason: typeof raw.completionReason === "string" ? raw.completionReason : undefined,

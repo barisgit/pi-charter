@@ -12,6 +12,7 @@ import { TERMINAL_STATUSES, type Budget, type CharterCriterion, type CharterStat
 import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
+import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
 
 export type { NextAction };
 
@@ -27,6 +28,8 @@ export interface BlockingForCompleteEntry {
   criterionId: string;
   /** Short human-readable reason consumed by `formatCharterStatusText`. */
   reason: string;
+  featureId?: string;
+  probeResult?: ReadinessProbeResult;
 }
 
 export interface CharterStatusDetails {
@@ -56,7 +59,7 @@ export interface CharterStatusResult {
     uncovered: { criterionId: string; reason: string }[];
     stuck: { featureId: string; status: string; startedAt?: string }[];
     stale: { criterionId: string; ageMs: number; lastTs: string }[];
-    readyNext: { featureId: string; fulfills: string[] }[];
+    readyNext: { featureId: string; fulfills: string[]; probeResult?: ReadinessProbeResult }[];
   };
   guidelines: string[];
   nextActions: NextAction[];
@@ -306,7 +309,16 @@ async function computeBlockingForCompleteSafely(dir: string, charterId: string):
     const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
     const criterionState = await loadCriterionState(dir, charterId);
     const context = await loadBlockingContext(dir, charterId);
-    return computeBlockingForComplete(charter.criteria, criterionState, context);
+    const readinessBlocking = await listBlockingReadinessFeatures(dir);
+    return [
+      ...computeBlockingForComplete(charter.criteria, criterionState, context),
+      ...readinessBlocking.map((feature) => ({
+        criterionId: feature.fulfills[0] ?? feature.featureId,
+        featureId: feature.featureId,
+        probeResult: feature.probeResult,
+        reason: "readiness-blocking",
+      })),
+    ];
   } catch {
     return [];
   }
@@ -374,6 +386,7 @@ export async function askCharter(
   const note = input.note?.trim().replace(/\s+/g, " ") || undefined;
   state.status = "awaiting-clarification";
   state.clarificationNote = note;
+  state.unansweredClarification = true;
   state.updatedAt = now;
   await writeCharterState(dir, state);
   await appendEvent(dir, { type: "charter_asked", ts: now, charterId: state.charterId, note });
@@ -408,21 +421,38 @@ export async function completeCharter(
   const criterionState = await loadCriterionState(dir, charterId);
   const context = await loadBlockingContext(dir, charterId);
   const failures = checkCompletionGate(charter.criteria, criterionState, state, context);
-  const blocking = computeBlockingForComplete(charter.criteria, criterionState, context);
+  const readinessBlocking = await listBlockingReadinessFeatures(dir);
+  const blocking: BlockingForCompleteEntry[] = [
+    ...computeBlockingForComplete(charter.criteria, criterionState, context),
+    ...readinessBlocking.map((feature) => ({
+      criterionId: feature.fulfills[0] ?? feature.featureId,
+      featureId: feature.featureId,
+      probeResult: feature.probeResult,
+      reason: "readiness-blocking",
+    })),
+  ];
+  const readinessBlocks = blocking.filter((entry) => entry.reason === "readiness-blocking");
+  const trustBlocks = blocking.filter((entry) => entry.reason !== "readiness-blocking");
   if (blocking.length > 0) {
     // Render `<id>(<reason>)` per VAL so identity-disjoint and
     // requires-charter-reviewer rejections are distinguishable from generic
     // low-trust evidence in the user-facing error string. The summary line
     // keeps the legacy `low-trust evidence for N VAL(s): ...` phrasing so
     // existing tests grepping for VAL ids continue to match.
-    const idsWithReasons = blocking.map((entry) => `${entry.criterionId}(${entry.reason})`).join(", ");
-    failures.push(`low-trust evidence for ${blocking.length} VAL(s): ${idsWithReasons}`);
+    if (trustBlocks.length > 0) {
+      const idsWithReasons = trustBlocks.map((entry) => `${entry.criterionId}(${entry.reason})`).join(", ");
+      failures.push(`low-trust evidence for ${trustBlocks.length} VAL(s): ${idsWithReasons}`);
+    }
+    if (readinessBlocks.length > 0) {
+      const idsWithReasons = readinessBlocks.map((entry) => `${entry.featureId ?? entry.criterionId}(${entry.reason})`).join(", ");
+      failures.push(`readiness blocking feature(s): ${idsWithReasons}`);
+    }
   }
   if (failures.length > 0) {
     const message = [
       `Cannot complete charter:`,
       ` - ${failures.join("\n - ")}`,
-      ...(blocking.length > 0
+      ...(trustBlocks.length > 0
         ? ["Fix: add Because: rationale and run charter-reviewer (subagent({agent:'charter-reviewer'})) for the listed VALs."]
         : []),
     ].join("\n");
@@ -434,7 +464,7 @@ export async function completeCharter(
       const m = f.match(/^(VAL-[A-Za-z0-9_-]+):/);
       if (m) failingIds.add(m[1]!);
     }
-    for (const b of blocking) failingIds.add(b.criterionId);
+    for (const b of blocking) if (b.reason !== "readiness-blocking") failingIds.add(b.criterionId);
     const idList = Array.from(failingIds);
     const nextActions: NextAction[] = [];
     for (const id of idList.slice(0, 5)) {
@@ -449,10 +479,11 @@ export async function completeCharter(
         hint: `Record charter-reviewer-attributed pass evidence for ${id} (set recordedBy='subagent:charter-reviewer:<sessionId>').`,
       });
     }
-    if (blocking.length > 0) {
+    const reviewerBlocking = blocking.filter((entry) => entry.reason !== "readiness-blocking");
+    if (reviewerBlocking.length > 0) {
       nextActions.push({
         tool: "subagent",
-        hint: `Delegate to charter-reviewer subagent for: ${blocking.map((b) => b.criterionId).join(", ")}.`,
+        hint: `Delegate to charter-reviewer subagent for: ${reviewerBlocking.map((b) => b.criterionId).join(", ")}.`,
       });
     }
     nextActions.push({ tool: "charter_status", hint: "Re-read drift and the blockingForComplete view after recording new evidence." });
@@ -906,15 +937,18 @@ async function loadPassRecordedByCriterion(dir: string): Promise<Map<string, str
 
 export async function resumeCharter(
   projectDir: string,
-  input: { charterId?: string; now?: string },
+  input: { charterId?: string; now?: string; acknowledgeClarification?: boolean },
 ): Promise<CharterServiceResult<CharterState>> {
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
   const resumeTo = state.status === "awaiting-clarification"
     ? "planning"
+    : state.status === "planning"
+      ? "planning"
     : state.previousStatus && !isTerminal(state.previousStatus) ? state.previousStatus : "active";
-  if (state.status !== "paused" && state.status !== "awaiting-clarification") {
+  const acknowledgingInPlanning = state.status === "planning" && state.unansweredClarification === true && input.acknowledgeClarification === true;
+  if (state.status !== "paused" && state.status !== "awaiting-clarification" && !acknowledgingInPlanning) {
     throw new CharterToolError(`Cannot resume charter in status ${state.status}`, {
       code: "lifecycle.wrong_state",
       nextActions: [
@@ -925,10 +959,18 @@ export async function resumeCharter(
   }
   state.status = resumeTo;
   state.previousStatus = undefined;
-  state.clarificationNote = undefined;
+  if (input.acknowledgeClarification) {
+    state.clarificationNote = undefined;
+    state.unansweredClarification = false;
+  }
   state.updatedAt = input.now ?? new Date().toISOString();
   await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_resumed", ts: state.updatedAt, charterId: state.charterId });
+  await appendEvent(dir, {
+    type: "charter_resumed",
+    ts: state.updatedAt,
+    charterId: state.charterId,
+    acknowledgeClarification: input.acknowledgeClarification === true,
+  });
   return {
     charterId: state.charterId,
     status: state.status,

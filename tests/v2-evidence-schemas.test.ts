@@ -70,6 +70,7 @@ describe("v2 evidence schemas", () => {
       kind: "readiness",
       featureId: "f4-evidence-schemas",
       probeResult: "deferred-with-fallback",
+      outcome: "partial",
       probedAt: "2026-05-21T12:10:00.000Z",
       details: { dependency: "typebox", fallback: "Validated with local schema tests." },
       summary: "Readiness probe recorded fallback.",

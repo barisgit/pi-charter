@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { readFile, readdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
+import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type ReadinessEvidence } from "../domain/evidence-schemas";
 import type { CharterCriterion, RecordedBy } from "../domain/types";
 
 /** Default identity for evidence written by the root agent. Callers (handoff,
@@ -73,6 +74,18 @@ export interface RecordEvidenceBatchResult {
   nextActions: NextAction[];
 }
 
+export interface RecordEvidenceFromFileResult extends RecordEvidenceBatchResult {
+  evidenceFile: string;
+  kind: EvidenceFile["kind"];
+  featureId: string;
+}
+
+export interface RecordEvidenceFromFileInput {
+  charterId: string;
+  evidenceFile: string;
+  now?: string;
+}
+
 export interface RecordEvidenceResult {
   charterId: string;
   criterionId: string;
@@ -105,6 +118,65 @@ export async function recordEvidence(
 ): Promise<RecordEvidenceResult> {
   const dir = charterDir(projectDir, input.charterId);
   return await withCharterLock(dir, () => recordEvidenceLocked(projectDir, input));
+}
+
+export async function recordEvidenceFromFile(
+  projectDir: string,
+  input: RecordEvidenceFromFileInput,
+): Promise<RecordEvidenceFromFileResult> {
+  const dir = charterDir(projectDir, input.charterId);
+  return await withCharterLock(dir, () => recordEvidenceFromFileLocked(projectDir, input));
+}
+
+async function recordEvidenceFromFileLocked(
+  projectDir: string,
+  input: RecordEvidenceFromFileInput,
+): Promise<RecordEvidenceFromFileResult> {
+  const dir = charterDir(projectDir, input.charterId);
+  const loaded = await loadTypedEvidenceFile(projectDir, dir, input.evidenceFile);
+  const validation = validateEvidenceFile(loaded.json);
+  if (!validation.ok) {
+    throw new CharterToolError(`Evidence file ${input.evidenceFile} does not match the typed evidence schema: ${validation.error}`, {
+      code: "evidence.schema_violation",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Fix the JSON fields to match the command|review|qa|readiness evidence schema, then retry `evidenceFile`." },
+      ],
+    });
+  }
+
+  const evidence = validation.value;
+  const feature = await loadEvidenceFeature(dir, evidence.featureId, input.charterId);
+  const outcome = outcomeFromEvidenceFile(evidence);
+  const result = await recordEvidenceBatchLocked(projectDir, {
+    charterId: input.charterId,
+    now: input.now,
+    entries: feature.fulfills.map((criterionId) => ({
+      criterionId,
+      featureId: evidence.featureId,
+      outcome,
+      summary: evidence.summary,
+      because: evidence.because,
+      artifacts: [input.evidenceFile],
+      details: {
+        evidenceFile: input.evidenceFile,
+        kind: evidence.kind,
+        typedEvidence: evidence,
+      },
+      source: sourceFromEvidenceFile(evidence),
+      recordedBy: recordedByFromEvidenceFile(evidence),
+    })),
+  });
+
+  if (evidence.kind === "command") {
+    await projectCommandCheckResults(dir, input.charterId, evidence, result.entries[0]?.ts ?? input.now ?? new Date().toISOString());
+  }
+
+  return {
+    ...result,
+    evidenceFile: input.evidenceFile,
+    kind: evidence.kind,
+    featureId: evidence.featureId,
+  };
 }
 
 async function recordEvidenceLocked(
@@ -452,6 +524,106 @@ async function recordEvidenceBatchLocked(
     entries: responseEntries,
     nextActions: nextActionsForEvidence(last.criterion, last.entry.outcome, state.status),
   };
+}
+
+async function loadTypedEvidenceFile(projectDir: string, dir: string, evidenceFile: string): Promise<{ json: unknown }> {
+  const path = evidenceFilePath(projectDir, dir, evidenceFile);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    throw new CharterToolError(`Unable to read evidenceFile ${evidenceFile}: ${error instanceof Error ? error.message : String(error)}`, {
+      code: "evidence.file_read_error",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: `Pass an existing JSON evidence file path (received '${evidenceFile}').` },
+      ],
+    });
+  }
+  try {
+    return { json: JSON.parse(raw) };
+  } catch (error) {
+    throw new CharterToolError(`Unable to parse evidenceFile ${evidenceFile} as JSON: ${error instanceof Error ? error.message : String(error)}`, {
+      code: "evidence.file_read_error",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: `Fix JSON syntax in '${evidenceFile}', then retry.` },
+      ],
+    });
+  }
+}
+
+function evidenceFilePath(projectDir: string, dir: string, evidenceFile: string): string {
+  if (isAbsolute(evidenceFile)) return evidenceFile;
+  if (evidenceFile.startsWith("evidence/")) return join(dir, evidenceFile);
+  return join(projectDir, evidenceFile);
+}
+
+async function loadEvidenceFeature(dir: string, featureId: string, charterId: string): Promise<{ fulfills: string[] }> {
+  let feature;
+  try {
+    feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${featureId}.md`), "utf8"));
+  } catch (error) {
+    throw new CharterToolError(`Evidence file references unknown featureId ${featureId}: ${error instanceof Error ? error.message : String(error)}`, {
+      code: "evidence.unknown_feature",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: "List known feature ids, then fix evidenceFile.featureId." },
+      ],
+    });
+  }
+  if (feature.fulfills.length === 0) {
+    throw new CharterToolError(`Feature ${featureId} does not fulfill any criteria in charter ${charterId}.`, {
+      code: "evidence.no_feature_criteria",
+      nextActions: [
+        { tool: "charter_plan", action: "update_feature", hint: `Add at least one fulfilled VAL-* criterion to feature '${featureId}'.` },
+      ],
+    });
+  }
+  return { fulfills: feature.fulfills };
+}
+
+function outcomeFromEvidenceFile(evidence: EvidenceFile): EvidenceOutcome {
+  switch (evidence.kind) {
+    case "command":
+      return Object.values(evidence.checkResults).every((result) => result.outcome === "pass") ? "pass" : "fail";
+    case "readiness": {
+      const readiness = evidence as ReadinessEvidence & { outcome?: EvidenceOutcome };
+      if (readiness.outcome) return readiness.outcome;
+      if (readiness.probeResult === "verified") return "pass";
+      if (readiness.probeResult === "blocking") return "fail";
+      return "partial";
+    }
+    case "review":
+    case "qa":
+      return evidence.outcome as EvidenceOutcome;
+  }
+}
+
+function sourceFromEvidenceFile(evidence: EvidenceFile): NonNullable<EvidenceEntry["source"]> {
+  return evidence.kind === "command" ? "verifier" : "subagent";
+}
+
+function recordedByFromEvidenceFile(evidence: EvidenceFile): RecordedBy {
+  if (evidence.kind === "review") {
+    return `subagent:${DEFAULT_HANDOFF_PERSONA}:${evidence.subagentSessionId}` as RecordedBy;
+  }
+  return DEFAULT_RECORDED_BY;
+}
+
+async function projectCommandCheckResults(dir: string, charterId: string, evidence: CommandEvidence, now: string): Promise<void> {
+  const state = await loadFeatureState(dir, charterId);
+  const feature = state.features[evidence.featureId] ?? { checks: {} };
+  const checks = { ...feature.checks };
+  for (const [checkId, result] of Object.entries(evidence.checkResults)) {
+    checks[checkId] = {
+      status: result.outcome === "pass" ? "passing" : "failing",
+      lastEvidenceTs: now,
+      ...(result.outcome === "fail" ? { lastError: result.stderrHead || result.stdoutHead || `exitCode=${result.exitCode}` } : {}),
+    };
+  }
+  state.features[evidence.featureId] = {
+    ...feature,
+    checks,
+  };
+  await writeFeatureState(dir, state);
 }
 
 export async function loadCriterionState(dir: string, charterId: string): Promise<CriterionStateFile> {

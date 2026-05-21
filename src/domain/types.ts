@@ -56,6 +56,7 @@ export interface CharterState {
   budget?: Budget;
   previousStatus?: CharterStatus;
   clarificationNote?: string;
+  unansweredClarification?: boolean;
   completedAt?: string;
   terminatedAt?: string;
   completionReason?: string;

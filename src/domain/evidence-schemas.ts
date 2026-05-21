@@ -34,7 +34,7 @@ export const ReviewEvidenceSchema = Type.Object({
   reviewedAt: Type.String(),
   subagentSessionId: Type.String(),
   commitId: Type.Optional(Type.String()),
-  outcome: OutcomeSchema,
+  outcome: Type.Optional(OutcomeSchema),
   blockingIssues: Type.Array(BlockingIssueSchema),
   nonBlockingNotes: Type.Array(Type.String()),
   summary: Type.String(),
@@ -68,6 +68,7 @@ export const ReadinessEvidenceSchema = Type.Object({
     Type.Literal("deferred-with-fallback"),
     Type.Literal("blocking"),
   ]),
+  outcome: Type.Optional(OutcomeSchema),
   probedAt: Type.String(),
   details: Type.Record(Type.String(), Type.Unknown()),
   summary: Type.String(),
@@ -111,7 +112,9 @@ export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult 
   }
 
   const [first] = Errors(schema, json);
-  const fieldPath = first?.instancePath || "/";
+  const missing = (first?.params as { requiredProperties?: unknown } | undefined)?.requiredProperties;
+  const [missingField] = Array.isArray(missing) ? missing : [];
+  const fieldPath = typeof missingField === "string" ? `/${missingField}` : first?.instancePath || "/";
   const message = first?.message ?? "schema validation failed";
   return { ok: false, error: `Invalid ${kind} evidence at ${fieldPath}: ${message}` };
 }

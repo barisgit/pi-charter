@@ -9,6 +9,7 @@ import { assertNotV1NeedsReplan, nextActionsForStatus, type NextAction } from ".
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
 import { inspectArchitectureGate } from "./architecture-gate";
+import { listBlockingReadinessFeatures } from "./readiness-service";
 
 const FEATURE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
 
@@ -100,14 +101,33 @@ export async function lockPlan(
   projectDir: string,
   input: { charterId: string; now?: string; legacy?: boolean },
 ): Promise<LockPlanResult> {
+  const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(projectDir, input.charterId);
   assertNotV1NeedsReplan(state);
+  if (state.status === "awaiting-clarification") {
+    throw new CharterToolError("Cannot lock_plan while awaiting clarification.", {
+      code: "lock_plan.awaiting_clarification",
+      nextActions: [
+        { tool: "charter_manage", action: "resume", hint: "Resume after the user provides clarification." },
+        { tool: "charter_status", hint: "Inspect current status before retrying lock_plan." },
+      ],
+    });
+  }
   if (state.status !== "planning") {
     throw new CharterToolError(`Cannot lock_plan from status ${state.status}; only planning is eligible.`, {
       code: "lock_plan.bad_status",
       nextActions: [
         { tool: "charter_status", hint: "Inspect current status; lock_plan is only legal in `planning`." },
         { tool: "charter_plan", action: "view", hint: "Inspect the existing plan without mutating state." },
+      ],
+    });
+  }
+  if (state.unansweredClarification === true) {
+    throw new CharterToolError("Cannot lock_plan while a clarification remains unanswered.", {
+      code: "lock_plan.unanswered_clarification",
+      nextActions: [
+        { tool: "charter_manage", action: "resume", hint: "Resume with acknowledgeClarification: true after the user provides clarification." },
+        { tool: "charter_status", hint: "Inspect current status before retrying lock_plan." },
       ],
     });
   }
@@ -126,6 +146,10 @@ export async function lockPlan(
   if (validationShapeFailures.length) {
     const refs = validationShapeFailures.map((row) => `${row.featureId} missing ${row.missing.join(" and ")}`).join(", ");
     failures.push(`impl features missing validation checks: ${refs}`);
+  }
+  const readinessBlocking = await listBlockingReadinessFeatures(dir);
+  if (readinessBlocking.length) {
+    failures.push(`readiness blocking features: ${readinessBlocking.map((feature) => feature.featureId).join(", ")}`);
   }
   const architectureGate = await inspectArchitectureGate(projectDir, input.charterId, plan.features);
   if (architectureGate.required && !architectureGate.present) {
@@ -157,6 +181,7 @@ export async function lockPlan(
     let code = "lock_plan.drift";
     if (plan.criteria.length === 0) code = "lock_plan.empty_criteria";
     else if (plan.features.length === 0) code = "lock_plan.empty_features";
+    else if (readinessBlocking.length) code = "lock_plan.readiness_blocking";
     else if (cycle) code = "lock_plan.cycle";
     else if (architectureGate.required && !architectureGate.present) code = "lock_plan.missing_architecture";
     else if (!input.legacy) {
@@ -180,7 +205,6 @@ export async function lockPlan(
 
   const planDigest = digestFeatures(plan.features);
   const now = input.now ?? new Date().toISOString();
-  const dir = charterDir(projectDir, input.charterId);
   await dispatchHook("charter:before_lock_plan", {
     type: "charter:before_lock_plan",
     charterId: state.charterId,

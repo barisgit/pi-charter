@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { addFeature, addFeatureBatch, lockPlan, updateFeature, viewPlan, type FeatureEntry } from "./plan-service";
-import { applyHandoff, recordEvidence, recordEvidenceBatch, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
+import { applyHandoff, recordEvidence, recordEvidenceBatch, recordEvidenceFromFile, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, askCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
@@ -55,6 +55,7 @@ type CharterManageInput = {
   name?: string;
   objective?: string;
   note?: string;
+  acknowledgeClarification?: boolean;
   reason?: string;
   completionNote?: string;
   target?: "completed" | "abandoned" | "budget_limited" | "planning" | "review";
@@ -87,6 +88,7 @@ type CharterRecordInput = {
   outcome?: "pass" | "fail" | "partial";
   summary?: string;
   because?: string;
+  evidenceFile?: string;
   artifacts?: string[];
   details?: Record<string, unknown>;
   entries?: EvidenceEntry[];
@@ -102,6 +104,7 @@ const CharterManageParams = Type.Object({
   name: Type.Optional(Type.String({ description: "Optional short slug shown in widget headers and status (e.g. 'headless-click-pid'). Lowercased; non-slug chars stripped; clamped to 32 chars. Falls back to the first 8 chars of the charterId when omitted." })),
   objective: Type.Optional(Type.String({ description: "Required for action=create. The desired outcome, not a spec path." })),
   note: Type.Optional(Type.String({ description: "One-line clarification note stored in state.json for action=ask." })),
+  acknowledgeClarification: Type.Optional(Type.Boolean({ description: "For action=resume, clears unansweredClarification after the user has answered the ask." })),
   reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
   completionNote: Type.Optional(Type.String({ description: "Completion note for action=complete." })),
   target: Type.Optional(StringEnum(["completed", "abandoned", "budget_limited", "planning", "review"] as const)),
@@ -145,6 +148,7 @@ const CharterRecordParams = Type.Object({
   outcome: Type.Optional(StringEnum(["pass", "fail", "partial"] as const)),
   summary: Type.Optional(Type.String({ description: "Short manual summary for action=evidence." })),
   because: Type.Optional(Type.String({ description: "Rationale for the evidence record. Required when action=evidence and source is manual; explains why this outcome is correct so the completion gate can distinguish drive-by approvals from real review." })),
+  evidenceFile: Type.Optional(Type.String({ description: "Path to typed evidence JSON (kind=command|review|qa|readiness) to import for action=evidence. Mutually exclusive with inline evidence fields." })),
   artifacts: Type.Optional(Type.Array(Type.String())),
   details: Type.Optional(Type.Object({}, { additionalProperties: true })),
   entries: Type.Optional(Type.Array(Type.Object({
@@ -221,7 +225,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         }
         case "resume": {
           const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
-          const result = await resumeCharter(ctx.cwd, { charterId: resolved.charterId });
+          const result = await resumeCharter(ctx.cwd, { charterId: resolved.charterId, acknowledgeClarification: params.acknowledgeClarification });
           const sessionId = ctx.sessionManager.getSessionId?.();
           if (sessionId) {
             await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
@@ -352,13 +356,31 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
       const status = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
       if (params.action === "evidence") {
         const hasBatch = Array.isArray(params.entries) && params.entries.length > 0;
-        const hasSingle = Boolean(
+        const hasEvidenceFile = Boolean(params.evidenceFile?.trim());
+        const hasInline = Boolean(
           (params.criterionId && params.criterionId.trim())
           || params.outcome
+          || (params.because && params.because.trim())
           || (params.summary && params.summary.trim()),
         );
-        if (hasBatch && hasSingle) {
+        if (hasEvidenceFile && (hasInline || hasBatch)) {
+          throw new CharterToolError("charter_record action=evidence: provide either evidenceFile or inline evidence fields, not both.", {
+            code: "evidence.mixed_inputs",
+            nextActions: [
+              { tool: "charter_record", action: "evidence", hint: "Use `evidenceFile: '<path>'` by itself, or omit evidenceFile and pass inline criterionId/outcome/summary/because." },
+            ],
+          });
+        }
+        if (hasBatch && hasInline) {
           throw new Error("charter_record action=evidence: provide either single-entry fields or a batch `entries` array, not both");
+        }
+        if (hasEvidenceFile) {
+          const imported = await recordEvidenceFromFile(ctx.cwd, {
+            charterId: status.charterId,
+            evidenceFile: params.evidenceFile!,
+          });
+          await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
+          return toolResult(`Imported ${imported.kind} evidence for feature ${imported.featureId} (${imported.entries.length} criteria).`, imported);
         }
         if (hasBatch) {
           const batch = await recordEvidenceBatch(ctx.cwd, {
@@ -513,11 +535,11 @@ export function formatCharterStatusText(result: {
   objective: string;
   clarificationNote?: string;
   migrationHint?: string;
-  drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[] }[] };
+  drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[]; probeResult?: string }[] };
   qaBriefs?: string[];
   nextActions: { tool: string; action?: string; hint: string }[];
   guidelines: string[];
-  details?: { blockingForComplete?: { criterionId: string; reason: string }[] };
+  details?: { blockingForComplete?: { criterionId: string; reason: string; featureId?: string; probeResult?: string }[] };
 }): string {
   const lines: string[] = [];
   const firstObjectiveLine = result.objective.split("\n", 1)[0] ?? "";
@@ -538,8 +560,9 @@ export function formatCharterStatusText(result: {
   );
   const blocking = result.details?.blockingForComplete ?? [];
   if (blocking.length > 0) {
-    const preview = blocking.map((row) => `${row.criterionId}(${row.reason})`).join(", ");
-    lines.push(`  blocking-for-complete: ${blocking.length} VAL(s): ${preview}`);
+    const preview = blocking.map((row) => `${row.featureId ?? row.criterionId}(${row.reason})`).join(", ");
+    const unit = blocking.some((row) => row.featureId) ? "item(s)" : "VAL(s)";
+    lines.push(`  blocking-for-complete: ${blocking.length} ${unit}: ${preview}`);
   }
   if ((result.qaBriefs?.length ?? 0) > 0) {
     lines.push(`  qa briefs: ${result.qaBriefs!.join(", ")}`);
@@ -547,7 +570,7 @@ export function formatCharterStatusText(result: {
   if (result.drift.readyNext.length > 0) {
     const preview = result.drift.readyNext
       .slice(0, 3)
-      .map((entry) => `${entry.featureId} (→ ${entry.fulfills.join(", ") || "-"})`)
+      .map((entry) => `${entry.featureId}${entry.probeResult ? ` [probe=${entry.probeResult}]` : ""} (→ ${entry.fulfills.join(", ") || "-"})`)
       .join("; ");
     lines.push(`  ready features: ${preview}${result.drift.readyNext.length > 3 ? ", ..." : ""}`);
   }

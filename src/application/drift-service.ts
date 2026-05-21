@@ -4,6 +4,7 @@ import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import { loadCriterionState, type CriterionStateRecord } from "./record-service";
+import { getLatestReadinessProbe, type ReadinessProbeResult } from "./readiness-service";
 
 export interface UncoveredEntry {
   criterionId: string;
@@ -19,6 +20,7 @@ export interface StaleEntry {
 export interface ReadyNextEntry {
   featureId: string;
   fulfills: string[];
+  probeResult?: ReadinessProbeResult;
 }
 
 export interface StuckEntry {
@@ -92,7 +94,12 @@ export async function computeDrift(
     if (!preconditionsMet) continue;
     const fulfilledUncovered = feature.fulfills.filter((id) => uncoveredIds.has(id));
     if (fulfilledUncovered.length === 0 && feature.fulfills.length > 0) continue;
-    readyNext.push({ featureId: feature.id, fulfills: fulfilledUncovered.length > 0 ? fulfilledUncovered : feature.fulfills });
+    const probeResult = feature.kind === "readiness" ? await getLatestReadinessProbe(feature.id, dir) : undefined;
+    readyNext.push({
+      featureId: feature.id,
+      fulfills: fulfilledUncovered.length > 0 ? fulfilledUncovered : feature.fulfills,
+      ...(probeResult ? { probeResult } : {}),
+    });
   }
 
   const stuck: StuckEntry[] = [];
