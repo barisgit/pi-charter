@@ -19,6 +19,68 @@ pass evidence. Four phases, driven in one continuous run:
 Once the plan is locked, do not stop between features to ask "should I
 keep going?". The objective + locked plan is your authorization to ship.
 
+## Planning is the work
+
+Planning is the work: implementation is mostly typing once the charter
+names the real outcomes, boundaries, verification, and risks. Do not
+rush through the planning phase as ceremony; a weak plan creates noisy
+status, shallow VALs, and reviewer churn later.
+
+### Failure modes to catch before lock
+
+- VALs that only say "feature works" instead of naming observable pass
+  criteria, failure modes, and the required evidence kind.
+- VAL count matching feature count, with no cross-cutting criteria for
+  integration, user-facing QA, architecture, commands, or suite health.
+- Skipping `charter-planner-critic`, or running it without resolving
+  every `BLOCK` finding.
+- Locking while an awaiting-clarification decision, missing dependency,
+  or scope ambiguity is still unresolved.
+- Treating a critic `BLOCK` as advisory because the implementation path
+  feels obvious.
+
+### What good looks like
+
+- At least one critic round has run, and every `BLOCK` has been resolved
+  in `charter.md`, feature bodies, or scope constraints.
+- Every VAL has explicit pass criteria, known failure modes, and a
+  verifier/evidence kind that an independent party can evaluate.
+- The charter includes cross-cutting VALs for non-feature outcomes such
+  as architecture, commands, QA, integration, or full-suite health.
+- Non-trivial work has `library/architecture.md` (or an equivalent
+  charter-local architecture note) before implementation starts.
+- `## Commands` declares the build/test/dev/lint/qa commands subagents
+  must use verbatim.
+- Each feature body answers the four-question gate enforced by
+  `charter-planner-critic`: What does it do? What are its boundaries?
+  Where does complexity concentrate? How would an independent party
+  verify it works?
+
+### Done planning
+
+Done planning means the pre-lock `charter_status nextActions[]` has no
+remaining move except `lock_plan`, and then `charter_plan action=lock_plan`
+succeeds. If any other legal next action remains, keep planning.
+
+## Online research delegation
+
+Delegate online research when the plan depends on current ecosystem
+facts the main agent should not guess. Indicators that research is
+needed include smaller or newer ecosystems such as Convex, Drizzle, and
+Hono; SDK-heavy integrations such as Vercel AI SDK, Stripe Elements, and
+Supabase Auth; or prompts like "Can this API do X?", "Are there breaking
+changes?", "Should I verify this behavior?", and "Find current docs".
+
+Do not spend research budget on foundational, slowly evolving knowledge
+unless the objective names a version-specific risk. React, PostgreSQL,
+Express, and standard-library behavior normally need local docs or code
+recon, not web research.
+
+Store distilled, reusable findings in `library/<topic>.md`. Store raw research notes, citations, copied snippets, and uncertainty trails in
+`library/research/<topic>.md`. Keep raw research out of `library/` so the
+critic and future agents can distinguish settled project guidance from
+source material that still needs interpretation.
+
 ## Hard rules
 
 1. **Never write `charter.md` or `plan/*.md` directly.** `charter.md` lives

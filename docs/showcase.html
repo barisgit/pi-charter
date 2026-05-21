@@ -119,7 +119,7 @@
     </div>
     <div class="card tight">
       <h3>Four feature kinds</h3>
-      <p><strong>Readiness</strong>, <strong>Impl</strong>, <strong>Review</strong>, <strong>QA</strong>. Review + QA features auto-inject at <code>lock_plan</code>. Milestones group impls + their gates; <code>readyNext</code> is feature-level so cross-milestone parallelism is normal.</p>
+      <p><strong>Readiness</strong>, <strong>Impl</strong>, <strong>Review</strong>, <strong>QA</strong>. Review and QA features are planner-authored alongside impl features. Milestones group impls + their gates; <code>readyNext</code> is feature-level so cross-milestone parallelism is normal.</p>
     </div>
     <div class="card tight">
       <h3>Planning is the gate</h3>
@@ -127,7 +127,7 @@
     </div>
     <div class="card tight">
       <h3>Typed evidence</h3>
-      <p>Four kinds: <code>command</code>, <code>review</code>, <code>qa</code>, <code>readiness</code>. Subagents write JSON to <code>evidence/&lt;featureId&gt;/&lt;ts&gt;.&lt;kind&gt;.json</code> and call <code>charter_record action=evidence evidenceFile=…</code> themselves. Main agent stops re-typing subagent output.</p>
+      <p>Four evidence companions: <code>command</code>, <code>review</code>, <code>qa</code>, <code>readiness</code>. Subagents write JSON into the v2.1 dir-per-run layout <code>work/&lt;featureId&gt;/evidence/&lt;ts&gt;/evidence.json</code> plus companion files such as <code>review.json</code>, then call <code>charter_record action=evidence evidenceFile=…</code> themselves. Main agent stops re-typing subagent output.</p>
     </div>
     <div class="card tight">
       <h3>Ask state</h3>
@@ -333,11 +333,12 @@
       </g>
 
       <!-- m1 review -->
-      <text x="600" y="30" class="node-sub" font-weight="700" fill="#b794ff">m1 · auto-injected reviews</text>
+      <text x="600" y="30" class="node-sub" font-weight="700" fill="#b794ff">m1 · planner-authored reviews</text>
       <g transform="translate(490,50)">
-        <rect class="node-bg reviewf" width="180" height="50" rx="8" />
-        <text x="90" y="22" text-anchor="middle" class="node-title">m1-review-oauth-cb</text>
-        <text x="90" y="40" text-anchor="middle" class="node-sub">pre:[m1-oauth-callback]</text>
+        <rect class="node-bg reviewf" width="180" height="62" rx="8" />
+        <text x="90" y="20" text-anchor="middle" class="node-title">m1-review-oauth-cb</text>
+        <text x="90" y="38" text-anchor="middle" class="node-sub">pre:[m1-oauth-callback]</text>
+        <text x="90" y="54" text-anchor="middle" class="node-sub">Verifier: subagent { agent: charter-reviewer }</text>
       </g>
       <g transform="translate(490,115)">
         <rect class="node-bg reviewf" width="180" height="50" rx="8" />
@@ -399,11 +400,12 @@
       <g transform="translate(60,350)">
         <rect width="14" height="10" rx="2" class="node-bg readiness" /><text x="22" y="9" class="node-sub">readiness</text>
         <rect x="110" width="14" height="10" rx="2" class="node-bg impl" /><text x="132" y="9" class="node-sub">impl</text>
-        <rect x="190" width="14" height="10" rx="2" class="node-bg reviewf" /><text x="212" y="9" class="node-sub">review (auto-injected)</text>
-        <rect x="370" width="14" height="10" rx="2" class="node-bg qaf" /><text x="392" y="9" class="node-sub">qa (auto-injected milestone gate)</text>
+        <rect x="190" width="14" height="10" rx="2" class="node-bg reviewf" /><text x="212" y="9" class="node-sub">review (planner-authored)</text>
+        <rect x="390" width="14" height="10" rx="2" class="node-bg qaf" /><text x="412" y="9" class="node-sub">qa (planner-authored milestone gate)</text>
       </g>
     </svg>
   </div>
+  <p class="sub"><strong>Historical note:</strong> auto-injection was removed in v2.2. Earlier previews had <code>lock_plan</code> synthesize review and QA gates, but v2.2 requires the planner or critic to author those features explicitly so the DAG has no ghost nodes.</p>
   <p class="sub">Milestones are organizational + QA-bundling units, <strong>not</strong> execution barriers. <code>readyNext</code> is feature-level: cross-milestone parallelism is normal. Initial <code>readyNext</code> after lock = <code>[r1, r2, r3]</code> all parallel. Ralph's active prompt encourages parallel <code>fixer</code> dispatch when <code>touches:</code> don't overlap; planner-critic flags overlap during planning.</p>
 
   <!-- ================================================================= -->
@@ -455,6 +457,36 @@ tokens, sets session cookie, redirects to /dashboard.
       <p>Charter.md drops the entire <em>Criteria</em> section. <code>criterion-state.json</code> is removed. <code>feature-state.json</code> is single source of truth and nests per-check status under each feature.</p>
     </div>
   </div>
+
+  <!-- ================================================================= -->
+  <h2>Verifier kinds</h2>
+  <div class="grid grid-3">
+    <div class="card tight">
+      <h3>command</h3>
+      <p>Shell command; exit 0 means pass. Best for deterministic checks such as typecheck, unit tests, and smoke scripts.</p>
+    </div>
+    <div class="card tight">
+      <h3>hook</h3>
+      <p>Structured integration callback. Use when another extension or service owns the authoritative check.</p>
+    </div>
+    <div class="card tight">
+      <h3>manual</h3>
+      <p>Human or root-agent evidence with rationale. Useful for judgment calls that cannot be automated.</p>
+    </div>
+    <div class="card tight">
+      <h3>prompt-judge</h3>
+      <p>LLM prompt evaluation for subjective criteria when a deterministic verifier is not available.</p>
+    </div>
+    <div class="card tight">
+      <h3>subagent</h3>
+      <p>Runs a named persona such as <code>charter-reviewer</code> and imports its typed evidence. Review and QA gates use this for independent judgment.</p>
+    </div>
+    <div class="card tight">
+      <h3>evidence-exists</h3>
+      <p>Passes when prior evidence of a requested kind exists, optionally after a freshness timestamp. Use it to chain gates without rerunning work.</p>
+    </div>
+  </div>
+  <p class="sub">All 6 verifier kinds: <code>command</code>, <code>hook</code>, <code>manual</code>, <code>prompt-judge</code>, <code>subagent</code>, and <code>evidence-exists</code>.</p>
 
   <!-- ================================================================= -->
   <h2>Planning — forcing functions</h2>
@@ -559,10 +591,10 @@ tokens, sets session cookie, redirects to /dashboard.
       <!-- json file -->
       <g transform="translate(600,30)">
         <rect class="node-bg review" width="220" height="120" rx="10" />
-        <text x="110" y="28" text-anchor="middle" class="node-title">evidence/&lt;feat&gt;/&lt;ts&gt;.kind.json</text>
-        <text x="110" y="52" text-anchor="middle" class="node-sub">kind: command|review|qa|readiness</text>
-        <text x="110" y="70" text-anchor="middle" class="node-sub">outcome · summary</text>
-        <text x="110" y="86" text-anchor="middle" class="node-sub">checkResults / blockingIssues</text>
+        <text x="110" y="28" text-anchor="middle" class="node-title">work/&lt;feat&gt;/evidence/&lt;ts&gt;/</text>
+        <text x="110" y="52" text-anchor="middle" class="node-sub">evidence.json canonical record</text>
+        <text x="110" y="70" text-anchor="middle" class="node-sub">review.json / qa.json / command.json</text>
+        <text x="110" y="86" text-anchor="middle" class="node-sub">outcome · summary · artifacts</text>
         <text x="110" y="102" text-anchor="middle" class="node-sub">subagentSessionId · commitId</text>
       </g>
 
@@ -595,7 +627,7 @@ tokens, sets session cookie, redirects to /dashboard.
       <text x="555" y="170" text-anchor="middle" class="edge-label">prior evidence path passed in task prompt</text>
     </svg>
   </div>
-  <p class="sub">Main agent stops re-typing subagent output into <code>charter_record</code> fields. Subagent writes the JSON and records it. Main's post-spawn job collapses to: read prose summary for working memory → call <code>charter_status</code> → pick next move. Same-feature races are last-write-wins on idempotent updates.</p>
+  <p class="sub">Main agent stops re-typing subagent output into <code>charter_record</code> fields. Subagent writes the JSON and records it. Evidence uses the v2.1 dir-per-run layout: <code>work/&lt;featureId&gt;/evidence/&lt;ts&gt;/evidence.json</code> with optional companions like <code>qa.md</code>, <code>review.json</code>, and artifacts. Main's post-spawn job collapses to: read prose summary for working memory → call <code>charter_status</code> → pick next move. Same-feature races are last-write-wins on idempotent updates.</p>
 
   <!-- ================================================================= -->
   <h2>Bundled personas</h2>
@@ -618,6 +650,29 @@ tokens, sets session cookie, redirects to /dashboard.
     </div>
   </div>
   <p class="sub"><code>charter-verifier</code> is deprecated — per-criterion LLM judges go away with the criteria collapse. All check verification is command/hook/manual; reviewer/qa do code+UX judgment, not check verification.</p>
+
+  <!-- ================================================================= -->
+  <h2>## Commands</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <h3>Declared in charter.md</h3>
+      <p>Commands are a simple key-value block that status output and delegated personas can quote verbatim. Use stable names so feature validation does not duplicate long shell pipelines.</p>
+<pre><code>## Commands
+
+build: bun run build
+test:  bun test
+dev:   bun run dev</code></pre>
+    </div>
+    <div class="card">
+      <h3>Worked example — feature smoke</h3>
+      <p>A planner can reference the shared keys while keeping feature validation readable:</p>
+      <ul class="tight">
+        <li><strong>build</strong> proves the package compiles: <code>charter run build</code>.</li>
+        <li><strong>test</strong> runs the default suite before evidence is recorded.</li>
+        <li><strong>dev</strong> starts the local surface for QA or manual probes.</li>
+      </ul>
+    </div>
+  </div>
 
   <!-- ================================================================= -->
   <h2>charter-config.json</h2>
@@ -680,10 +735,12 @@ tokens, sets session cookie, redirects to /dashboard.
 │       ├── library/
 │       │   └── architecture.md         # plan-time only · frozen at lock
 │       ├── qa/&lt;surface&gt;.md             # qa briefs (charter-scoped in v1)
-│       └── evidence/&lt;featureId&gt;/&lt;ts&gt;.&lt;kind&gt;.json
+│       └── work/&lt;featureId&gt;/evidence/&lt;ts&gt;/
+│           ├── evidence.json           # canonical charter_record evidence
+│           └── review.json / qa.json / command.json / artifacts...
 │
 └── ~/.pi/agent/sessions/&lt;sid&gt;/charter.json   # session ↔ charter reverse binding</code></pre>
-  <p class="sub">v1 → v2 deltas: no <code>criterion-state.json</code>; no separate <em>Criteria</em> section in <code>charter.md</code>; new <code>library/architecture.md</code>; new <code>qa/&lt;surface&gt;.md</code> staging; evidence files are now typed JSON authored by subagents.</p>
+  <p class="sub">v1 → v2 deltas: no <code>criterion-state.json</code>; no separate <em>Criteria</em> section in <code>charter.md</code>; new <code>library/architecture.md</code>; new <code>qa/&lt;surface&gt;.md</code> staging; evidence files use the v2.1 dir-per-run layout and are now typed JSON authored by subagents.</p>
 
   <!-- ================================================================= -->
   <h2>Tools — v2 surface</h2>
@@ -699,7 +756,7 @@ tokens, sets session cookie, redirects to /dashboard.
         <tr>
           <td>charter_plan</td>
           <td>view · add_feature · update_feature · lock_plan</td>
-          <td>shape gate at lock: ≥1 Happy + ≥1 Edge per impl feature; review/qa features auto-injected; readiness + architecture + qa briefs required; unanswered clarifications block lock.</td>
+          <td>shape gate at lock: ≥1 Happy + ≥1 Edge per impl feature; review/qa features are planner-authored; readiness + architecture + qa briefs required; unanswered clarifications block lock.</td>
         </tr>
         <tr>
           <td>charter_record</td>

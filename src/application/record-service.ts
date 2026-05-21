@@ -1,10 +1,10 @@
 import { spawn } from "node:child_process";
-import { access, readFile, readdir, unlink } from "node:fs/promises";
+import { access, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
-import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type ReadinessEvidence } from "../domain/evidence-schemas";
-import type { CharterCriterion, RecordedBy } from "../domain/types";
+import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type EvidenceKind, type ReadinessEvidence } from "../domain/evidence-schemas";
+import type { CharterCriterion, ParsedCharterMarkdown, RecordedBy, SubagentVerifier } from "../domain/types";
 import { logger } from "../infrastructure/logger";
 
 /** Default identity for evidence written by the root agent. Callers (handoff,
@@ -24,8 +24,10 @@ import {
 import { loadFeatureState, writeFeatureState } from "../persistence/feature-state";
 export type { FeatureCheckState, FeatureCheckStatus, FeatureStateFile, FeatureStateRecord } from "../persistence/feature-state";
 export { loadFeatureState } from "../persistence/feature-state";
-import { assertNotV1NeedsReplan, nextActionsForStatus, type NextAction } from "./service";
+import { assertNotV1NeedsReplan, loadFeatureEvidence, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
+import { PI_CHARTER_METADATA_KEYS } from "../infrastructure/subagent-bridge";
+import { getSubagentApi } from "./subagent-api";
 
 export type EvidenceOutcome = "pass" | "fail" | "partial";
 
@@ -148,7 +150,6 @@ async function recordEvidenceFromFileLocked(
       ],
     });
   }
-
   const detectedNarrative = await loadNarrativeCompanion(dir, loaded.absolutePath, loaded.requestedPath, validation.value);
   const evidence = detectedNarrative
     ? { ...validation.value, narrativePath: detectedNarrative.narrativePath } as EvidenceFile
@@ -192,6 +193,99 @@ async function recordEvidenceFromFileLocked(
     kind: evidence.kind,
     featureId: evidence.featureId,
   };
+}
+
+async function verifyEvidenceExistsCriterion(
+  projectDir: string,
+  dir: string,
+  criterion: CharterCriterion,
+  input: VerifyCriterionInput,
+): Promise<VerifyCriterionResult> {
+  const started = Date.now();
+  const verifier = criterion.verifierSpec;
+  if (!verifier || verifier.kind !== "evidence-exists") {
+    throw new CharterToolError(`Criterion ${criterion.id} has verifier=evidence-exists but no evidence-exists verifier spec.`, {
+      code: "verify.missing_evidence_exists_spec",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: `Inspect ${criterion.id}; evidence-exists verifiers require a Kind: review|qa|readiness|command field.` },
+      ],
+    });
+  }
+  const featureId = input.featureId?.trim();
+  if (!featureId) {
+    throw new CharterToolError(`Criterion ${criterion.id} uses verifier=evidence-exists, which requires featureId to scan feature evidence.`, {
+      code: "verify.missing_featureId",
+      nextActions: [
+        { tool: "charter_record", action: "verify", hint: `Pass featureId for the feature whose evidence should satisfy ${criterion.id}.` },
+        { tool: "charter_plan", action: "view", hint: "List features and their fulfilled criteria before retrying." },
+      ],
+    });
+  }
+
+  const freshSinceMs = verifier.freshSince ? Date.parse(verifier.freshSince) : undefined;
+  const records = await loadFeatureEvidence(dir, featureId);
+  const scanned = records.map((record) => ({
+    path: record.path,
+    ts: record.ts,
+    kind: evidenceKindFromRecord(record.record),
+  }));
+  const matching = scanned.filter((record) => {
+    if (record.kind !== verifier.evidenceKind) return false;
+    if (freshSinceMs === undefined) return true;
+    const tsMs = Date.parse(record.ts);
+    return !Number.isNaN(tsMs) && tsMs >= freshSinceMs;
+  });
+  const outcome: EvidenceOutcome = matching.length > 0 ? "pass" : "fail";
+  const durationMs = Date.now() - started;
+  const command = `evidence-exists:${verifier.evidenceKind}`;
+  const stdout = matching.map((record) => `${record.ts} ${record.path}`).join("\n");
+  const stderr = outcome === "pass"
+    ? ""
+    : `No ${verifier.evidenceKind} evidence found for feature ${featureId}${verifier.freshSince ? ` since ${verifier.freshSince}` : ""}.`;
+  const summary = outcome === "pass"
+    ? `evidence-exists verifier found ${matching.length} ${verifier.evidenceKind} evidence record(s)`
+    : `evidence-exists verifier found no ${verifier.evidenceKind} evidence records`;
+  const evidence = await recordEvidence(projectDir, {
+    charterId: input.charterId,
+    criterionId: criterion.id,
+    featureId,
+    outcome,
+    summary,
+    source: "verifier",
+    recordedBy: DEFAULT_RECORDED_BY,
+    details: {
+      verifier: "evidence-exists",
+      evidenceKind: verifier.evidenceKind,
+      freshSince: verifier.freshSince,
+      scannedRecords: scanned,
+      matchingRecords: matching,
+    },
+    now: input.now,
+  });
+  return {
+    ...evidence,
+    exitCode: outcome === "pass" ? 0 : 1,
+    stdout,
+    stderr,
+    command,
+    durationMs,
+  };
+}
+
+function evidenceKindFromRecord(record: Record<string, unknown>): EvidenceFile["kind"] | undefined {
+  if (isEvidenceKind(record.kind)) return record.kind;
+  const details = record.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
+  const detailRecord = details as Record<string, unknown>;
+  if (isEvidenceKind(detailRecord.kind)) return detailRecord.kind;
+  const typedEvidence = detailRecord.typedEvidence;
+  if (!typedEvidence || typeof typedEvidence !== "object" || Array.isArray(typedEvidence)) return undefined;
+  const kind = (typedEvidence as Record<string, unknown>).kind;
+  return isEvidenceKind(kind) ? kind : undefined;
+}
+
+function isEvidenceKind(kind: unknown): kind is EvidenceFile["kind"] {
+  return kind === "review" || kind === "qa" || kind === "readiness" || kind === "command";
 }
 
 async function recordEvidenceLocked(
@@ -874,6 +968,12 @@ export async function verifyCriterion(
       ],
     });
   }
+  if (criterion.verifier === "evidence-exists") {
+    return await verifyEvidenceExistsCriterion(projectDir, dir, criterion, input);
+  }
+  if (criterion.verifier === "subagent") {
+    return await verifySubagentCriterion(projectDir, dir, charter, criterion, input);
+  }
   if (criterion.verifier !== "command") {
     throw new CharterToolError(`charter_record verify for verifier=${criterion.verifier} is not implemented yet; only command verifier is supported.`, {
       code: "verify.non_command_verifier",
@@ -928,6 +1028,231 @@ export async function verifyCriterion(
     command: criterion.command,
     durationMs,
   };
+}
+
+async function verifySubagentCriterion(
+  projectDir: string,
+  dir: string,
+  charter: ParsedCharterMarkdown,
+  criterion: CharterCriterion,
+  input: VerifyCriterionInput,
+): Promise<VerifyCriterionResult> {
+  const verifier = criterion.verifierSpec as SubagentVerifier | undefined;
+  if (!verifier || verifier.kind !== "subagent") {
+    throw new CharterToolError(`Criterion ${criterion.id} has verifier=subagent but no valid subagent verifier spec.`, {
+      code: "verify.missing_subagent_spec",
+      nextActions: [
+        { tool: "charter_plan", action: "view", hint: `Inspect ${criterion.id}; subagent verifiers require Agent: and Task: fields.` },
+      ],
+    });
+  }
+
+  const api = getSubagentApi();
+  if (!api) {
+    throw new CharterToolError("Cannot run subagent verifier because pi-subagents has not exposed a runner API.", {
+      code: "verify.subagent_unavailable",
+      nextActions: [
+        { tool: "subagent", hint: "Load/enable pi-subagents so the subagent runner emits subagent:expose-api, then retry charter_record verify." },
+        { tool: "charter_record", action: "evidence", hint: `Record typed evidence for ${criterion.id} manually until the subagent runner is available.` },
+      ],
+    });
+  }
+
+  const dispatchStartedAt = Date.now();
+  const evidenceDir = join(dir, "work", input.featureId?.trim() || "_charter", "evidence");
+  const prompt = interpolateSubagentTask(verifier.task, {
+    charterId: input.charterId,
+    featureId: input.featureId,
+    criterionId: criterion.id,
+    evidenceDir,
+    commands: charter.commands,
+  });
+  const started = Date.now();
+  const response = await api.spawnRaw({
+    systemPrompt: `You are ${verifier.agent}. Run the requested pi-charter verifier persona and write typed evidence before finishing.`,
+    prompt,
+    async: false,
+    cwd: input.cwd ?? projectDir,
+    inheritProjectContext: true,
+    inheritSkills: false,
+    metadata: {
+      [PI_CHARTER_METADATA_KEYS.projectDir]: projectDir,
+      [PI_CHARTER_METADATA_KEYS.charterId]: input.charterId,
+      [PI_CHARTER_METADATA_KEYS.criterionId]: criterion.id,
+      ...(input.featureId ? { [PI_CHARTER_METADATA_KEYS.featureId]: input.featureId } : {}),
+    },
+  });
+  const durationMs = Date.now() - started;
+  const responseText = response.content.map((part) => part.text).join("\n");
+  const expectedKind = expectedEvidenceKindForSubagent(verifier);
+  const typedEvidence = await newestTypedEvidenceAfterDispatch(dir, projectDir, {
+    featureId: input.featureId,
+    expectedKind,
+    dispatchStartedAt,
+  });
+
+  if (!typedEvidence) {
+    const summary = `subagent verifier ${verifier.agent} produced no fresh typed evidence`;
+    const evidence = await recordEvidence(projectDir, {
+      charterId: input.charterId,
+      criterionId: criterion.id,
+      featureId: input.featureId,
+      outcome: "fail",
+      summary,
+      source: "verifier",
+      recordedBy: DEFAULT_RECORDED_BY,
+      details: {
+        agent: verifier.agent,
+        expectedEvidenceKind: expectedKind,
+        dispatchStartedAt: new Date(dispatchStartedAt).toISOString(),
+        durationMs,
+        responseText,
+        isError: response.isError === true,
+      },
+      now: input.now,
+    });
+    return {
+      ...evidence,
+      exitCode: 1,
+      stdout: response.isError ? "" : responseText,
+      stderr: response.isError ? responseText : "",
+      command: `subagent:${verifier.agent}`,
+      durationMs,
+    };
+  }
+
+  const evidenceOutcome = outcomeFromEvidenceFile(typedEvidence.evidence);
+  const outcome: EvidenceOutcome = evidenceOutcome === "pass" ? "pass" : "fail";
+  const evidence = await recordEvidence(projectDir, {
+    charterId: input.charterId,
+    criterionId: criterion.id,
+    featureId: input.featureId ?? typedEvidence.evidence.featureId,
+    outcome,
+    summary: typedEvidence.evidence.summary,
+    artifacts: artifactsFromEvidenceFile(typedEvidence.evidence, typedEvidence.relativePath),
+    source: sourceFromEvidenceFile(typedEvidence.evidence),
+    recordedBy: recordedByFromEvidenceFile(typedEvidence.evidence),
+    because: typedEvidence.evidence.because,
+    details: {
+      evidenceFile: typedEvidence.relativePath,
+      kind: typedEvidence.evidence.kind,
+      typedEvidence: typedEvidence.evidence,
+      agent: verifier.agent,
+      expectedEvidenceKind: expectedKind,
+      dispatchStartedAt: new Date(dispatchStartedAt).toISOString(),
+      durationMs,
+      responseText,
+      isError: response.isError === true,
+    },
+    now: input.now,
+  });
+  return {
+    ...evidence,
+    exitCode: outcome === "pass" ? 0 : 1,
+    stdout: response.isError ? "" : responseText,
+    stderr: response.isError ? responseText : "",
+    command: `subagent:${verifier.agent}`,
+    durationMs,
+  };
+}
+
+function interpolateSubagentTask(
+  template: string,
+  input: { charterId: string; featureId?: string; criterionId: string; evidenceDir: string; commands: Record<string, string> },
+): string {
+  return template
+    .replaceAll("{charterId}", input.charterId)
+    .replaceAll("{featureId}", input.featureId ?? "")
+    .replaceAll("{criterionId}", input.criterionId)
+    .replaceAll("{evidenceDir}", input.evidenceDir)
+    .replace(/\{commands\.([^}]+)\}/g, (_match, key: string) => input.commands[key] ?? "");
+}
+
+interface TypedEvidenceCandidate {
+  evidence: EvidenceFile;
+  absolutePath: string;
+  relativePath: string;
+  mtimeMs: number;
+  evidenceTimeMs: number;
+}
+
+async function newestTypedEvidenceAfterDispatch(
+  dir: string,
+  projectDir: string,
+  options: { featureId?: string; expectedKind?: EvidenceKind; dispatchStartedAt: number },
+): Promise<TypedEvidenceCandidate | undefined> {
+  const roots = options.featureId
+    ? [join(dir, "work", options.featureId, "evidence")]
+    : [join(dir, "work")];
+  const candidates: TypedEvidenceCandidate[] = [];
+  for (const root of roots) {
+    if (!(await pathExists(root))) continue;
+    await collectTypedEvidenceCandidates(root, dir, projectDir, options, candidates);
+  }
+  candidates.sort((a, b) => (b.evidenceTimeMs - a.evidenceTimeMs) || (b.mtimeMs - a.mtimeMs));
+  return candidates[0];
+}
+
+async function collectTypedEvidenceCandidates(
+  current: string,
+  dir: string,
+  projectDir: string,
+  options: { featureId?: string; expectedKind?: EvidenceKind; dispatchStartedAt: number },
+  candidates: TypedEvidenceCandidate[],
+): Promise<void> {
+  for (const entry of await readdir(current, { withFileTypes: true })) {
+    const absolutePath = join(current, entry.name);
+    if (entry.isDirectory()) {
+      await collectTypedEvidenceCandidates(absolutePath, dir, projectDir, options, candidates);
+      continue;
+    }
+    if (!entry.isFile() || extname(entry.name) !== ".json") continue;
+    const fileStat = await stat(absolutePath);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(absolutePath, "utf8"));
+    } catch {
+      continue;
+    }
+    const validation = validateEvidenceFile(normalizeLegacyQaEvidence("", raw));
+    if (!validation.ok) continue;
+    const evidence = validation.value;
+    if (options.featureId && evidence.featureId !== options.featureId) continue;
+    if (options.expectedKind && evidence.kind !== options.expectedKind) continue;
+    const evidenceTimeMs = evidenceTimestampMs(evidence) ?? fileStat.mtimeMs;
+    if (Math.max(evidenceTimeMs, fileStat.mtimeMs) < options.dispatchStartedAt) continue;
+    candidates.push({
+      evidence,
+      absolutePath,
+      relativePath: relative(projectDir, absolutePath),
+      mtimeMs: fileStat.mtimeMs,
+      evidenceTimeMs,
+    });
+  }
+}
+
+function evidenceTimestampMs(evidence: EvidenceFile): number | undefined {
+  const raw = evidence.kind === "command"
+    ? evidence.ts
+    : evidence.kind === "review"
+      ? evidence.reviewedAt
+      : evidence.kind === "readiness"
+        ? evidence.probedAt
+        : undefined;
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function expectedEvidenceKindForSubagent(verifier: SubagentVerifier): EvidenceKind | undefined {
+  const looseKind = (verifier as SubagentVerifier & { evidenceKind?: unknown }).evidenceKind;
+  if (looseKind === "review" || looseKind === "qa" || looseKind === "readiness" || looseKind === "command") {
+    return looseKind;
+  }
+  if (verifier.agent === "charter-reviewer") return "review";
+  if (verifier.agent === "charter-qa") return "qa";
+  if (verifier.agent === "charter-readiness-probe") return "readiness";
+  return undefined;
 }
 
 interface CommandResult {

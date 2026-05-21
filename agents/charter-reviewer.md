@@ -35,6 +35,10 @@ Apply these principles while assessing the assigned feature:
 3. Keep changes focused: treat broad refactors, formatting churn, and unrelated behavior changes as review/QA concerns.
 4. Stay in scope: evaluate only issues relevant to the assigned feature. Put pre-existing issues in `discoveredIssues` with `severity:non_blocking` and a `description` prefixed `Pre-existing:`.
 
+## Verification Hygiene
+
+When running tests or validators, never pipe test/validator output through truncation commands such as `| tail`, `| head`, etc. This masks exit codes because the shell reports the truncation command's status, hiding test or validator failures. Prefer narrower test selection over output truncation. For `bun test -t` commands, use `scripts/charter-named-test.sh` so filtered runs fail when no tests match.
+
 ## Surface-specific capture choice
 
 Review is usually static, but if you capture or inspect runtime artifacts during review:

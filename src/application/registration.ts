@@ -35,6 +35,7 @@ import {
   type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
+import { __resetSubagentApiForTests, getSubagentApi, setSubagentApiForBridge } from "./subagent-api";
 import { renderCharterWidget } from "../ui/widget";
 import { loadCharterSnapshot, RunningSubagentRegistry } from "../ui/widget-service";
 import { CharterPickerComponent } from "../ui/charter-picker";
@@ -1469,30 +1470,12 @@ function stripJsonFences(text: string): string {
 // pi-subagents bridge: surface 2 — capture exposed API bag
 // ---------------------------------------------------------------------------
 
-/**
- * Captured pi-subagents `SubagentExposedAPI` (cached after the
- * `subagent:expose-api` event fires). `undefined` until pi-subagents emits;
- * stays `undefined` if pi-subagents is not loaded.
- *
- * Extension code that wants to programmatically spawn an internal persona can
- * read this through `getSubagentApi()`; callers must handle the `undefined`
- * case gracefully (typically by falling back to an inline path).
- */
-let subagentApi: SubagentExposedAPI | undefined;
-
-export function getSubagentApi(): SubagentExposedAPI | undefined {
-  return subagentApi;
-}
-
-/** Test-only: reset the cached API handle. */
-export function __resetSubagentApiForTests(): void {
-  subagentApi = undefined;
-}
+export { __resetSubagentApiForTests, getSubagentApi } from "./subagent-api";
 
 export function registerCharterSubagentBridge(pi: ExtensionAPI): void {
   // Reset on each registration so repeated extension loads in tests/dev
   // don't keep a stale handle from a prior pi-subagents lifecycle.
-  subagentApi = undefined;
+  setSubagentApiForBridge(undefined);
   const subs: Array<() => void> = [];
   let disposed = false;
   pi.on("session_shutdown", () => {
@@ -1504,7 +1487,7 @@ export function registerCharterSubagentBridge(pi: ExtensionAPI): void {
   subs.push(pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (raw: unknown) => {
     const api = raw as SubagentExposedAPI | undefined;
     if (!api || typeof api.spawnRaw !== "function") return;
-    subagentApi = api;
+    setSubagentApiForBridge(api);
   }));
   // Auto-bind participant children via subagent:lineage. The in-process
   // spawner cannot propagate env vars, so this event is the only way the
