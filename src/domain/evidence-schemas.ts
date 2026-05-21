@@ -1,6 +1,8 @@
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
+const NarrativePathSchema = Type.Optional(Type.String());
+
 const OutcomeSchema = Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("partial")]);
 const CommandCheckOutcomeSchema = Type.Union([Type.Literal("pass"), Type.Literal("fail")]);
 
@@ -19,6 +21,7 @@ export const CommandEvidenceSchema = Type.Object({
   checkResults: Type.Record(Type.String(), CommandCheckResultSchema),
   summary: Type.String(),
   because: Type.String(),
+  narrativePath: NarrativePathSchema,
 }, { additionalProperties: false });
 
 const BlockingIssueSchema = Type.Object({
@@ -39,6 +42,7 @@ export const ReviewEvidenceSchema = Type.Object({
   nonBlockingNotes: Type.Array(Type.String()),
   summary: Type.String(),
   because: Type.String(),
+  narrativePath: NarrativePathSchema,
 }, { additionalProperties: false });
 
 const QaFindingSchema = Type.Object({
@@ -77,6 +81,7 @@ export const QaEvidenceSchema = Type.Object({
   findings: Type.Array(QaFindingSchema),
   summary: Type.String(),
   because: Type.String(),
+  narrativePath: NarrativePathSchema,
 }, { additionalProperties: false });
 
 export const ReadinessEvidenceSchema = Type.Object({
@@ -92,6 +97,7 @@ export const ReadinessEvidenceSchema = Type.Object({
   details: Type.Record(Type.String(), Type.Unknown()),
   summary: Type.String(),
   because: Type.String(),
+  narrativePath: NarrativePathSchema,
 }, { additionalProperties: false });
 
 export const EvidenceFileSchema = Type.Union([
@@ -131,6 +137,8 @@ export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult 
 
   const schema = schemasByKind[kind];
   if (Check(schema, json)) {
+    const narrativePathError = validateNarrativePath(json as EvidenceFile);
+    if (narrativePathError) return { ok: false, error: narrativePathError };
     if (kind === "qa") {
       const pathError = validateQaArtifactPaths(json as QaEvidence);
       if (pathError) return { ok: false, error: pathError };
@@ -164,6 +172,15 @@ function validateQaArtifactPaths(evidence: QaEvidence): string | undefined {
     if (path.split("/").includes("..")) {
       return `Invalid qa evidence at /artifacts/${index}/path: artifact path must not contain '..' segments`;
     }
+  }
+  return undefined;
+}
+
+function validateNarrativePath(evidence: EvidenceFile): string | undefined {
+  const path = evidence.narrativePath;
+  if (path === undefined) return undefined;
+  if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\")) {
+    return `Invalid ${evidence.kind} evidence at /narrativePath: narrativePath must be relative`;
   }
   return undefined;
 }

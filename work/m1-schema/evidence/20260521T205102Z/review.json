@@ -1,0 +1,15 @@
+{
+  "kind": "review",
+  "charterId": "a252b21d-9451-4dda-af1d-f7b02bd22b7f",
+  "featureId": "f10-named-test-helper",
+  "criteria": ["VAL-NAMED-TEST-HELPER"],
+  "outcome": "pass",
+  "blocking": [],
+  "notes": [
+    "4/4 spec-anchored test names present in test file.",
+    "Script argument handling supports 1-arg (phrase-only) and 2-arg (file+phrase) modes per spec.",
+    "All three spec validation checks pass: zero-match exits nonzero, match exits zero, missing-args exits nonzero with Usage.",
+    "bun test 4 pass / 0 fail / 11 expect() calls."
+  ],
+  "artifacts": ["review.json", "review.md"]
+}

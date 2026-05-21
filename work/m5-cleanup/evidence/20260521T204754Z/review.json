@@ -1,0 +1,16 @@
+{
+  "kind": "review",
+  "charterId": "a252b21d-9451-4dda-af1d-f7b02bd22b7f",
+  "featureId": "m5-cleanup",
+  "outcome": "pass",
+  "blocking": [],
+  "notes": [
+    "docs/showcase.html contains 4 references to qa/<surface>.md / qa/* (lines 354, 382, 502, 682, 686) — these are v2 design-preview static HTML describing v1→v2 deltas, intentionally historical. Not a runtime or skill surface; not in scope for rename.",
+    "service.ts line 161: logger.warn string contains 'legacy qa/ briefs dir is deprecated' — this is the deprecation message text body, not a hard-coded path join. The grep test in v21-briefs-rename.test.ts (test 4) explicitly checks join() calls in src/ and passes cleanly; this warning is correct runtime behavior.",
+    "charter-qa.md agent uses qa-briefs/ references correctly (lines 19, 33) — no legacy qa/ brief paths.",
+    "SKILL.md has all 5 required v2.1 surface updates confirmed by test suite: qa-briefs path phrasing, references/qa.md pointer, dir-per-run layout, named-test helper, qa.md/review.md companions.",
+    "f13-skill-md-update: all 5 SKILL.md assertions pass (v21-skill-md-update.test.ts).",
+    "f4-briefs-rename: all 4 rename assertions pass (v21-briefs-rename.test.ts) — scaffold creates qa-briefs/, never qa/; legacy fallback warns and still works; src/ join() calls are clean."
+  ],
+  "artifacts": ["review.json", "review.md"]
+}

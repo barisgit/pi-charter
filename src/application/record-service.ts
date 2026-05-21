@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { access, readFile, readdir, unlink } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
 import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type ReadinessEvidence } from "../domain/evidence-schemas";
@@ -62,6 +62,8 @@ export interface EvidenceEntry {
    * flow through the user-facing tool surface. */
   source?: "manual" | "verifier" | "subagent";
   recordedBy?: RecordedBy;
+  narrativePath?: string;
+  runDirRelative?: string;
 }
 
 export interface RecordEvidenceBatchInput {
@@ -147,9 +149,13 @@ async function recordEvidenceFromFileLocked(
     });
   }
 
-  const evidence = validation.value;
+  const detectedNarrative = await loadNarrativeCompanion(dir, loaded.absolutePath, loaded.requestedPath, validation.value);
+  const evidence = detectedNarrative
+    ? { ...validation.value, narrativePath: detectedNarrative.narrativePath } as EvidenceFile
+    : validation.value;
   const feature = await loadEvidenceFeature(dir, evidence.featureId, input.charterId);
   const outcome = outcomeFromEvidenceFile(evidence);
+  const runDirRelative = preferredRunDirRelative(dir, loaded.absolutePath, evidence.featureId);
   const result = await recordEvidenceBatchLocked(projectDir, {
     charterId: input.charterId,
     now: input.now,
@@ -160,6 +166,8 @@ async function recordEvidenceFromFileLocked(
       summary: evidence.summary,
       because: evidence.because,
       artifacts: artifactsFromEvidenceFile(evidence, input.evidenceFile),
+      narrativePath: detectedNarrative?.narrativePath,
+      runDirRelative,
       details: {
         evidenceFile: input.evidenceFile,
         kind: evidence.kind,
@@ -172,6 +180,10 @@ async function recordEvidenceFromFileLocked(
 
   if (evidence.kind === "command") {
     await projectCommandCheckResults(dir, input.charterId, evidence, result.entries[0]?.ts ?? input.now ?? new Date().toISOString());
+  }
+
+  if (detectedNarrative) {
+    await writeNarrativeCompanions(dir, detectedNarrative, result.entries.map((entry) => entry.path));
   }
 
   return {
@@ -411,7 +423,9 @@ async function recordEvidenceBatchLocked(
     }
     const recordedBy: RecordedBy = entry.recordedBy ?? DEFAULT_RECORDED_BY;
     const featureSegment = entry.featureId?.trim() || "_charter";
-    const { relativePath, absolutePath } = await allocateEvidenceRecordPath(dir, featureSegment, stamp, reservedRunDirs);
+    const { relativePath, absolutePath } = entry.runDirRelative
+      ? await allocatePreferredEvidenceRecordPath(dir, entry.runDirRelative, featureSegment, stamp, reservedRunDirs)
+      : await allocateEvidenceRecordPath(dir, featureSegment, stamp, reservedRunDirs);
     const record: Record<string, unknown> = {
       charterId: input.charterId,
       criterionId: criterion.id,
@@ -423,6 +437,7 @@ async function recordEvidenceBatchLocked(
       source,
       recordedBy,
       ...(because ? { because } : {}),
+      ...(entry.narrativePath ? { narrativePath: entry.narrativePath } : {}),
       verifier: criterion.verifier,
       ts: now,
     };
@@ -524,8 +539,11 @@ async function recordEvidenceBatchLocked(
   };
 }
 
-async function loadTypedEvidenceFile(projectDir: string, dir: string, evidenceFile: string): Promise<{ json: unknown }> {
-  const path = evidenceFilePath(projectDir, dir, evidenceFile);
+async function loadTypedEvidenceFile(projectDir: string, dir: string, evidenceFile: string): Promise<{ json: unknown; absolutePath: string; requestedPath: string }> {
+  const requestedPath = evidenceFilePath(projectDir, dir, evidenceFile);
+  const path = extname(requestedPath) === ".md"
+    ? join(dirname(requestedPath), `${basename(requestedPath, ".md")}.json`)
+    : requestedPath;
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
@@ -538,7 +556,7 @@ async function loadTypedEvidenceFile(projectDir: string, dir: string, evidenceFi
     });
   }
   try {
-    return { json: JSON.parse(raw) };
+    return { json: JSON.parse(raw), absolutePath: path, requestedPath };
   } catch (error) {
     throw new CharterToolError(`Unable to parse evidenceFile ${evidenceFile} as JSON: ${error instanceof Error ? error.message : String(error)}`, {
       code: "evidence.file_read_error",
@@ -574,6 +592,104 @@ async function allocateEvidenceRecordPath(
       return { relativePath, absolutePath: join(dir, relativePath) };
     }
     suffix += 1;
+  }
+}
+
+async function allocatePreferredEvidenceRecordPath(
+  dir: string,
+  runDirRelative: string,
+  featureSegment: string,
+  stamp: string,
+  reservedRunDirs: Set<string>,
+): Promise<{ relativePath: string; absolutePath: string }> {
+  const relativePath = join(runDirRelative, "evidence.json");
+  const absolutePath = join(dir, relativePath);
+  if (!reservedRunDirs.has(runDirRelative) && !(await pathExists(absolutePath))) {
+    reservedRunDirs.add(runDirRelative);
+    return { relativePath, absolutePath };
+  }
+  return allocateEvidenceRecordPath(dir, featureSegment, stamp, reservedRunDirs);
+}
+
+interface NarrativeCompanion {
+  narrativePath: string;
+  absolutePath: string;
+}
+
+async function loadNarrativeCompanion(
+  dir: string,
+  evidenceAbsolutePath: string,
+  requestedPath: string,
+  evidence: EvidenceFile,
+): Promise<NarrativeCompanion | undefined> {
+  const runDir = dirname(evidenceAbsolutePath);
+  const requestedIsMarkdown = extname(requestedPath) === ".md";
+  const narrativePath = evidence.narrativePath
+    ?? (requestedIsMarkdown ? basename(requestedPath) : await siblingNarrativePath(runDir, evidence.kind));
+  if (!narrativePath) return undefined;
+  const absolutePath = validateNarrativeCompanionPath(dir, runDir, evidence.kind, narrativePath);
+  if (!(await pathExists(absolutePath))) {
+    throw new CharterToolError(`Evidence narrativePath ${narrativePath} does not exist in the evidence run directory.`, {
+      code: "evidence.narrative_path_invalid",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Write the referenced markdown narrative next to the typed evidence JSON, or remove narrativePath." },
+      ],
+    });
+  }
+  return { narrativePath, absolutePath };
+}
+
+async function siblingNarrativePath(runDir: string, kind: EvidenceFile["kind"]): Promise<string | undefined> {
+  const narrativePath = `${kind}.md`;
+  return await pathExists(join(runDir, narrativePath)) ? narrativePath : undefined;
+}
+
+function validateNarrativeCompanionPath(dir: string, runDir: string, kind: EvidenceFile["kind"], narrativePath: string): string {
+  if (isAbsolute(narrativePath) || extname(narrativePath) !== ".md") {
+    throw new CharterToolError(`Invalid ${kind} narrativePath ${narrativePath}: path must be relative and end in .md.`, {
+      code: "evidence.narrative_path_invalid",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Use a relative markdown path such as 'qa.md' or 'review.md'." },
+      ],
+    });
+  }
+  const absolutePath = resolve(runDir, narrativePath);
+  const relativeToRun = relative(runDir, absolutePath);
+  if (relativeToRun.startsWith("..") || isAbsolute(relativeToRun)) {
+    throw new CharterToolError(`Invalid ${kind} narrativePath ${narrativePath}: path must stay inside the evidence run directory.`, {
+      code: "evidence.narrative_path_invalid",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Move the markdown companion into the same evidence run directory as the typed evidence JSON." },
+      ],
+    });
+  }
+  const relativeToCharter = relative(dir, absolutePath);
+  if (relativeToCharter.startsWith("..") || isAbsolute(relativeToCharter)) {
+    throw new CharterToolError(`Invalid ${kind} narrativePath ${narrativePath}: path must stay inside the charter directory.`, {
+      code: "evidence.narrative_path_invalid",
+      nextActions: [
+        { tool: "charter_record", action: "evidence", hint: "Use markdown companions under the charter work/<feature>/evidence run directory." },
+      ],
+    });
+  }
+  return absolutePath;
+}
+
+function preferredRunDirRelative(dir: string, evidenceAbsolutePath: string, featureId: string): string | undefined {
+  const runDir = dirname(evidenceAbsolutePath);
+  const runDirRelative = relative(dir, runDir);
+  if (runDirRelative.startsWith("..") || isAbsolute(runDirRelative)) return undefined;
+  const parts = runDirRelative.split(/[\\/]+/);
+  if (parts.length !== 4 || parts[0] !== "work" || parts[1] !== featureId || parts[2] !== "evidence") return undefined;
+  return runDirRelative;
+}
+
+async function writeNarrativeCompanions(dir: string, narrative: NarrativeCompanion, evidencePaths: string[]): Promise<void> {
+  const body = await readFile(narrative.absolutePath, "utf8");
+  for (const evidencePath of evidencePaths) {
+    const targetPath = join(dirname(join(dir, evidencePath)), narrative.narrativePath);
+    if (resolve(targetPath) === resolve(narrative.absolutePath)) continue;
+    await writeTextAtomic(targetPath, body);
   }
 }
 

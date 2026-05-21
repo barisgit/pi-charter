@@ -1,0 +1,16 @@
+{
+  "kind": "review",
+  "charterId": "a252b21d-9451-4dda-af1d-f7b02bd22b7f",
+  "featureId": "m4-recipes",
+  "features": ["f6-recipe-index", "f7-recipe-terminal", "f8-recipe-stubs"],
+  "criteria": ["VAL-RECIPE-INDEX", "VAL-RECIPE-TERMINAL-VERIFIED", "VAL-RECIPES-STUBS"],
+  "outcome": "pass",
+  "blocking": [],
+  "notes": [
+    "terminal.md uses '## Platform notes' while stubs use '## Platform-specific notes' — intentional variation consistent with respective test assertions, not a defect.",
+    "20/20 tests pass (v21-recipe-index, v21-recipe-terminal, v21-recipe-stubs) with 195 expect() calls in 129ms.",
+    "terminal.cast: asciicast v3, cols=100 rows=30, command='pi --no-session', 169-line real session.",
+    "terminal.gif: GIF89a, 307428 bytes, animated (NETSCAPE2.0 extension)."
+  ],
+  "artifacts": ["review.json", "review.md"]
+}
