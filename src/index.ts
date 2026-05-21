@@ -13,6 +13,7 @@ import {
 import { registerCharterRemindersBridge } from "./application/reminders-bridge";
 
 export { CharterToolError } from "./application/errors";
+export { getPackageVersion } from "./application/version";
 export * from "./domain/evidence-schemas";
 
 /**
