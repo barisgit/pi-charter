@@ -17,6 +17,17 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function makeActiveCharter(projectDir: string, charterId: string): Promise<string> {
   await createCharter(projectDir, {
     objective: "Batch evidence probe",
@@ -53,7 +64,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan", "fa.md"),
-    `---\nid: fa\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-A\n  - VAL-B\n  - VAL-C\npreconditions: []\n---\n\n# FA\n`,
+    `---\nid: fa\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-A\n  - VAL-B\n  - VAL-C\npreconditions: []\n---\n\n# FA\n\n${VALIDATION_MD}`,
     "utf8",
   );
   await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });

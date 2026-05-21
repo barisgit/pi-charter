@@ -16,6 +16,17 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function makeActiveCharter(projectDir: string, charterId: string): Promise<string> {
   await createCharter(projectDir, {
     objective: "Trust ordering probe",
@@ -49,12 +60,12 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan", "f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-MAN-001\npreconditions: []\n---\n\n# F1\n`,
+    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-MAN-001\npreconditions: []\n---\n\n# F1\n\n${VALIDATION_MD}`,
     "utf8",
   );
   await writeFile(
     join(dir, "plan", "f2.md"),
-    `---\nid: f2\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\n# F2\n`,
+    `---\nid: f2\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\n# F2\n\n${VALIDATION_MD}`,
     "utf8",
   );
   await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });

@@ -16,6 +16,17 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function makeActiveCharter(projectDir: string, charterId: string): Promise<string> {
   await createCharter(projectDir, { objective: "Concurrent evaluator-log probe", charterId, now: "2026-05-15T00:00:00.000Z" });
   const dir = charterDir(projectDir, charterId);
@@ -43,7 +54,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan", "f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-EL-001\npreconditions: []\n---\n\n# F1\n`,
+    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-EL-001\npreconditions: []\n---\n\n# F1\n\n${VALIDATION_MD}`,
     "utf8",
   );
   await lockPlan(projectDir, { charterId, now: "2026-05-15T00:30:00.000Z", legacy: true });

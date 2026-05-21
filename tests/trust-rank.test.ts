@@ -29,12 +29,12 @@ describe("trustRank", () => {
     },
     {
       label: "subagent source ignores hasBecause and → 3",
-      input: { recordedBy: "subagent:charter-verifier:s", source: "subagent", hasBecause: false },
+      input: { recordedBy: "subagent:charter-reviewer:s", source: "subagent", hasBecause: false },
       expected: 3,
     },
     {
       label: "subagent source with because still → 3",
-      input: { recordedBy: "subagent:charter-verifier:s", source: "subagent", hasBecause: true },
+      input: { recordedBy: "subagent:charter-reviewer:s", source: "subagent", hasBecause: true },
       expected: 3,
     },
   ];
@@ -49,7 +49,7 @@ describe("trustRank", () => {
     const manual = trustRank({ recordedBy: "agent:root", source: "manual", hasBecause: false });
     const manualBecause = trustRank({ recordedBy: "agent:root", source: "manual", hasBecause: true });
     const command = trustRank({ recordedBy: "agent:root", source: "verifier", hasBecause: false });
-    const subagent = trustRank({ recordedBy: "subagent:charter-verifier:s", source: "subagent", hasBecause: false });
+    const subagent = trustRank({ recordedBy: "subagent:charter-reviewer:s", source: "subagent", hasBecause: false });
 
     expect(manualBecause).toBeGreaterThan(manual);
     expect(command).toBeGreaterThan(manualBecause);

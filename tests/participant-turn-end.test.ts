@@ -34,6 +34,17 @@ interface FakeTurnContext {
   };
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 function makeFakePi(): FakePi {
   const handlers = new Map<string, PiHandler[]>();
   const sentMessages: FakePi["sentMessages"] = [];
@@ -82,7 +93,7 @@ async function createActiveCharter(projectDir: string): Promise<string> {
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-PARTICIPANT-NO-EVAL]\npreconditions: []\n---\nbody\n`,
+    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-PARTICIPANT-NO-EVAL]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
   await lockPlan(projectDir, { charterId: charter.charterId, now: "2026-05-18T00:01:00.000Z", legacy: true });
   return charter.charterId;

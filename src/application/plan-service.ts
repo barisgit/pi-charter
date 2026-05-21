@@ -109,6 +109,7 @@ export async function lockPlan(
   }
   const plan = await viewPlan(projectDir, { charterId: input.charterId });
   const failures: string[] = [];
+  const hasCoverageDrift = plan.drift.uncovered.length > 0 || plan.drift.orphanFeatures.length > 0 || plan.drift.unknownFulfilledCriteria.length > 0;
   if (plan.criteria.length === 0) failures.push("charter.md has no VAL-* criteria");
   if (plan.features.length === 0) failures.push("plan/ has no feature files");
   if (plan.drift.uncovered.length) failures.push(`uncovered criteria: ${plan.drift.uncovered.map((c) => c.id).join(", ")}`);
@@ -116,6 +117,11 @@ export async function lockPlan(
   if (plan.drift.unknownFulfilledCriteria.length) {
     const refs = plan.drift.unknownFulfilledCriteria.map((row) => `${row.featureId}->${row.criterionId}`).join(", ");
     failures.push(`features fulfill unknown criteria: ${refs}`);
+  }
+  const validationShapeFailures = implValidationShapeFailures(plan.features);
+  if (validationShapeFailures.length) {
+    const refs = validationShapeFailures.map((row) => `${row.featureId} missing ${row.missing.join(" and ")}`).join(", ");
+    failures.push(`impl features missing validation checks: ${refs}`);
   }
   const cycle = detectPreconditionCycle(plan.features);
   if (cycle) failures.push(`precondition cycle: ${cycle.join(" -> ")}`);
@@ -150,6 +156,7 @@ export async function lockPlan(
       if (missing.length) code = "lock_plan.missing_verifier";
       else if (weak.length) code = "lock_plan.weak_verifier";
     }
+    if (code === "lock_plan.drift" && validationShapeFailures.length && !hasCoverageDrift) code = "lock_plan.validation_shape";
     const nextActions: NextAction[] = [
       { tool: "charter_plan", action: "view", hint: "Re-read plan coverage to see uncovered criteria, orphan features, and unknown fulfills links." },
       { tool: "charter_plan", action: "update_feature", hint: "Patch fulfills/preconditions on existing features to resolve drift before retrying lock_plan." },
@@ -654,6 +661,19 @@ function detectPreconditionCycle(features: FeatureDefinition[]): string[] | unde
     }
   }
   return undefined;
+}
+
+function implValidationShapeFailures(features: FeatureDefinition[]): Array<{ featureId: string; missing: string[] }> {
+  return features
+    .filter((feature) => feature.kind === "impl")
+    .map((feature) => ({
+      featureId: feature.id,
+      missing: [
+        feature.checks.happy.length === 0 ? "happy" : undefined,
+        feature.checks.edge.length === 0 ? "edge" : undefined,
+      ].filter((side): side is string => side !== undefined),
+    }))
+    .filter((failure) => failure.missing.length > 0);
 }
 
 function digestFeatures(features: FeatureDefinition[]): string {

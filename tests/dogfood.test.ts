@@ -24,6 +24,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
 const DOGFOOD_VALS = ["VAL-D-001", "VAL-D-002", "VAL-D-003"];
 const CHARTER_DOG = "cha-dogfood";
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 async function seedDogfoodCharter(projectDir: string): Promise<string> {
   await createCharter(projectDir, {
     objective: "Dogfood the complete gate end-to-end",
@@ -79,6 +92,7 @@ async function seedDogfoodCharter(projectDir: string): Promise<string> {
         "---",
         `# ${featureId}`,
         "",
+        VALIDATION_MD,
       ].join("\n"),
       "utf8",
     );
@@ -88,7 +102,7 @@ async function seedDogfoodCharter(projectDir: string): Promise<string> {
 }
 
 describe("dogfood complete gate (VAL-14A, VAL-14B)", () => {
-  test("first complete rejects with every VAL flagged; second complete succeeds after charter-verifier review", async () => {
+  test("first complete rejects with every VAL flagged; second complete succeeds after charter-reviewer review", async () => {
     await withTempProject(async (projectDir) => {
       const dir = await seedDogfoodCharter(projectDir);
 
@@ -144,7 +158,7 @@ describe("dogfood complete gate (VAL-14A, VAL-14B)", () => {
       }
       await writeFile(featureStatePath, `${JSON.stringify(fs0, null, 2)}\n`);
 
-      // VAL-14B: simulate a charter-verifier subagent for every flagged VAL.
+      // VAL-14B: simulate a charter-reviewer subagent for every flagged VAL.
       ts = Date.parse("2026-05-15T02:30:00.000Z");
       for (let idx = 0; idx < DOGFOOD_VALS.length; idx++) {
         const valId = DOGFOOD_VALS[idx];
@@ -152,8 +166,8 @@ describe("dogfood complete gate (VAL-14A, VAL-14B)", () => {
         await applyHandoff(projectDir, {
           charterId: CHARTER_DOG,
           featureId,
-          subagentSessionId: "charter-verifier-A",
-          handoffNote: `charter-verifier review for ${valId}`,
+          subagentSessionId: "charter-reviewer-A",
+          handoffNote: `charter-reviewer review for ${valId}`,
           completedCriteria: [
             { criterionId: valId, outcome: "pass", summary: `verifier reviewed ${valId}` },
           ],
@@ -161,9 +175,9 @@ describe("dogfood complete gate (VAL-14A, VAL-14B)", () => {
         });
         ts += 60_000;
       }
-      // applyHandoff overwrote lastWorkerSessionId to charter-verifier-A;
+      // applyHandoff overwrote lastWorkerSessionId to charter-reviewer-A;
       // restore the original implementer ids so identity-disjoint remains
-      // satisfied (impl-N != charter-verifier-A).
+      // satisfied (impl-N != charter-reviewer-A).
       const fs1 = JSON.parse(await readFile(featureStatePath, "utf8"));
       for (let idx = 0; idx < DOGFOOD_VALS.length; idx++) {
         fs1.features[`f${idx + 1}`].lastWorkerSessionId = `impl-${idx + 1}`;
@@ -225,6 +239,7 @@ describe("dogfood complete gate (VAL-14A, VAL-14B)", () => {
           "---",
           "# f1",
           "",
+          VALIDATION_MD,
         ].join("\n"),
         "utf8",
       );
@@ -241,6 +256,7 @@ describe("dogfood complete gate (VAL-14A, VAL-14B)", () => {
           "---",
           "# f2",
           "",
+          VALIDATION_MD,
         ].join("\n"),
         "utf8",
       );

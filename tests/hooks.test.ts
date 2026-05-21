@@ -16,6 +16,19 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 async function writeCharter(projectDir: string, charterId: string, body: string) {
   const dir = join(projectDir, ".pi/charters", charterId);
   await writeFile(join(dir, "charter.md"), body);
@@ -45,7 +58,7 @@ describe("charter hook bus", () => {
         projectDir,
         charter.charterId,
         "f1.md",
-        `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-HOOK-001]\npreconditions: []\n---\nbody\n`,
+        `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-HOOK-001]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}\n`,
       );
 
       subscribeHook("charter:before_lock_plan", () => ({ decision: "block", reason: "manual review pending" }));
@@ -69,7 +82,7 @@ describe("charter hook bus", () => {
         projectDir,
         charter.charterId,
         "f1.md",
-        `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-HOOK-001]\npreconditions: []\n---\nbody\n`,
+        `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-HOOK-001]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}\n`,
       );
 
       const seen: string[] = [];
@@ -99,7 +112,7 @@ describe("charter hook bus", () => {
         projectDir,
         charter.charterId,
         "f1.md",
-        `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-HOOK-001]\npreconditions: []\n---\nbody\n`,
+        `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-HOOK-001]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}\n`,
       );
       await lockPlan(projectDir, { charterId: charter.charterId });
       await recordEvidence(projectDir, {
@@ -108,7 +121,7 @@ describe("charter hook bus", () => {
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-hook",
+        recordedBy: "subagent:charter-reviewer:sess-hook",
         now: "2026-05-15T01:00:00.000Z",
       });
 

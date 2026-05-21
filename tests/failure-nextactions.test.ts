@@ -65,6 +65,19 @@ async function expectCharterToolError(promise: Promise<unknown>): Promise<Charte
   return caught;
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 const FEATURE_MD = (id: string, fulfills: string[], milestone = "m1") =>
   [
     "---",
@@ -77,6 +90,7 @@ const FEATURE_MD = (id: string, fulfills: string[], milestone = "m1") =>
     "",
     `# ${id}`,
     "",
+    VALIDATION_MD,
   ].join("\n");
 
 async function seedPlanningCharter(
@@ -484,6 +498,7 @@ describe("plan-service.ts — CharterToolError throw sites", () => {
           "",
           `# ${id}`,
           "",
+          VALIDATION_MD,
         ].join("\n");
       await writeFile(join(dir, "plan", "a.md"), cyc("a", "b"), "utf8");
       await writeFile(join(dir, "plan", "b.md"), cyc("b", "a"), "utf8");

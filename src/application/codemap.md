@@ -99,9 +99,9 @@ Enforced by `completeCharter` before transition. Criteria must have:
 
 **Trust / blocking logic (`computeBlockingForComplete`)**
 A criterion is "blocking for complete" (surfaced by `getCharterStatus.details.blockingForComplete`) when:
-- It has pass evidence AND that evidence is low-trust (`trustRank <= 1` — manual without because, or manual+because from a non-charter-verifier writer); OR
-- `effectiveRequireReviewSubagent === true` AND no pass evidence has `recordedBy` starting with `subagent:charter-verifier:`; OR
-- `effectiveRequireReviewSubagent === true` AND every charter-verifier reviewer shares the implementer's session id (`implementer-only-reviewer`).
+- It has pass evidence AND that evidence is low-trust (`trustRank <= 1` — manual without because, or manual+because from a non-charter-reviewer writer); OR
+- `effectiveRequireReviewSubagent === true` AND no pass evidence has `recordedBy` starting with `subagent:charter-reviewer:`; OR
+- `effectiveRequireReviewSubagent === true` AND every charter-reviewer reviewer shares the implementer's session id (`implementer-only-reviewer`).
 
 **VAL-12 auto-default**: `effectiveRequireReviewSubagent` returns `true` when the criterion id appears in any `milestone_ready_for_review` event's `criterionIds` and the criterion does not explicitly declare the field.
 
@@ -240,7 +240,7 @@ Each write creates:
 - Writes a handoff envelope (`handoffs/<stamp>__<featureId>__<sessionId>.json`).
 - Calls `recordEvidence` for each completed criterion with `source: "subagent"` and `recordedBy: subagent:<persona>:<sessionId>`.
 - Updates `feature-state.json`: flips to `completed` if all fulfilled criteria are pass, otherwise preserves `in_progress`.
-- Detects review handoffs (session id contains `charter-verifier`) and preserves the implementer's `lastWorkerSessionId` (VAL-13 disjunction).
+- Detects review handoffs (session id contains `charter-reviewer`) and preserves the implementer's `lastWorkerSessionId` (VAL-13 disjunction).
 - Projects `milestone_ready_for_review`.
 
 **Milestone projection (`projectMilestoneReadyForReview`)**
@@ -332,7 +332,7 @@ computeDrift(projectDir, { charterId, now?, freshnessWindowMs? }) => DriftViews
 - Charter objective, status, criteria with outcomes.
 - `featureCount`.
 - Full `drift` from `computeDrift`.
-- `unreviewedMilestones` — milestones with a `milestone_ready_for_review` event whose criteria have no charter-verifier evidence.
+- `unreviewedMilestones` — milestones with a `milestone_ready_for_review` event whose criteria have no charter-reviewer evidence.
 - `recentUserMessages` / `recentToolNames` — last 5 messages, last 12 tool names from the session branch.
 
 **Steer enforcement (`enforceMilestoneSteer`)**
@@ -512,10 +512,10 @@ Emits a persistent reminder with `ttl: "persistent"` and `repeatEveryTurns: 8` c
 
 ```
 trustRank(source, recordedBy, hasBecause) → number
-  subagent:charter-verifier:*  → 3 (always clears)
+  subagent:charter-reviewer:*  → 3 (always clears)
   verifier | hook | subagent:*  → 2 (clears if has because)
-  manual + because              → 1 (clears only on charter-verifier override)
-  manual (no because)           → 0 (blocked unless charter-verifier records)
+  manual + because              → 1 (clears only on charter-reviewer override)
+  manual (no because)           → 0 (blocked unless charter-reviewer records)
 ```
 
 ### Evidence identity encoding
@@ -523,7 +523,7 @@ trustRank(source, recordedBy, hasBecause) → number
 ```
 recordedBy ::= "agent:root"           # default root agent
             |  "subagent:<persona>:<sessionId>"
-            |  "subagent:charter-verifier:<sessionId>"  # VAL-11/13 trusted reviewer
+            |  "subagent:charter-reviewer:<sessionId>"  # VAL-11/13 trusted reviewer
 ```
 
 ### File layout per charter

@@ -48,6 +48,17 @@ function ctx(projectDir: string, sessionId: string) {
   };
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function withTempProject<T>(fn: (input: { projectDir: string; homeDir: string; charterId: string }) => Promise<T>): Promise<T> {
   const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-handoff-schema-proj-"));
   const homeDir = await mkdtemp(join(tmpdir(), "pi-charter-handoff-schema-home-"));
@@ -94,6 +105,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "",
       "# f1",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );

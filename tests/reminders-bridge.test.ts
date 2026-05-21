@@ -13,6 +13,19 @@ interface EmittedEvent {
   payload: any;
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pi-charter-reminders-"));
   try {
@@ -128,6 +141,7 @@ async function writeReadyPlan(projectDir: string, charterId: string, criteria = 
       "---",
       "Implement reminder bridge.",
       "",
+      VALIDATION_MD,
     ].join("\n"),
   );
 }
@@ -229,7 +243,7 @@ describe("charter reminders bridge", () => {
         outcome: "pass",
         summary: "reviewer pass",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-rem-done",
+        recordedBy: "subagent:charter-reviewer:sess-rem-done",
       });
 
       events.length = 0;
@@ -277,7 +291,7 @@ describe("charter reminders bridge", () => {
         outcome: "pass",
         summary: "reviewer pass",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-rem-throw",
+        recordedBy: "subagent:charter-reviewer:sess-rem-throw",
       });
       await expect(executeTool(tools.get("charter_manage"), { action: "complete", charterId }, projectDir)).resolves.toMatchObject({
         details: { status: "completed" },
@@ -425,7 +439,7 @@ describe("charter reminders bridge", () => {
         outcome: "pass",
         summary: "reviewer pass",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-upsert-after-done",
+        recordedBy: "subagent:charter-reviewer:sess-upsert-after-done",
       });
       await executeTool(tools.get("charter_manage"), { action: "complete", charterId }, projectDir);
 
@@ -453,7 +467,7 @@ describe("charter reminders bridge", () => {
           outcome: "pass",
           summary: "reviewer pass",
           source: "subagent",
-          recordedBy: "subagent:charter-verifier:sess-stale-binding",
+          recordedBy: "subagent:charter-reviewer:sess-stale-binding",
         });
         await bindCharterToSession(projectDir, { charterId, sessionId, homeDir });
         await executeTool(tools.get("charter_manage"), { action: "complete", charterId }, projectDir);

@@ -16,6 +16,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 async function makeActiveCharter(projectDir: string, charterId = "cha-complete-1") {
   const charterMd = [
     "# Charter cha-complete-1",
@@ -50,6 +63,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-complete-1
       "",
       `# Feature ${id}`,
       "",
+      VALIDATION_MD,
     ].join("\n");
   await createCharter(projectDir, { objective: "Ship OAuth callback", charterId, now: "2026-05-15T00:00:00.000Z" });
   const charterDir = join(projectDir, ".pi", "charters", charterId);
@@ -72,7 +86,7 @@ describe("charter_manage complete", () => {
     });
   });
 
-  test("completes when all criteria have pass evidence from a charter-verifier subagent", async () => {
+  test("completes when all criteria have pass evidence from a charter-reviewer subagent", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       await recordEvidence(projectDir, {
@@ -82,7 +96,7 @@ describe("charter_manage complete", () => {
         outcome: "pass",
         summary: "callback works",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-1",
+        recordedBy: "subagent:charter-reviewer:sess-1",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
@@ -92,7 +106,7 @@ describe("charter_manage complete", () => {
         outcome: "pass",
         summary: "tokens persisted",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-2",
+        recordedBy: "subagent:charter-reviewer:sess-2",
         now: "2026-05-15T02:30:00.000Z",
       });
       const result = await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
@@ -185,14 +199,14 @@ describe("charter_manage complete (trust gate)", () => {
       const message = (caught as Error).message;
       expect(message).toContain("VAL-AUTH-001");
       expect(message).toContain("VAL-AUTH-002");
-      expect(message.toLowerCase()).toContain("charter-verifier");
+      expect(message.toLowerCase()).toContain("charter-reviewer");
       expect(message.toLowerCase()).toContain("because");
       const state = await loadCharterState(join(projectDir, ".pi", "charters", "cha-complete-1"));
       expect(state.status).toBe("active");
     });
   });
 
-  test("a charter-verifier-sourced record clears that VAL from the blocking list", async () => {
+  test("a charter-reviewer-sourced record clears that VAL from the blocking list", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       await recordEvidence(projectDir, {
@@ -202,7 +216,7 @@ describe("charter_manage complete (trust gate)", () => {
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-1",
+        recordedBy: "subagent:charter-reviewer:sess-1",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
@@ -227,7 +241,7 @@ describe("charter_manage complete (trust gate)", () => {
     });
   });
 
-  test("completes when every VAL has a charter-verifier-sourced record", async () => {
+  test("completes when every VAL has a charter-reviewer-sourced record", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       await recordEvidence(projectDir, {
@@ -237,7 +251,7 @@ describe("charter_manage complete (trust gate)", () => {
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-1",
+        recordedBy: "subagent:charter-reviewer:sess-1",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
@@ -247,7 +261,7 @@ describe("charter_manage complete (trust gate)", () => {
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-2",
+        recordedBy: "subagent:charter-reviewer:sess-2",
         now: "2026-05-15T02:30:00.000Z",
       });
       const result = await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
@@ -267,7 +281,7 @@ describe("charter_manage amend_charter", () => {
         outcome: "pass",
         summary: "callback works",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-1",
+        recordedBy: "subagent:charter-reviewer:sess-1",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
@@ -277,7 +291,7 @@ describe("charter_manage amend_charter", () => {
         outcome: "pass",
         summary: "tokens persisted",
         source: "subagent",
-        recordedBy: "subagent:charter-verifier:sess-2",
+        recordedBy: "subagent:charter-reviewer:sess-2",
         now: "2026-05-15T02:30:00.000Z",
       });
       await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });

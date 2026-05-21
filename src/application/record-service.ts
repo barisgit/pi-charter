@@ -9,7 +9,7 @@ import type { CharterCriterion, RecordedBy } from "../domain/types";
  * delegated tooling) override this when they have a more specific identity. */
 const DEFAULT_RECORDED_BY: RecordedBy = "agent:root";
 /** Persona prefix used when applyHandoff derives recordedBy from subagentSessionId. */
-const DEFAULT_HANDOFF_PERSONA = "charter-verifier";
+const DEFAULT_HANDOFF_PERSONA = "charter-reviewer";
 import {
   appendEvent,
   charterDir,
@@ -18,6 +18,9 @@ import {
   writeJsonAtomic,
   writeTextAtomic,
 } from "../infrastructure/store";
+import { loadFeatureState, writeFeatureState } from "../persistence/feature-state";
+export type { FeatureCheckState, FeatureCheckStatus, FeatureStateFile, FeatureStateRecord } from "../persistence/feature-state";
+export { loadFeatureState } from "../persistence/feature-state";
 import { nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 
@@ -633,19 +636,6 @@ export interface ApplyHandoffResult {
   nextActions: NextAction[];
 }
 
-export interface FeatureStateRecord {
-  status?: string;
-  startedAt?: string;
-  completedAt?: string;
-  lastWorkerSessionId?: string;
-  lastHandoffPath?: string;
-}
-
-export interface FeatureStateFile {
-  charterId: string;
-  features: Record<string, FeatureStateRecord>;
-}
-
 export async function applyHandoff(projectDir: string, input: ApplyHandoffInput): Promise<ApplyHandoffResult> {
   const dir = charterDir(projectDir, input.charterId);
   return await withCharterLock(dir, () => applyHandoffLocked(projectDir, input));
@@ -775,16 +765,16 @@ async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput):
   }
 
   const featureState = await loadFeatureState(dir, input.charterId);
-  const existing = featureState.features[input.featureId] ?? {};
+  const existing = featureState.features[input.featureId] ?? { checks: {} };
   const completed = await handoffCompletesFeature(dir, input.featureId, input.charterId);
-  // A handoff from the charter-verifier persona is a review, not an
+  // A handoff from the charter-reviewer persona is a review, not an
   // implementation. Preserve any existing implementer session id (VAL-13);
   // when none is recorded, leave lastWorkerSessionId unset so the
   // identity-disjoint predicate skips this feature cleanly instead of
   // treating the reviewer as the implementer.
   const isReviewHandoff = input.subagentSessionId.startsWith(`${DEFAULT_HANDOFF_PERSONA}-`)
     || input.subagentSessionId === DEFAULT_HANDOFF_PERSONA
-    || input.subagentSessionId.includes("charter-verifier");
+    || input.subagentSessionId.includes("charter-reviewer");
   const nextWorkerSessionId = isReviewHandoff
     ? existing.lastWorkerSessionId
     : input.subagentSessionId;
@@ -796,7 +786,7 @@ async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput):
     lastWorkerSessionId: nextWorkerSessionId,
     lastHandoffPath: handoffRelative,
   };
-  await writeJsonAtomic(join(dir, "feature-state.json"), featureState);
+  await writeFeatureState(dir, featureState);
 
   await appendEvent(dir, {
     type: "handoff_applied",
@@ -844,7 +834,7 @@ async function projectFeatureCompletionFromEvidence(dir: string, featureId: stri
   const completed = await handoffCompletesFeature(dir, featureId, charterId);
   if (!completed) return;
   const featureState = await loadFeatureState(dir, charterId);
-  const existing = featureState.features[featureId] ?? {};
+  const existing = featureState.features[featureId] ?? { checks: {} };
   if (existing.status === "completed") return;
   featureState.features[featureId] = {
     ...existing,
@@ -852,7 +842,7 @@ async function projectFeatureCompletionFromEvidence(dir: string, featureId: stri
     startedAt: existing.startedAt ?? now,
     completedAt: existing.completedAt ?? now,
   };
-  await writeJsonAtomic(join(dir, "feature-state.json"), featureState);
+  await writeFeatureState(dir, featureState);
 }
 
 /**
@@ -956,18 +946,6 @@ async function loadPlanDigest(dir: string): Promise<string> {
     // fall through
   }
   return "";
-}
-
-export async function loadFeatureState(dir: string, charterId: string): Promise<FeatureStateFile> {
-  try {
-    const parsed = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8")) as Partial<FeatureStateFile>;
-    return {
-      charterId: parsed.charterId ?? charterId,
-      features: parsed.features && typeof parsed.features === "object" ? (parsed.features as Record<string, FeatureStateRecord>) : {},
-    };
-  } catch {
-    return { charterId, features: {} };
-  }
 }
 
 function nextActionsForEvidence(criterion: CharterCriterion, outcome: EvidenceOutcome, status: "active" | "review"): NextAction[] {

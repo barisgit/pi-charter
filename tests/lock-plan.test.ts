@@ -15,6 +15,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 const FEATURE = (id: string, fulfills: string[]) =>
   [
     "---",
@@ -27,6 +40,7 @@ const FEATURE = (id: string, fulfills: string[]) =>
     "",
     `# ${id}`,
     "",
+    VALIDATION_MD,
   ].join("\n");
 
 async function seedCharter(projectDir: string, charterId: string, charterMd: string, features: Array<{ id: string; fulfills: string[] }>) {

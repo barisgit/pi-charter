@@ -156,7 +156,7 @@ After every evidence record or handoff:
 1. `projectFeatureCompletionFromEvidence` — flips `feature-state.<id>.status → "completed"` when all fulfilled VALs have pass evidence
 2. `projectMilestoneReadyForReview` — if all features in a milestone are completed (none failed), emits one `milestone_ready_for_review` event per `(milestoneId, planDigest)` tuple (idempotent)
 
-The `milestone_ready_for_review` event is the trigger for VAL-11's review subagent gate: a criterion counts as reviewed only when there is charter-verifier evidence with `ts >= milestone_ready_for_review.ts`.
+The `milestone_ready_for_review` event is the trigger for VAL-11's review subagent gate: a criterion counts as reviewed only when there is charter-reviewer evidence with `ts >= milestone_ready_for_review.ts`.
 
 ### 10. Completion Gate Trust Model (`domain/trust-rank.ts` + `service.ts`)
 
@@ -164,7 +164,7 @@ Evidence trust rank: `subagent (3) > command|hook (2) > manual+because (1) > man
 
 A criterion is **blocking for complete** when:
 - It has pass evidence but the writer is `agent:root` with no `because` (rank 0), or
-- `requireReviewSubagent` is effective `true` (explicit or auto-defaulted from milestone coverage) and no pass evidence has a `subagent:charter-verifier:*` writer, or
+- `requireReviewSubagent` is effective `true` (explicit or auto-defaulted from milestone coverage) and no pass evidence has a `subagent:charter-reviewer:*` writer, or
 - The implementer and reviewer share the same session id (VAL-13 identity-disjoint rule)
 
 ---
@@ -229,10 +229,10 @@ charter_manage(action=lock_plan) → status=active
           projectFeatureCompletionFromEvidence() → feature-state update
           projectMilestoneReadyForReview() → milestone_ready_for_review event (when applicable)
           reminders.upsertCharterReminder()
-      → agent calls charter_record(action=handoff_apply) [from charter-verifier subagent]
+      → agent calls charter_record(action=handoff_apply) [from charter-reviewer subagent]
         → record-service.applyHandoff()
           write handoffs/<stamp>__<featureId>__<sessionId>.json
-          recordEvidence() for each completed criterion (source="subagent", recordedBy="subagent:charter-verifier:<sessionId>")
+          recordEvidence() for each completed criterion (source="subagent", recordedBy="subagent:charter-reviewer:<sessionId>")
           update feature-state.json (lastWorkerSessionId, status=completed)
           appendEvent("handoff_applied")
 ```
@@ -365,10 +365,10 @@ tryRemoveCharterReminder (called on complete/force_complete)
 - Agents are expected to read the skill for workflow guidance before acting on a charter
 - The skill file at `~/.pi/agent/skills/pi-charter/SKILL.md` defines the canonical end-to-end procedure
 
-### With `charter-planner-critic` and `charter-verifier` Personas
+### With `charter-planner-critic` and `charter-reviewer` Personas
 
 - **charter-planner-critic**: spawned during planning phase before `lock_plan`; stress-tests VAL coverage
-- **charter-verifier**: spawned with `pi-charter.charterId`, `pi-charter.featureId`, `pi-charter.criterionId` metadata; records `subagent`-sourced evidence with `recordedBy = "subagent:charter-verifier:<sessionId>"`; applies handoffs
+- **charter-reviewer**: spawned with `pi-charter.charterId`, `pi-charter.featureId`, `pi-charter.criterionId` metadata; records `subagent`-sourced evidence with `recordedBy = "subagent:charter-reviewer:<sessionId>"`; applies handoffs
 
 ### Test Seams (`options.homeDir`, `options.modelFn`)
 

@@ -121,7 +121,7 @@ describe("widget-state reducer", () => {
     const vm = buildViewModel(defaultInput({
       criteria: [criterion("VAL-1"), criterion("VAL-2"), criterion("VAL-3"), criterion("VAL-4")],
       criterionOutcomes: { "VAL-1": { outcome: "pass" }, "VAL-2": { outcome: "pass" } },
-      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "charter-verifier", criterionId: "VAL-3", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
+      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "charter-reviewer", criterionId: "VAL-3", featureId: "f1", startedAt: "2026-05-15T10:04:00Z" }],
     }));
     expect(vm.bar).toEqual({ pass: 2, running: 1, total: 4 });
   });
@@ -263,7 +263,7 @@ describe("widget render", () => {
         Array.from({ length: 7 }, (_, i) => [`VAL-${i + 1}`, { outcome: "pass" }] as const),
       ),
       features: [feature({ id: "wide-feature-name", fulfills: Array.from({ length: 20 }, (_, i) => `VAL-${i + 1}`) })],
-      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "charter-verifier-with-loud-name", featureId: "wide-feature-name", startedAt: "2026-05-15T10:04:00Z" }],
+      runningSubagents: [{ runId: "r1", charterId: "c-test", agentName: "charter-reviewer-with-loud-name", featureId: "wide-feature-name", startedAt: "2026-05-15T10:04:00Z" }],
     }));
     const lines = renderCharterWidget({ width: 60, theme, vm });
     // Minimum width clamps to 60; row should still render. Beads should fall

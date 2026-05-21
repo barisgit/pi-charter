@@ -32,7 +32,7 @@ export interface CharterStatusDetails {
    * Per-criterion view of pass evidence the completion gate considers too
    * low-trust to accept. A criterion only appears here when it HAS pass
    * evidence but that evidence fails the trust rule (manual+because from
-   * a non-charter-verifier writer). Missing-evidence gaps are still surfaced
+   * a non-charter-reviewer writer). Missing-evidence gaps are still surfaced
    * by completeCharter's existing "no pass evidence yet" error and by drift.
    */
   blockingForComplete: BlockingForCompleteEntry[];
@@ -126,7 +126,7 @@ async function listQaBriefs(dir: string): Promise<string[]> {
 
 /**
  * Scan events.jsonl for `milestone_ready_for_review` events whose criterionIds
- * have not yet been fully covered by a later charter-verifier evidence record.
+ * have not yet been fully covered by a later charter-reviewer evidence record.
  * Append one nextAction per unreviewed milestone.
  */
 async function computeMilestoneReviewNextActionsSafely(dir: string): Promise<NextAction[]> {
@@ -149,10 +149,10 @@ export interface UnreviewedMilestone {
  * Pure helper consumed by both `getCharterStatus` and the evaluator. Reads
  * `events.jsonl` and `criterion-state.json`, returns the set of
  * milestone_ready_for_review events whose criterionIds are not yet fully
- * covered by charter-verifier-attributed pass evidence.
+ * covered by charter-reviewer-attributed pass evidence.
  *
  * Coverage is decided by `criterion-state.recordedBy` starting with
- * `subagent:charter-verifier:` (the authoritative identity prefix written by
+ * `subagent:charter-reviewer:` (the authoritative identity prefix written by
  * applyHandoff), not by event payloads. This keeps the surface honest when
  * other persona subagents also write evidence.
  */
@@ -193,9 +193,9 @@ export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedM
 
   // VAL-11 contract: a milestone counts as reviewed iff every criterionId has
   // AT LEAST ONE evidence record where `recordedBy` starts with
-  // `subagent:charter-verifier:` and `ts >= milestone_ready_for_review.ts`.
+  // `subagent:charter-reviewer:` and `ts >= milestone_ready_for_review.ts`.
   // Latest-record-in-criterion-state is not enough; a later agent:root
-  // record would otherwise clobber a valid charter-verifier review.
+  // record would otherwise clobber a valid charter-reviewer review.
   const verifierReviewsByCriterion = await loadCharterVerifierReviewsByCriterion(dir);
   const unreviewed: UnreviewedMilestone[] = [];
   for (const [milestoneId, ready] of readyByMilestone) {
@@ -216,7 +216,7 @@ export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedM
 
 /**
  * Walk work/<featureId>/evidence/*.json and collect every pass evidence record
- * whose `recordedBy` is `subagent:charter-verifier:*`, keyed by criterionId,
+ * whose `recordedBy` is `subagent:charter-reviewer:*`, keyed by criterionId,
  * with the record `ts`. VAL-11 uses this to compare against milestone_ready_for_review.ts.
  */
 async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<string, { ts: string }[]>> {
@@ -249,7 +249,7 @@ async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<s
       const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : undefined;
       const ts = typeof parsed.ts === "string" ? parsed.ts : undefined;
       if (!criterionId || !recordedBy || !ts) continue;
-      if (!recordedBy.startsWith("subagent:charter-verifier:")) continue;
+      if (!recordedBy.startsWith("subagent:charter-reviewer:")) continue;
       const list = out.get(criterionId) ?? [];
       list.push({ ts });
       out.set(criterionId, list);
@@ -262,7 +262,7 @@ async function computeMilestoneReviewNextActions(dir: string): Promise<NextActio
   const unreviewed = await listUnreviewedMilestones(dir);
   return unreviewed.map((entry) => ({
     tool: "subagent" as const,
-    hint: `Delegate to charter-verifier for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
+    hint: `Delegate to charter-reviewer for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
     metadata: { milestoneId: entry.milestoneId, criterionIds: entry.criterionIds },
   }));
 }
@@ -334,7 +334,7 @@ export async function completeCharter(
   const blocking = computeBlockingForComplete(charter.criteria, criterionState, context);
   if (blocking.length > 0) {
     // Render `<id>(<reason>)` per VAL so identity-disjoint and
-    // requires-charter-verifier rejections are distinguishable from generic
+    // requires-charter-reviewer rejections are distinguishable from generic
     // low-trust evidence in the user-facing error string. The summary line
     // keeps the legacy `low-trust evidence for N VAL(s): ...` phrasing so
     // existing tests grepping for VAL ids continue to match.
@@ -346,7 +346,7 @@ export async function completeCharter(
       `Cannot complete charter:`,
       ` - ${failures.join("\n - ")}`,
       ...(blocking.length > 0
-        ? ["Fix: add Because: rationale and run charter-verifier (subagent({agent:'charter-verifier'})) for the listed VALs."]
+        ? ["Fix: add Because: rationale and run charter-reviewer (subagent({agent:'charter-reviewer'})) for the listed VALs."]
         : []),
     ].join("\n");
     // Collect every failing criterion id so nextActions can name them in
@@ -369,13 +369,13 @@ export async function completeCharter(
       nextActions.push({
         tool: "charter_record",
         action: "evidence",
-        hint: `Record charter-verifier-attributed pass evidence for ${id} (set recordedBy='subagent:charter-verifier:<sessionId>').`,
+        hint: `Record charter-reviewer-attributed pass evidence for ${id} (set recordedBy='subagent:charter-reviewer:<sessionId>').`,
       });
     }
     if (blocking.length > 0) {
       nextActions.push({
         tool: "subagent",
-        hint: `Delegate to charter-verifier subagent for: ${blocking.map((b) => b.criterionId).join(", ")}.`,
+        hint: `Delegate to charter-reviewer subagent for: ${blocking.map((b) => b.criterionId).join(", ")}.`,
       });
     }
     nextActions.push({ tool: "charter_status", hint: "Re-read drift and the blockingForComplete view after recording new evidence." });
@@ -594,9 +594,9 @@ export function effectiveRequireReviewSubagent(
  * Shared trust-gate computation used by both `completeCharter` (to block) and
  * `getCharterStatus` (to surface). A criterion shows up here when:
  *   - it has pass evidence AND that evidence is low-trust (manual or
- *     manual+because) AND the writer isn't a charter-verifier subagent; OR
+ *     manual+because) AND the writer isn't a charter-reviewer subagent; OR
  *   - effective `requireReviewSubagent` is true and no pass evidence has a
- *     `subagent:charter-verifier:` writer; OR
+ *     `subagent:charter-reviewer:` writer; OR
  *   - effective `requireReviewSubagent` is true and every pass evidence
  *     shares its session id with the implementing feature
  *     (`implementer-only-reviewer`).
@@ -618,9 +618,9 @@ export function computeBlockingForComplete(
     const effectiveReview = effectiveRequireReviewSubagent(criterion, milestoneIds);
     if (effectiveReview && context) {
       const allPass = context.passRecordedByCriterion.get(criterion.id) ?? [];
-      const reviewerRecords = allPass.filter((rb) => rb.startsWith("subagent:charter-verifier:"));
+      const reviewerRecords = allPass.filter((rb) => rb.startsWith("subagent:charter-reviewer:"));
       if (reviewerRecords.length === 0) {
-        blocking.push({ criterionId: criterion.id, reason: "requires-charter-verifier" });
+        blocking.push({ criterionId: criterion.id, reason: "requires-charter-reviewer" });
         continue;
       }
       const implementerSession = context.implementerSessionByCriterion.get(criterion.id);
@@ -657,15 +657,15 @@ function extractSessionId(recordedBy: string): string | undefined {
 
 function blockingReason(record: CriterionStateRecord): string | undefined {
   const recordedBy = record.recordedBy ?? "agent:root";
-  // A charter-verifier subagent always clears the trust gate, regardless of
+  // A charter-reviewer subagent always clears the trust gate, regardless of
   // declared source. The string-prefix match keeps the persona name authoritative.
-  if (recordedBy.startsWith("subagent:charter-verifier:")) return undefined;
+  if (recordedBy.startsWith("subagent:charter-reviewer:")) return undefined;
   const source: EvidenceSource = record.source ?? "manual";
   const hasBecause = Boolean(record.because && record.because.trim());
   const rank = trustRank({ recordedBy, source, hasBecause });
   if (rank > 1) return undefined;
   if (source !== "manual") {
-    // High-trust source (verifier/hook/subagent) recorded by a non-charter-verifier
+    // High-trust source (verifier/hook/subagent) recorded by a non-charter-reviewer
     // writer is rare but still passes the gate; only manual lands here.
     return undefined;
   }
@@ -914,7 +914,7 @@ function guidelinesForStatus(status: CharterStatus): string[] {
   ];
   if (status === "active") return [
     "Charter is locked: implement every feature end to end without stopping. Do not ask 'should I keep going?' — the locked plan is your authorization.",
-    "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification to subagent({agent:'charter-verifier', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.criterionId':'VAL-...','pi-charter.projectDir':<cwd>}}); delegate read-only recon to subagent({agent:'explorer', ...}).",
+    "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification to subagent({agent:'charter-reviewer', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.criterionId':'VAL-...','pi-charter.projectDir':<cwd>}}); delegate read-only recon to subagent({agent:'explorer', ...}).",
     "PREFER ASYNC: spawn implementation and verification with subagent({async:true, ...}) wherever the next step does not depend on the result. While async runs, main stays free so the user can prompt fixes — the charter progresses itself. Only stay sync when you must read the subagent's output to choose the next move.",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
   ];

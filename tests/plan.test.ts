@@ -15,6 +15,17 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 describe("charter plan view", () => {
   test("computes features, uncovered criteria, and orphan features", async () => {
     await withTempProject(async (projectDir) => {
@@ -66,8 +77,8 @@ describe("charter plan view", () => {
       const dir = charterDir(projectDir, created.charterId);
       await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\n`, "utf8");
       await mkdir(join(dir, "plan"), { recursive: true });
-      await writeFile(join(dir, "plan", "f1-state.md"), `---\nid: f1-state\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-AUTH-001\npreconditions: []\n---\n\n# State\n`, "utf8");
-      await writeFile(join(dir, "plan", "f2-tokens.md"), `---\nid: f2-tokens\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-AUTH-002\npreconditions:\n  - f1-state\n---\n\n# Tokens\n`, "utf8");
+      await writeFile(join(dir, "plan", "f1-state.md"), `---\nid: f1-state\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-AUTH-001\npreconditions: []\n---\n\n# State\n\n${VALIDATION_MD}`, "utf8");
+      await writeFile(join(dir, "plan", "f2-tokens.md"), `---\nid: f2-tokens\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-AUTH-002\npreconditions:\n  - f1-state\n---\n\n# Tokens\n\n${VALIDATION_MD}`, "utf8");
 
       const result = await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
       expect(result.status).toBe("active");

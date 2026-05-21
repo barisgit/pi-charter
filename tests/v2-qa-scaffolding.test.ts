@@ -15,6 +15,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 function charterMarkdown(): string {
   return [
     "# Charter",
@@ -50,7 +63,7 @@ async function seedPlanningCharter(projectDir: string, charterId: string): Promi
     milestone: "m1",
     order: 1,
     fulfills: ["VAL-QA-001"],
-    body: "Charter-scoped QA scaffold.",
+    body: `Charter-scoped QA scaffold.\n\n${VALIDATION_MD}`,
     now: "2026-05-21T00:01:00.000Z",
   });
   return dir;

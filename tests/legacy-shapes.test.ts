@@ -23,6 +23,19 @@ import { logger, type LogEntry } from "../src/infrastructure/logger";
 
 beforeEach(() => clearHookSubscribers());
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 interface FakeTool {
   execute: (toolCallId: string, params: unknown, signal: AbortSignal, onUpdate: () => unknown, ctx: unknown) => Promise<{ details: any }>;
 }
@@ -142,6 +155,7 @@ async function seedActiveCharter(input: { projectDir: string; homeDir: string; s
       "---",
       "Implement legacy probe.",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );
@@ -255,8 +269,8 @@ describe("VAL-8: legacy single-entry call shapes still work and warn", () => {
         {
           action: "add_feature",
           features: [
-            { id: "f-batch-a", milestone: "m1", order: 9, fulfills: ["VAL-L-001"], body: "batch a" },
-            { id: "f-batch-b", milestone: "m1", order: 10, fulfills: ["VAL-L-001"], body: "batch b" },
+            { id: "f-batch-a", milestone: "m1", order: 9, fulfills: ["VAL-L-001"], body: `batch a\n\n${VALIDATION_MD}` },
+            { id: "f-batch-b", milestone: "m1", order: 10, fulfills: ["VAL-L-001"], body: `batch b\n\n${VALIDATION_MD}` },
           ],
         },
         new AbortController().signal,

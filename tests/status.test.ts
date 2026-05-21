@@ -16,6 +16,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 async function makeActiveCharter(projectDir: string, charterId = "cha-status-1") {
   const charterMd = [
     "# Charter cha-status-1",
@@ -50,6 +63,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-status-1")
       "",
       `# Feature ${id}`,
       "",
+      VALIDATION_MD,
     ].join("\n");
   await createCharter(projectDir, { objective: "Ship status surface", charterId, now: "2026-05-15T00:00:00.000Z" });
   const dir = join(projectDir, ".pi", "charters", charterId);

@@ -16,6 +16,17 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function makeActiveCharter(projectDir: string, charterId = "cha-handoff-1") {
   const charterMd = [
     "# Charter cha-handoff-1",
@@ -48,6 +59,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-handoff-1"
       "",
       `# ${id}`,
       "",
+      VALIDATION_MD,
     ].join("\n");
   await createCharter(projectDir, { objective: "Wire auth", charterId, now: "2026-05-15T00:00:00.000Z" });
   const dir = join(projectDir, ".pi", "charters", charterId);
@@ -144,7 +156,7 @@ describe("charter_record handoff_apply", () => {
     });
   });
 
-  test("preserves prior implementer lastWorkerSessionId across charter-verifier review handoffs", async () => {
+  test("preserves prior implementer lastWorkerSessionId across charter-reviewer review handoffs", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
@@ -163,11 +175,11 @@ describe("charter_record handoff_apply", () => {
       let fs = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8"));
       expect(fs.features["f1"].lastWorkerSessionId).toBe("sess_worker_real");
 
-      // Second handoff: charter-verifier review must NOT overwrite implementer.
+      // Second handoff: charter-reviewer review must NOT overwrite implementer.
       await applyHandoff(projectDir, {
         charterId: "cha-handoff-1",
         featureId: "f1",
-        subagentSessionId: "charter-verifier-r1",
+        subagentSessionId: "charter-reviewer-r1",
         handoffNote: "Independent review.",
         completedCriteria: [
           { criterionId: "VAL-H-001", outcome: "pass", summary: "Reviewed" },
@@ -179,7 +191,7 @@ describe("charter_record handoff_apply", () => {
     });
   });
 
-  test("leaves lastWorkerSessionId unset when only charter-verifier handoffs exist", async () => {
+  test("leaves lastWorkerSessionId unset when only charter-reviewer handoffs exist", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
@@ -187,7 +199,7 @@ describe("charter_record handoff_apply", () => {
       await applyHandoff(projectDir, {
         charterId: "cha-handoff-1",
         featureId: "f1",
-        subagentSessionId: "charter-verifier-only",
+        subagentSessionId: "charter-reviewer-only",
         handoffNote: "Review of root-implemented feature.",
         completedCriteria: [
           { criterionId: "VAL-H-001", outcome: "pass", summary: "Reviewed" },
@@ -245,7 +257,7 @@ describe("charter_record handoff_apply", () => {
     });
   });
 
-  test("writes recordedBy='subagent:charter-verifier:<sessionId>' on every evidence record it appends", async () => {
+  test("writes recordedBy='subagent:charter-reviewer:<sessionId>' on every evidence record it appends", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       const dir = join(projectDir, ".pi", "charters", "cha-handoff-1");
@@ -259,7 +271,7 @@ describe("charter_record handoff_apply", () => {
           {
             criterionId: "VAL-H-001",
             outcome: "pass",
-            summary: "reviewed by charter-verifier",
+            summary: "reviewed by charter-reviewer",
           },
         ],
         now: "2026-05-15T04:00:00.000Z",
@@ -270,11 +282,11 @@ describe("charter_record handoff_apply", () => {
       const entries = await readdir(evidenceDir);
       expect(entries.length).toBe(1);
       const stored = JSON.parse(await readFile(join(evidenceDir, entries[0]), "utf8"));
-      expect(stored.recordedBy).toBe("subagent:charter-verifier:rev-1");
+      expect(stored.recordedBy).toBe("subagent:charter-reviewer:rev-1");
       expect(stored.source).toBe("subagent");
 
       const criterionState = JSON.parse(await readFile(join(dir, "criterion-state.json"), "utf8"));
-      expect(criterionState.criteria["VAL-H-001"].recordedBy).toBe("subagent:charter-verifier:rev-1");
+      expect(criterionState.criteria["VAL-H-001"].recordedBy).toBe("subagent:charter-reviewer:rev-1");
     });
   });
 

@@ -51,7 +51,7 @@ describe("bridge surface 2: capture SUBAGENT_EXPOSE_API_EVENT", () => {
         return { content: [{ type: "text", text: "ok" }] };
       },
       list() {
-        return [{ name: "charter-verifier", description: "stub" }];
+        return [{ name: "charter-reviewer", description: "stub" }];
       },
     };
     pi.events.emit(SUBAGENT_EXPOSE_API_EVENT, fakeApi);

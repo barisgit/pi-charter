@@ -100,7 +100,7 @@ export interface RunningSubagent {
   charterId: string;
   agentName?: string;
   featureId?: string;
-  criterionId?: string;       // for charter-verifier subagents pinned to a single VAL
+  criterionId?: string;       // for charter-reviewer subagents pinned to a single VAL
   startedAt: string;          // ISO timestamp
 }
 
@@ -123,7 +123,7 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
   const createdMs = parseIsoOrFallback(input.createdAt, now);
   const isTerminal = TERMINAL_STATUSES.has(input.status);
 
-  // VAL-level running set: any criterion with an in-flight charter-verifier.
+  // VAL-level running set: any criterion with an in-flight charter-reviewer.
   const verifyingCriteria = new Set<string>();
   for (const sub of input.runningSubagents) {
     if (sub.criterionId) verifyingCriteria.add(sub.criterionId);

@@ -43,12 +43,7 @@ export interface CharterConfig {
   };
 }
 
-export type CharterPersonaRole = keyof CharterConfig["personas"];
-
-export interface ResolvedPersona {
-  agent: string;
-  model?: string;
-}
+export type CharterPersonaRole = "plannerCritic" | "reviewer" | "qa" | "readinessProbe";
 
 const DEFAULT_CHARTER_CONFIG: CharterConfig = {
   personas: {
@@ -66,11 +61,8 @@ function configPath(cwd: string): string {
   return join(cwd, ".pi", "charter", "charter-config.json");
 }
 
-export function resolvePersona(role: CharterPersonaRole, config: CharterConfig): ResolvedPersona {
-  return {
-    agent: config.personas[role],
-    model: config.personasModel[role],
-  };
+export function resolvePersona(role: CharterPersonaRole, config: CharterConfig): string {
+  return config.personas[role];
 }
 
 export function loadCharterConfig(cwd: string): CharterConfig {

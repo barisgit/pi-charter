@@ -281,7 +281,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
       ts: `2026-05-15T09:${String(10 + i).padStart(2, "0")}:00.000Z`,
       criterionId: `VAL-LONG-${i}`,
       outcome: "pass" as const,
-      recordedBy: `subagent:charter-verifier:session-${i}`,
+      recordedBy: `subagent:charter-reviewer:session-${i}`,
     }));
     const longCriterion = "A very long criterion title that should wrap instead of disappearing past the right border";
     const picker = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", {
@@ -298,7 +298,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     picker.handleInput(" ");
     const right = picker.render(120).slice(1, -1).map((line) => rightCell(line, 120)).join("\n");
     expect(right.match(/VAL-LONG-/g)?.length).toBeGreaterThan(5);
-    expect(right).toContain("charter-verifier:session-0");
+    expect(right).toContain("charter-reviewer:session-0");
     expect(right).toContain("disappearing past");
   });
 

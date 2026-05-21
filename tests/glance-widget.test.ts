@@ -21,6 +21,17 @@ type FakePi = {
   handlers: Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>;
 };
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 interface FakeCtx {
   cwd: string;
   hasUI: boolean;
@@ -90,7 +101,7 @@ async function seedLockedCharter(projectDir: string, charterId: string): Promise
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
-    "---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-GLANCE-002]\npreconditions: []\n---\nbody\n",
+    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-GLANCE-002]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
   await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T00:01:00.000Z", legacy: true });
   return created.charterId;

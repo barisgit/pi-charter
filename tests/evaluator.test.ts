@@ -25,6 +25,17 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function makeActiveCharter(projectDir: string): Promise<string> {
   const charter = await createCharter(projectDir, {
     objective: "Ship evaluator",
@@ -38,11 +49,11 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-EVAL-001]\npreconditions: []\n---\nbody\n`,
+    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-EVAL-001]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
   await writeFile(
     join(dir, "plan/f2.md"),
-    `---\nid: f2\nmilestone: m1\norder: 2\nfulfills: [VAL-EVAL-002]\npreconditions: []\n---\nbody\n`,
+    `---\nid: f2\nmilestone: m1\norder: 2\nfulfills: [VAL-EVAL-002]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
   await lockPlan(projectDir, { charterId: charter.charterId, legacy: true });
   return charter.charterId;
@@ -282,7 +293,7 @@ describe("charter evaluator", () => {
     });
   });
 
-  it("steer text contains unreviewed milestoneId; disappears after charter-verifier review (VAL-11)", async () => {
+  it("steer text contains unreviewed milestoneId; disappears after charter-reviewer review (VAL-11)", async () => {
     await withTempProject(async (projectDir) => {
       // Fresh fixture so the milestone id is a unique greppable token.
       const MILESTONE = "m1-eval-review-signal";
@@ -298,11 +309,11 @@ describe("charter evaluator", () => {
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(
         join(dir, "plan/f1.md"),
-        `---\nid: f1\nmilestone: ${MILESTONE}\norder: 1\nfulfills: [VAL-EVAL-301]\npreconditions: []\n---\nbody\n`,
+        `---\nid: f1\nmilestone: ${MILESTONE}\norder: 1\nfulfills: [VAL-EVAL-301]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
       );
       await writeFile(
         join(dir, "plan/f2.md"),
-        `---\nid: f2\nmilestone: ${MILESTONE}\norder: 2\nfulfills: [VAL-EVAL-302]\npreconditions: []\n---\nbody\n`,
+        `---\nid: f2\nmilestone: ${MILESTONE}\norder: 2\nfulfills: [VAL-EVAL-302]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
       );
       await lockPlan(projectDir, { charterId: charter.charterId, legacy: true });
       await recordEvidence(projectDir, {
@@ -347,7 +358,7 @@ describe("charter evaluator", () => {
       await applyHandoff(projectDir, {
         charterId: charter.charterId,
         featureId: "f1",
-        subagentSessionId: "charter-verifier-eval-1",
+        subagentSessionId: "charter-reviewer-eval-1",
         handoffNote: "reviewed both VALs",
         completedCriteria: [
           { criterionId: "VAL-EVAL-301", outcome: "pass", summary: "reviewed 301" },

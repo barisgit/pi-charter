@@ -77,7 +77,7 @@ describe("bridge surface 3: async event attribution", () => {
       const wrote = await handleAsyncStarted({
         payload: {
           runId: "run-42",
-          agent: "charter-verifier",
+          agent: "charter-reviewer",
           metadata: {
             [PI_CHARTER_METADATA_KEYS.projectDir]: projectDir,
             [PI_CHARTER_METADATA_KEYS.charterId]: "cha-async-1",
@@ -99,7 +99,7 @@ describe("bridge surface 3: async event attribution", () => {
         featureId: "f1-bootstrap",
         criterionId: "VAL-X-001",
         runId: "run-42",
-        agent: "charter-verifier",
+        agent: "charter-reviewer",
         source: "subagent:async-started",
       });
     });
@@ -115,7 +115,7 @@ describe("bridge surface 3: async event attribution", () => {
       const wrote = await handleAsyncComplete({
         payload: {
           runId: "run-43",
-          agent: "charter-verifier",
+          agent: "charter-reviewer",
           exitCode: 0,
           durationMs: 1234,
           summary: "Verified VAL-X-001: pass",
@@ -154,7 +154,7 @@ describe("bridge surface 3: async event attribution", () => {
       const wrote = await handleAsyncComplete({
         payload: {
           runId: "run-44",
-          agent: "charter-verifier",
+          agent: "charter-reviewer",
           exitCode: 1,
           summary: "spawn failed",
           metadata: {

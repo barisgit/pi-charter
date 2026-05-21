@@ -125,7 +125,7 @@ export function buildEvaluatorPrompt(context: EvaluatorContext): string {
     "- Never claim the charter is done. completion is gated by VAL-* pass evidence elsewhere.",
     "- If `ready_to_complete`, only suggest calling charter_manage:complete; do not auto-complete.",
     "- Cite an id from `criteria[].id`, `drift.uncovered[].criterionId`, or `drift.readyNext[].featureId`.",
-    "- If `unreviewedMilestones` is non-empty, the steerReminder MUST cite every milestoneId literally and recommend delegating to subagent({agent:'charter-verifier'}).",
+    "- If `unreviewedMilestones` is non-empty, the steerReminder MUST cite every milestoneId literally and recommend delegating to subagent({agent:'charter-reviewer'}).",
     "- If nothing useful to say, return verdict=on_track with steerReminder empty.",
     "",
     "Charter:",

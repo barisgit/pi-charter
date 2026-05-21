@@ -12,6 +12,19 @@ import { clearHookSubscribers } from "../src/application/hooks";
 // `tests/hooks.test.ts`, which only clears in its own beforeEach.
 beforeEach(() => clearHookSubscribers());
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promise<T> {
   const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-milestone-review-"));
   try {
@@ -74,6 +87,7 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
       "",
       "# f1",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );
@@ -91,6 +105,7 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
       "",
       "# f2",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );
@@ -297,6 +312,7 @@ describe("requireReviewSubagent auto-default (VAL-12)", () => {
         "---",
         "# f1",
         "",
+        VALIDATION_MD,
       ].join("\n"),
       "utf8",
     );
@@ -313,6 +329,7 @@ describe("requireReviewSubagent auto-default (VAL-12)", () => {
         "---",
         "# f2",
         "",
+        VALIDATION_MD,
       ].join("\n"),
       "utf8",
     );
@@ -347,7 +364,7 @@ describe("requireReviewSubagent auto-default (VAL-12)", () => {
       // m1 event has fired covering VAL-A; m2 event has also fired covering
       // VAL-B because f2 is the only feature in m2 and it is now completed.
       // Both VALs therefore auto-default to requireReviewSubagent: true → both
-      // block on missing charter-verifier evidence.
+      // block on missing charter-reviewer evidence.
       const events = await readEvents(dir);
       const ready = events.filter((event) => event.type === "milestone_ready_for_review");
       expect(ready.length).toBeGreaterThanOrEqual(1);
@@ -370,7 +387,7 @@ describe("requireReviewSubagent auto-default (VAL-12)", () => {
       fs0.features.f2 = { ...(fs0.features.f2 ?? {}), lastWorkerSessionId: "impl-B" };
       await writeFile(featureStatePath, `${JSON.stringify(fs0, null, 2)}\n`);
 
-      // Now record a charter-verifier handoff for VAL-A and VAL-B with
+      // Now record a charter-reviewer handoff for VAL-A and VAL-B with
       // distinct reviewer session ids; completion then succeeds.
       await applyHandoff(projectDir, {
         charterId: CHARTER,
@@ -404,10 +421,10 @@ describe("requireReviewSubagent auto-default (VAL-12)", () => {
   test("explicit `Review subagent required: false` overrides the auto-default", async () => {
     await withTempProject(async (projectDir) => {
       const dir = await seedTwoMilestoneCharter(projectDir, "explicit-false");
-      // For VAL-A: record source=subagent with a NON-charter-verifier prefix
+      // For VAL-A: record source=subagent with a NON-charter-reviewer prefix
       // and trigger the m1 milestone-ready event. The trust gate accepts this
       // (source != manual). The auto-default, if applied, would still demand
-      // a `subagent:charter-verifier:` writer — but the explicit
+      // a `subagent:charter-reviewer:` writer — but the explicit
       // `Review subagent required: false` on VAL-A must override the
       // auto-default and let the record pass.
       await recordEvidence(projectDir, {
@@ -420,7 +437,7 @@ describe("requireReviewSubagent auto-default (VAL-12)", () => {
         recordedBy: "subagent:other-worker:wrk-1",
         now: "2026-05-15T01:00:00.000Z",
       });
-      // For VAL-B: charter-verifier handoff so it always passes; isolates the
+      // For VAL-B: charter-reviewer handoff so it always passes; isolates the
       // assertion to VAL-A's explicit-false behaviour. Pre-set implementer
       // session for f2 so the verifier handoff is identity-disjoint.
       const featureStatePath = join(dir, "feature-state.json");
@@ -493,6 +510,7 @@ describe("identity-disjoint completion predicate (VAL-13)", () => {
         "---",
         "# f1",
         "",
+        VALIDATION_MD,
       ].join("\n"),
       "utf8",
     );
@@ -505,7 +523,7 @@ describe("identity-disjoint completion predicate (VAL-13)", () => {
       const dir = await seedSingleCriterionCharter(projectDir);
       const featureStatePath = join(dir, "feature-state.json");
       // Implementer session for f1 is `s1`. Write the first handoff with the
-      // same session id so the charter-verifier evidence shares its session
+      // same session id so the charter-reviewer evidence shares its session
       // with the implementer (the only reviewer is the implementer).
       await applyHandoff(projectDir, {
         charterId: CHARTER_X,
@@ -553,7 +571,7 @@ describe("identity-disjoint completion predicate (VAL-13)", () => {
 });
 
 describe("charter_status surfaces milestone review next action (VAL-10)", () => {
-  test("nextAction appears for unreviewed milestone and disappears after charter-verifier review", async () => {
+  test("nextAction appears for unreviewed milestone and disappears after charter-reviewer review", async () => {
     await withTempProject(async (projectDir) => {
       await makeActiveCharter(projectDir);
       await completeBothFeatures(projectDir);
@@ -567,12 +585,12 @@ describe("charter_status surfaces milestone review next action (VAL-10)", () => 
       );
       expect(matching.length).toBeGreaterThanOrEqual(1);
 
-      // charter-verifier records pass evidence for every criterionId in the milestone.
+      // charter-reviewer records pass evidence for every criterionId in the milestone.
       await applyHandoff(projectDir, {
         charterId: CHARTER_ID,
         featureId: "f1",
-        subagentSessionId: "charter-verifier-1",
-        handoffNote: "charter-verifier review covered both VALs",
+        subagentSessionId: "charter-reviewer-1",
+        handoffNote: "charter-reviewer review covered both VALs",
         completedCriteria: [
           { criterionId: "VAL-MR-001", outcome: "pass", summary: "reviewed VAL-MR-001" },
           { criterionId: "VAL-MR-002", outcome: "pass", summary: "reviewed VAL-MR-002" },

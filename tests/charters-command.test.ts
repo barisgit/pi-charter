@@ -101,6 +101,17 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = `## Validation
+
+### Happy
+- check: smoke-happy
+  command: true
+
+### Edge
+- check: smoke-edge
+  command: true
+`;
+
 async function seedActiveCharter(projectDir: string, opts: { name: string; objective?: string }): Promise<string> {
   const created = await createCharter(projectDir, {
     objective: opts.objective ?? `objective for ${opts.name}`,
@@ -115,7 +126,7 @@ async function seedActiveCharter(projectDir: string, opts: { name: string; objec
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1]\npreconditions: []\n---\nbody\n`,
+    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
   await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T00:01:00.000Z", legacy: true });
   return created.charterId;

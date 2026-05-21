@@ -20,7 +20,7 @@ export interface NextAction {
   /**
    * Optional structured metadata for tool-specific routing. Currently used by
    * milestone-review next actions ({ milestoneId, criterionIds }) so the
-   * agent can spawn a charter-verifier subagent with the right scope without
+   * agent can spawn a charter-reviewer subagent with the right scope without
    * re-parsing the hint string.
    */
   metadata?: Record<string, unknown>;

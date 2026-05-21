@@ -14,7 +14,7 @@ describe("RunningSubagentRegistry.forCharter", () => {
     reg.start({
       runId: "r2",
       charterId: "A",
-      agent: "charter-verifier",
+      agent: "charter-reviewer",
       metadata: { "pi-charter.criterionId": "VAL-1" },
       startedAt: "2026-05-15T10:00:01.000Z",
     });

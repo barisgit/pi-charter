@@ -11,6 +11,19 @@ import { createCharter, pauseCharter, forceCompleteCharter } from "../src/applic
 
 beforeEach(() => clearHookSubscribers());
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 /**
  * VAL-3: `nextActions[]` is correctly populated on every affected tool
  * response when `charterId` is omitted. We assert deep equality against the
@@ -94,6 +107,7 @@ async function seedActiveCharter(input: { projectDir: string; homeDir: string; s
       "---",
       "body",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );
@@ -216,7 +230,7 @@ describe("VAL-3 nextActions deep-equal across bound vs explicit calls", () => {
           await recordEvidence(projectDir, {
             charterId: id, criterionId, featureId: "f1",
             outcome: "pass", summary: "ok", source: "subagent",
-            recordedBy: `subagent:charter-verifier:rev-${id}`,
+            recordedBy: `subagent:charter-reviewer:rev-${id}`,
           });
         }
       }

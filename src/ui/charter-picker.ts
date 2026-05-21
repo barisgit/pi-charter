@@ -871,7 +871,7 @@ function wrapText(text: string, width: number): string[] {
 
 function compactRecordedBy(recordedBy: string): string {
   return recordedBy
-    .replace(/^subagent:charter-verifier:/, "charter-verifier:")
+    .replace(/^subagent:charter-reviewer:/, "charter-reviewer:")
     .replace(/^subagent:/, "")
     .replace(/^agent:/, "");
 }

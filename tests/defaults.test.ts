@@ -11,6 +11,19 @@ import { createCharter, pauseCharter, forceCompleteCharter } from "../src/applic
 
 beforeEach(() => clearHookSubscribers());
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 /**
  * VAL-1: Omitting `charterId` on every affected tool resolves to the session-
  * bound charter and produces a response semantically equal to the explicit-id
@@ -119,6 +132,7 @@ async function seedActiveCharter(input: { projectDir: string; homeDir: string; s
       "---",
       "Implement defaults helper.",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );
@@ -423,12 +437,12 @@ describe("VAL-1 charterId defaults to session-bound charter", () => {
         await recordEvidence(projectDir, {
           charterId: id, criterionId: "VAL-D-001", featureId: "f1",
           outcome: "pass", summary: "ok", source: "subagent",
-          recordedBy: `subagent:charter-verifier:rev-${id}`,
+          recordedBy: `subagent:charter-reviewer:rev-${id}`,
         });
         await recordEvidence(projectDir, {
           charterId: id, criterionId: "VAL-D-002", featureId: "f1",
           outcome: "pass", summary: "ok", source: "subagent",
-          recordedBy: `subagent:charter-verifier:rev-${id}`,
+          recordedBy: `subagent:charter-reviewer:rev-${id}`,
         });
       }
       const { tools } = makeHarness(homeDir);
@@ -472,6 +486,7 @@ async function seedPlanningWithFeature(projectDir: string, charterId: string): P
       "---",
       "body",
       "",
+      VALIDATION_MD,
     ].join("\n"),
     "utf8",
   );

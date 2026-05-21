@@ -17,6 +17,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+const VALIDATION_MD = [
+  "## Validation",
+  "",
+  "### Happy",
+  "- check: smoke-happy",
+  "  command: true",
+  "",
+  "### Edge",
+  "- check: smoke-edge",
+  "  command: true",
+  "",
+].join("\n");
+
 const FEATURE_MD = [
   "---",
   "id: f1-active",
@@ -28,6 +41,7 @@ const FEATURE_MD = [
   "",
   "# Active amend feature",
   "",
+  VALIDATION_MD,
 ].join("\n");
 
 const CHARTER_MD = [

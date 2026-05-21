@@ -72,12 +72,18 @@ describe("bridge surface 1: register persona dir", () => {
     expect(payload.scope).toBe("internal");
     expect(payload.path).toMatch(/agents$/);
 
-    // The resolved path must point at the real on-disk personas dir, with both
-    // bundled persona files present.
+    // The resolved path must point at the real on-disk personas dir, with the
+    // bundled v2 persona files present.
     expect(existsSync(payload.path)).toBe(true);
     expect(statSync(payload.path).isDirectory()).toBe(true);
-    expect(existsSync(resolvePath(payload.path, "charter-verifier.md"))).toBe(true);
-    expect(existsSync(resolvePath(payload.path, "charter-planner-critic.md"))).toBe(true);
+    for (const file of [
+      "charter-planner-critic.md",
+      "charter-reviewer.md",
+      "charter-qa.md",
+      "charter-readiness-probe.md",
+    ]) {
+      expect(existsSync(resolvePath(payload.path, file))).toBe(true);
+    }
   });
 
   test("re-emits register event on session_start", () => {

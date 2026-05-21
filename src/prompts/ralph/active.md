@@ -26,7 +26,7 @@ Use the current worktree and `charter_status` as authoritative. Previous convers
 
 Delegate aggressively (main agent context is precious):
 - Recon → `subagent({agent:'explorer'})`
-- Verification → `subagent({agent:'charter-verifier'})`
+- Verification → `subagent({agent:'charter-reviewer'})`
 - Plan critique → `subagent({agent:'charter-planner-critic'})`
 - Prefer `async:true` when the next step does not depend on the result.
 

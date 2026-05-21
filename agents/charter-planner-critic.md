@@ -1,6 +1,6 @@
 ---
 name: charter-planner-critic
-description: Adversarial pass on a pi-charter plan during the planning phase. Flags uncovered scope, orphan features, cyclic preconditions, and budget sanity issues. Read-only.
+description: Adversarial pass on a pi-charter plan during the planning phase. Flags uncovered scope, weak validation depth, readiness/QA gaps, touch overlap, review-skip issues, orphan features, cyclic preconditions, and budget sanity issues. Read-only.
 scope: internal
 tools: [read, grep, find, ls, charter_status, charter_plan]
 model: anthropic/claude-sonnet-4-6
@@ -88,6 +88,31 @@ The charter, plan, and any prior evidence live under
    criterion with `Verifier: prompt` because prompt verifiers are model-
    judged and weaker than command/hook verifiers; the plan can still lock
    but the host should know.
+
+   ### Validation depth grading
+   For each feature, grade validation depth as `none`, `shallow`, `adequate`,
+   or `strong`. BLOCK features with no validation or only vague manual prose.
+   ADVISORY shallow validation that still has at least one executable or
+   inspectable check.
+
+   ### Readiness audit
+   Readiness features must name the dependency/runtime condition being probed,
+   the success signal, and the fallback or stop condition. BLOCK readiness
+   features that cannot be verified at runtime.
+
+   ### QA briefs audit
+   QA features must point at concrete `qa/<surface>.md` briefs or explicitly
+   state why QA is not applicable. BLOCK missing briefs for user-facing or
+   runtime surfaces.
+
+   ### Touch-overlap detection
+   Flag features that edit the same risky files or surfaces without an ordering
+   precondition. BLOCK obvious conflicting implementation paths; ADVISORY
+   benign overlap that only needs sequencing attention.
+
+   ### review:skip audit
+   Any feature or milestone that skips review must include a concrete rationale.
+   BLOCK `review: skip` without rationale, owner, or bounded risk statement.
 
 3. **Report.**
 
