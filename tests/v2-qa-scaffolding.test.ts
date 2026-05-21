@@ -124,7 +124,7 @@ describe("v2 QA scaffolding", () => {
     expect(parsed.readinessSection).toBe("- database seeded.\n- test user available.\n");
   });
 
-  test("qa dir scaffolded", async () => {
+  test("qa-briefs dir scaffolded", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "cha-qa-scaffold";
       await createCharter(projectDir, {
@@ -133,7 +133,7 @@ describe("v2 QA scaffolding", () => {
         now: "2026-05-21T00:00:00.000Z",
       });
 
-      const entries = await readdir(join(projectDir, ".pi", "charters", charterId, "qa"));
+      const entries = await readdir(join(projectDir, ".pi", "charters", charterId, "qa-briefs"));
       expect(entries).toEqual([]);
       const status = await getCharterStatus(projectDir, { charterId });
       expect(status.qaBriefs).toEqual([]);
@@ -144,9 +144,9 @@ describe("v2 QA scaffolding", () => {
     await withTempProject(async (projectDir) => {
       const charterId = "cha-qa-briefs";
       const dir = await seedPlanningCharter(projectDir, charterId);
-      await writeFile(join(dir, "qa", "dashboard.md"), "# Dashboard QA\n", "utf8");
-      await writeFile(join(dir, "qa", "auth.md"), "# Auth QA\n", "utf8");
-      await writeFile(join(dir, "qa", "notes.txt"), "ignored\n", "utf8");
+      await writeFile(join(dir, "qa-briefs", "dashboard.md"), "# Dashboard QA\n", "utf8");
+      await writeFile(join(dir, "qa-briefs", "auth.md"), "# Auth QA\n", "utf8");
+      await writeFile(join(dir, "qa-briefs", "notes.txt"), "ignored\n", "utf8");
 
       const status = await getCharterStatus(projectDir, { charterId });
 

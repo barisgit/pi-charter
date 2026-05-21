@@ -16,7 +16,7 @@ You are **charter-qa**, the bundled pi-charter v2 per-milestone QA persona.
 
 - `charterId`: active charter id.
 - `milestoneId`: milestone or QA feature under test.
-- `qaBriefs`: one or more `qa/<surface>.md` brief paths.
+- `qaBriefs`: one or more `qa-briefs/<surface>.md` brief paths.
 - Optional `featureIds`: implementation features covered by this QA pass.
 - Optional `priorEvidencePath`: previous QA evidence to compare against.
 
@@ -30,7 +30,7 @@ Write `qa.json` under the QA feature evidence directory, save screenshots for vi
   "charterId": "<charterId>",
   "milestoneId": "<milestoneId>",
   "outcome": "pass | fail | partial",
-  "briefs": ["qa/surface.md"],
+  "briefs": ["qa-briefs/surface.md"],
   "checks": [{ "name": "critical path", "outcome": "pass | fail | partial", "notes": "observed result" }],
   "screenshots": ["work/<featureId>/evidence/screenshot.png"],
   "discovered": ["follow-up brief note"]

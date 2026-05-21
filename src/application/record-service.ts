@@ -5,12 +5,14 @@ import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
 import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type ReadinessEvidence } from "../domain/evidence-schemas";
 import type { CharterCriterion, RecordedBy } from "../domain/types";
+import { logger } from "../infrastructure/logger";
 
 /** Default identity for evidence written by the root agent. Callers (handoff,
  * delegated tooling) override this when they have a more specific identity. */
 const DEFAULT_RECORDED_BY: RecordedBy = "agent:root";
 /** Persona prefix used when applyHandoff derives recordedBy from subagentSessionId. */
 const DEFAULT_HANDOFF_PERSONA = "charter-reviewer";
+const warnedLegacyQaScreenshots = new Set<string>();
 import {
   appendEvent,
   charterDir,
@@ -134,7 +136,8 @@ async function recordEvidenceFromFileLocked(
 ): Promise<RecordEvidenceFromFileResult> {
   const dir = charterDir(projectDir, input.charterId);
   const loaded = await loadTypedEvidenceFile(projectDir, dir, input.evidenceFile);
-  const validation = validateEvidenceFile(loaded.json);
+  const normalizedJson = normalizeLegacyQaEvidence(input.charterId, loaded.json);
+  const validation = validateEvidenceFile(normalizedJson);
   if (!validation.ok) {
     throw new CharterToolError(`Evidence file ${input.evidenceFile} does not match the typed evidence schema: ${validation.error}`, {
       code: "evidence.schema_violation",
@@ -156,7 +159,7 @@ async function recordEvidenceFromFileLocked(
       outcome,
       summary: evidence.summary,
       because: evidence.because,
-      artifacts: [input.evidenceFile],
+      artifacts: artifactsFromEvidenceFile(evidence, input.evidenceFile),
       details: {
         evidenceFile: input.evidenceFile,
         kind: evidence.kind,
@@ -557,6 +560,37 @@ function evidenceFilePath(projectDir: string, dir: string, evidenceFile: string)
   return join(projectDir, evidenceFile);
 }
 
+function normalizeLegacyQaEvidence(charterId: string, json: unknown): unknown {
+  if (!isLegacyQaEvidence(json)) return json;
+  const featureId = typeof json.featureId === "string" ? json.featureId : "<missing>";
+  const warningKey = `${charterId}:${featureId}`;
+  if (!warnedLegacyQaScreenshots.has(warningKey)) {
+    warnedLegacyQaScreenshots.add(warningKey);
+    logger.warn("qa evidence uses deprecated screenshots[] field; migrate to artifacts:[{kind, path, caption?}]", {
+      charterId,
+      component: "record-service",
+      featureId,
+    });
+  }
+  const normalized: Record<string, unknown> = {
+    ...json,
+    artifacts: Array.isArray(json.artifacts)
+      ? json.artifacts
+      : json.screenshots.map((path) => ({ kind: "screenshot", path })),
+  };
+  delete normalized.screenshots;
+  return normalized;
+}
+
+function isLegacyQaEvidence(json: unknown): json is Record<string, unknown> & { kind: "qa"; screenshots: string[] } {
+  return !!json
+    && typeof json === "object"
+    && !Array.isArray(json)
+    && (json as { kind?: unknown }).kind === "qa"
+    && Array.isArray((json as { screenshots?: unknown }).screenshots)
+    && (json as { screenshots: unknown[] }).screenshots.every((path) => typeof path === "string");
+}
+
 async function loadEvidenceFeature(dir: string, featureId: string, charterId: string): Promise<{ fulfills: string[] }> {
   let feature;
   try {
@@ -599,6 +633,11 @@ function outcomeFromEvidenceFile(evidence: EvidenceFile): EvidenceOutcome {
 
 function sourceFromEvidenceFile(evidence: EvidenceFile): NonNullable<EvidenceEntry["source"]> {
   return evidence.kind === "command" ? "verifier" : "subagent";
+}
+
+function artifactsFromEvidenceFile(evidence: EvidenceFile, evidenceFile: string): string[] {
+  if (evidence.kind === "qa") return evidence.artifacts.map((artifact) => artifact.path);
+  return [evidenceFile];
 }
 
 function recordedByFromEvidenceFile(evidence: EvidenceFile): RecordedBy {

@@ -48,13 +48,32 @@ const QaFindingSchema = Type.Object({
   line: Type.Optional(Type.Number()),
 }, { additionalProperties: false });
 
+const QaArtifactSchema = Type.Object({
+  kind: Type.Union([
+    Type.Literal("screenshot"),
+    Type.Literal("video"),
+    Type.Literal("playwright_trace"),
+    Type.Literal("har"),
+    Type.Literal("terminal_capture"),
+    Type.Literal("console_log"),
+    Type.Literal("server_log"),
+    Type.Literal("http_trace"),
+    Type.Literal("dom_snapshot"),
+    Type.Literal("a11y_audit"),
+    Type.Literal("diff"),
+    Type.Literal("file"),
+  ]),
+  path: Type.String(),
+  caption: Type.Optional(Type.String({ maxLength: 280 })),
+}, { additionalProperties: false });
+
 export const QaEvidenceSchema = Type.Object({
   kind: Type.Literal("qa"),
   featureId: Type.String(),
   milestone: Type.String(),
   surfaces: Type.Array(Type.String()),
   outcome: OutcomeSchema,
-  screenshots: Type.Array(Type.String()),
+  artifacts: Type.Array(QaArtifactSchema),
   findings: Type.Array(QaFindingSchema),
   summary: Type.String(),
   because: Type.String(),
@@ -106,8 +125,16 @@ export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult 
     return { ok: false, error: `Unknown evidence kind: ${String(kind ?? "<missing>")}` };
   }
 
+  if (kind === "qa" && hasOwnProperty(json, "screenshots")) {
+    return { ok: false, error: "qa evidence uses legacy screenshots[] field; migrate to artifacts:[{kind, path, caption?}]" };
+  }
+
   const schema = schemasByKind[kind];
   if (Check(schema, json)) {
+    if (kind === "qa") {
+      const pathError = validateQaArtifactPaths(json as QaEvidence);
+      if (pathError) return { ok: false, error: pathError };
+    }
     return { ok: true, value: json as EvidenceFile };
   }
 
@@ -122,6 +149,23 @@ export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult 
 function getEvidenceKind(json: unknown): unknown {
   if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
   return (json as { kind?: unknown }).kind;
+}
+
+function hasOwnProperty(value: unknown, key: string): boolean {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function validateQaArtifactPaths(evidence: QaEvidence): string | undefined {
+  for (let index = 0; index < evidence.artifacts.length; index += 1) {
+    const path = evidence.artifacts[index]!.path;
+    if (path.startsWith("/")) {
+      return `Invalid qa evidence at /artifacts/${index}/path: artifact path must be relative`;
+    }
+    if (path.split("/").includes("..")) {
+      return `Invalid qa evidence at /artifacts/${index}/path: artifact path must not contain '..' segments`;
+    }
+  }
+  return undefined;
 }
 
 function isEvidenceKind(kind: unknown): kind is EvidenceKind {

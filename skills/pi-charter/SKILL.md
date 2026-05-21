@@ -184,6 +184,7 @@ Drive every feature to evidence without stopping. Per feature:
    (async by default) with `featureId` + `criterionId` in metadata. It
    runs the verifier or its own equivalent checks and writes one
    `charter_record action=evidence`.
+   Planning QA briefs live under `qa-briefs/<surface>.md`. For QA capture recipe selection, start with `references/qa.md`.
 4. Move to the next feature. Loop until `drift.uncovered: []`.
 
 If you record evidence yourself for multiple criteria, use the batch

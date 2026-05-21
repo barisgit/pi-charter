@@ -101,7 +101,7 @@ The charter, plan, and any prior evidence live under
    features that cannot be verified at runtime.
 
    ### QA briefs audit
-   QA features must point at concrete `qa/<surface>.md` briefs or explicitly
+   QA features must point at concrete `qa-briefs/<surface>.md` briefs or explicitly
    state why QA is not applicable. BLOCK missing briefs for user-facing or
    runtime surfaces.
 

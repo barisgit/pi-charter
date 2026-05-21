@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { lockPlan } from "../src/application/plan-service";
 import { createCharter } from "../src/application/service";
 import { registerCharterTools } from "../src/application/registration";
+import { logger, type LogEntry } from "../src/infrastructure/logger";
 import { charterDir } from "../src/infrastructure/store";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -57,6 +58,10 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "Description: Readiness evidence records explicit outcome.",
       "Verifier: manual",
       "",
+      "### VAL-QA — QA evidence",
+      "Description: QA evidence records artifact captures.",
+      "Verifier: manual",
+      "",
     ].join("\n"),
     "utf8",
   );
@@ -66,6 +71,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   await writeFeature(dir, "f-command", "VAL-COMMAND");
   await writeFeature(dir, "f-review", "VAL-REVIEW");
   await writeFeature(dir, "f-readiness", "VAL-READINESS");
+  await writeFeature(dir, "f-qa", "VAL-QA");
   await lockPlan(projectDir, { charterId, now: "2026-05-21T10:10:00.000Z", legacy: true });
   return dir;
 }
@@ -179,6 +185,66 @@ describe("charter_record evidenceFile parameter", () => {
       expect(response.details.entries[0].outcome).toBe("pass");
       const stored = JSON.parse(await readFile(join(dir, response.details.entries[0].path), "utf8"));
       expect(stored.details.typedEvidence.kind).toBe("readiness");
+    });
+  });
+
+  test("evidence-file-qa-kind-records-artifacts", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = "00000000-0000-4000-8000-000000000f57";
+      const dir = await makeActiveCharter(projectDir, charterId);
+      const evidenceFile = await writeJsonEvidence(projectDir, "qa-evidence", {
+        kind: "qa",
+        featureId: "f-qa",
+        milestone: "m1",
+        surfaces: ["artifact schema"],
+        outcome: "pass",
+        artifacts: [{ kind: "screenshot", path: "captures/qa.png", caption: "QA capture" }],
+        findings: [],
+        summary: "QA passed with one artifact.",
+        because: "The QA artifact uses the v2.1 artifacts array.",
+      });
+
+      const response = await callRecord(projectDir, { action: "evidence", charterId, evidenceFile });
+
+      expect(response.details.entries[0].criterionId).toBe("VAL-QA");
+      expect(response.details.entries[0].outcome).toBe("pass");
+      const stored = JSON.parse(await readFile(join(dir, response.details.entries[0].path), "utf8"));
+      expect(stored.artifacts).toEqual(["captures/qa.png"]);
+      expect(stored.details.typedEvidence.kind).toBe("qa");
+    });
+  });
+
+  test("legacy-qa-screenshots-evidence-file-warns-once", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = "00000000-0000-4000-8000-000000000f58";
+      const dir = await makeActiveCharter(projectDir, charterId);
+      const warnings: LogEntry[] = [];
+      logger.addHandler((entry) => {
+        if (entry.level === "warn" && entry.message.includes("deprecated screenshots[]")) warnings.push(entry);
+      });
+      try {
+        const evidenceFile = await writeJsonEvidence(projectDir, "legacy-qa-evidence", {
+          kind: "qa",
+          featureId: "f-qa",
+          milestone: "m1",
+          surfaces: ["artifact schema"],
+          outcome: "pass",
+          screenshots: ["captures/legacy.png"],
+          findings: [],
+          summary: "Legacy QA passed.",
+          because: "Reader back-compat migrates screenshots to artifacts.",
+        });
+
+        const first = await callRecord(projectDir, { action: "evidence", charterId, evidenceFile });
+        await callRecord(projectDir, { action: "evidence", charterId, evidenceFile });
+
+        expect(warnings).toHaveLength(1);
+        const stored = JSON.parse(await readFile(join(dir, first.details.entries[0].path), "utf8"));
+        expect(stored.artifacts).toEqual(["captures/legacy.png"]);
+        expect(stored.details.typedEvidence.artifacts).toEqual([{ kind: "screenshot", path: "captures/legacy.png" }]);
+      } finally {
+        logger.clearHandlers();
+      }
     });
   });
 

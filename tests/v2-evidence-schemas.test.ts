@@ -53,12 +53,12 @@ describe("v2 evidence schemas", () => {
       milestone: "m2-evidence",
       surfaces: ["charter_record evidence import"],
       outcome: "pass",
-      screenshots: [".pi/charters/cha/evidence/f4/qa.png"],
+      artifacts: [{ kind: "screenshot", path: ".pi/charters/cha/evidence/f4/qa.png" }],
       findings: [
         { severity: "low", description: "No UI surface for this feature." },
       ],
       summary: "QA evidence shape is valid.",
-      because: "The QA record captures milestone, surfaces, screenshots, findings, and outcome.",
+      because: "The QA record captures milestone, surfaces, artifacts, findings, and outcome.",
     });
 
     expect(result.ok).toBe(true);
@@ -108,7 +108,7 @@ describe("v2 evidence schemas", () => {
       milestone: "m2-evidence",
       surfaces: ["schema validation"],
       outcome: "maybe",
-      screenshots: [],
+      artifacts: [],
       findings: [],
       summary: "Invalid QA outcome.",
       because: "Only pass, fail, or partial are valid outcomes.",

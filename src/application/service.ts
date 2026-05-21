@@ -13,6 +13,7 @@ import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
 import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
+import { logger } from "../infrastructure/logger";
 
 export type { NextAction };
 
@@ -128,6 +129,8 @@ export async function getCharterStatus(
 }
 
 export const V1_REPLAN_REQUIRED_HINT = "This charter has the pi-charter v1 disk shape (charter.md ## Criteria + criterion-state.json). v2 will not auto-migrate it; initiate a replan with charter_manage action=amend_charter and manually port checks using docs/v1-to-v2-migration.md, or force_complete/abandon it if it should not continue.";
+const QA_BRIEFS_DIR = "qa-briefs";
+const LEGACY_QA_BRIEFS_DIR = "qa";
 
 function migrationHintForState(state: CharterState): string | undefined {
   return state.schemaVersion === "v1-needs-replan" ? V1_REPLAN_REQUIRED_HINT : undefined;
@@ -150,15 +153,29 @@ export function assertNotV1NeedsReplan(state: CharterState): void {
 }
 
 async function listQaBriefs(dir: string): Promise<string[]> {
+  const entries = await readQaBriefEntries(join(dir, QA_BRIEFS_DIR));
+  if (entries) return qaBriefNames(entries);
+  const legacyDir = join(dir, LEGACY_QA_BRIEFS_DIR);
+  const legacyEntries = await readQaBriefEntries(legacyDir);
+  if (!legacyEntries) return [];
+  logger.warn(`legacy qa/ briefs dir is deprecated; rename ${legacyDir} to ${join(dir, QA_BRIEFS_DIR)}.`);
+  return qaBriefNames(legacyEntries);
+}
+
+async function readQaBriefEntries(path: string) {
   try {
-    const entries = await readdir(join(dir, "qa"), { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-      .map((entry) => basename(entry.name, ".md"))
-      .sort((a, b) => a.localeCompare(b));
+    return await readdir(path, { withFileTypes: true });
   } catch {
-    return [];
+    return undefined;
   }
+}
+
+function qaBriefNames(entries: Awaited<ReturnType<typeof readQaBriefEntries>>): string[] {
+  if (!entries) return [];
+  return entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => basename(entry.name, ".md"))
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /**
