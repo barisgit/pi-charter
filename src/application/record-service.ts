@@ -927,6 +927,7 @@ export interface VerifyCriterionInput {
   cwd?: string;
   timeoutMs?: number;
   now?: string;
+  signal?: AbortSignal;
 }
 
 export interface VerifyCriterionResult extends RecordEvidenceResult {
@@ -998,6 +999,7 @@ export async function verifyCriterion(
   const execution = await runCommand(criterion.command, {
     cwd: input.cwd ?? projectDir,
     timeoutMs: input.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
+    signal: input.signal,
   });
   const durationMs = Date.now() - started;
   const outcome: EvidenceOutcome = execution.exitCode === 0 ? "pass" : "fail";
@@ -1266,13 +1268,25 @@ interface CommandResult {
   timedOut: boolean;
 }
 
-function runCommand(command: string, options: { cwd: string; timeoutMs: number }): Promise<CommandResult> {
+function runCommand(command: string, options: { cwd: string; timeoutMs: number; signal?: AbortSignal }): Promise<CommandResult> {
   return new Promise((resolve) => {
+    if (options.signal?.aborted) {
+      resolve({ exitCode: 130, stdout: "", stderr: "aborted before start", truncated: false, timedOut: false });
+      return;
+    }
     const child = spawn("/bin/sh", ["-c", command], { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let truncated = false;
     let timedOut = false;
+    let aborted = false;
+    const onAbort = () => {
+      aborted = true;
+      child.kill("SIGKILL");
+    };
+    if (options.signal) {
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
@@ -1289,11 +1303,13 @@ function runCommand(command: string, options: { cwd: string; timeoutMs: number }
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      const exitCode = typeof code === "number" ? code : signal ? 128 : 1;
-      resolve({ exitCode, stdout, stderr, truncated, timedOut });
+      options.signal?.removeEventListener("abort", onAbort);
+      const exitCode = aborted ? 130 : typeof code === "number" ? code : signal ? 128 : 1;
+      resolve({ exitCode, stdout, stderr: aborted ? stderr + "\naborted via signal" : stderr, truncated, timedOut });
     });
     child.on("error", (err) => {
       clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
       resolve({ exitCode: 127, stdout, stderr: stderr + String(err), truncated, timedOut });
     });
   });
