@@ -1100,11 +1100,13 @@ function guidelinesForStatus(status: CharterStatus): string[] {
     "Edit charter.md inside .pi/charters/<id>/ to add VAL-* criteria; the initial template includes a worked example. Format is `### VAL-<ID> <title>` H3 headings with `Verifier:`/`Description:` field lines beneath — bullet lists are ignored. Do NOT create a repo-root charter.md.",
     "Use charter_plan action=add_feature for each feature; do NOT write plan/<featureId>.md at the repo root — the tool writes to .pi/charters/<id>/plan/.",
     "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns. After lock_plan you implement end-to-end.",
+    "Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in subagent({action:'list'}) — invoke them by name directly; the call works. Full workflow in skill: skills/pi-charter/SKILL.md.",
   ];
   if (status === "active") return [
     "Charter is locked: implement every feature end to end without stopping. Do not ask 'should I keep going?' — the locked plan is your authorization.",
     "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification to subagent({agent:'charter-reviewer', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.criterionId':'VAL-...','pi-charter.projectDir':<cwd>}}); delegate read-only recon to subagent({agent:'explorer', ...}).",
     "PREFER ASYNC: spawn implementation and verification with subagent({async:true, ...}) wherever the next step does not depend on the result. While async runs, main stays free so the user can prompt fixes — the charter progresses itself. Only stay sync when you must read the subagent's output to choose the next move.",
+    "Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in subagent({action:'list'}) — invoke them by name directly; the call works. Full workflow in skill: skills/pi-charter/SKILL.md.",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
   ];
   if (status === "review") return ["Inspect evidence before completing; evaluator done is not a gate."];

@@ -353,7 +353,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
       "Evidence is required for criteria with requireFreshEvidence before complete is allowed.",
     ],
     parameters: CharterRecordParams,
-    async execute(_toolCallId, params: CharterRecordInput, _signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params: CharterRecordInput, signal, _onUpdate, ctx) {
       const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
       const status = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
       if (params.action === "evidence") {
@@ -419,6 +419,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           featureId: params.featureId,
           timeoutMs: params.timeoutMs,
           cwd: ctx.cwd,
+          signal,
         });
         await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
@@ -633,6 +634,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "",
           "Follow charter_status nextActions instead of guessing transitions. Read the pi-charter skill for the full workflow if you are unsure.",
           "You MUST use subagents (charter-planner-critic, charter-reviewer, explorer) rather than doing planning critique, verification, or read-only recon inline. Main agent context is precious; long charters die when it fills with grep results and tool output. Delegate aggressively.",
+          "The four bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal: they will NOT appear in `subagent({action:'list'})` output, but invoking them by name through `subagent({agent:'<name>',...})` works. Full workflow + delegation tables: `skills/pi-charter/SKILL.md`.",
           "After lock_plan, implement every feature end-to-end without pausing to ask 'should I keep going?'. The locked plan is your authorization. Surface routine decisions (commit identity, build flags, branch names) in the work itself, not as blocking questions.",
         ].join("\n"),
       );
@@ -973,6 +975,7 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
         "6. Follow charter_status nextActions; never guess transitions. Read the pi-charter skill for the full workflow if you are unsure.",
         "7. After lock_plan, drive every feature to evidence end-to-end. Delegate verification and recon to subagents (charter-reviewer, charter-planner-critic, explorer) — main agent context is precious.",
         "8. Do not stop mid-charter to ask routine questions; surface decisions in the work itself.",
+        "9. Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in `subagent({action:'list'})`; invoke by name directly. Full workflow: `skills/pi-charter/SKILL.md`.",
       ].join("\n"),
     );
   });

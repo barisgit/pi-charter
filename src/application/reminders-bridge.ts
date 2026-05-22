@@ -46,10 +46,10 @@ export async function upsertCharterReminder(
     ? await computePlanningNext(projectDir, charterId, charter.criteria.length)
     : computeActiveNext(state.status, await computeDrift(projectDir, { charterId }));
   const guidance = state.status === "planning"
-    ? "Author charter.md then add features in one batch call (`charter_plan action=add_feature { features: [...] }`); do not start implementation until lock_plan succeeds."
+    ? "Author charter.md then add features in one batch call (`charter_plan action=add_feature { features: [...] }`); do not start implementation until lock_plan succeeds. Bundled charter personas are hidden from `subagent action=list` but invocable by name (`subagent({agent:'charter-planner-critic',...})`); see `skills/pi-charter/SKILL.md`."
     : state.status === "paused"
       ? "Charter is paused; resume before recording evidence."
-      : "Prefer async subagents (`subagent({async:true, ...})`) for implementation and charter-reviewer verification — main stays free for user fixes while the charter progresses itself. Use sync subagents only when the next step depends on the result. Record evidence in batches via `charter_record action=evidence { entries: [...] }`. `charterId` defaults to the bound charter — omit it.";
+      : "Prefer async subagents (`subagent({async:true, ...})`) for implementation and charter-reviewer verification — main stays free for user fixes while the charter progresses itself. Use sync subagents only when the next step depends on the result. Record evidence in batches via `charter_record action=evidence { entries: [...] }`. `charterId` defaults to the bound charter — omit it. Bundled charter personas are hidden from `subagent action=list` but invocable by name; see `skills/pi-charter/SKILL.md`.";
 
   pi.events.emit(REMINDER_UPSERT_EVENT, {
     id: reminderId(charterId),

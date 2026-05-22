@@ -114,6 +114,19 @@ goes to a subagent:
 | Bounded implementation                       | `fixer`                   |
 | Hard-debug direction                         | `oracle` (advisory)       |
 
+> **Note on bundled personas:** the four charter personas
+> (`charter-planner-critic`, `charter-reviewer`, `charter-qa`,
+> `charter-readiness-probe`) are `scope: internal` and will NOT appear
+> in `subagent({action:'list'})` output. This is intentional — they only
+> make sense when a charter is bound. Invoke them by name directly
+> through `subagent({agent: 'charter-reviewer', ...})`; the call works
+> even though the agent is hidden from discovery.
+>
+> Per-role model overrides live in `.pi/charter/charter-config.json`
+> under `personasModel` (`plannerCritic`, `reviewer`, `qa`,
+> `readinessProbe`); BYOA replacements go in `personas`. The full skill
+> is at `skills/pi-charter/SKILL.md` inside the pi-charter extension.
+
 Call shape for the bundled personas:
 
 ```
