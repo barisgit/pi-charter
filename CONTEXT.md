@@ -67,8 +67,20 @@ A terminal state for a charter intentionally stopped without satisfying the crit
 _Avoid_: Cancelled, deleted
 
 **Smart-Ralph loop**:
-The execution discipline where the agent, not a scheduler, reads current status and evaluator feedback each turn and chooses one next move.
+The execution discipline where the agent, not a scheduler, reads current status each turn and chooses one next move. The runtime’s Ralph service reprompts the agent on idle for non-terminal charters; the agent decides when to stop by calling `pause`, `abandon`, or `force_complete`.
 _Avoid_: Auto-spawn scheduler, autonomous worker pool
+
+**Checkpoint**:
+A behavioral notion used in doctrine and prompts for “the current ready feature plus the evidence that proves it”. It is not a persisted concept; agents read it from `drift.readyNext` and the feature’s `fulfills[]`.
+_Avoid_: Stage, slice-state, currentCheckpoint
+
+**Reminder**:
+Status/doctrine text injected into context, widgets, or tool responses; it does not start a turn.
+_Avoid_: Steer, prompt, nag
+
+**Ralph reprompt**:
+A fresh continuation message sent when the root agent and async subagents are all idle and the charter is non-terminal; it starts a new turn.
+_Avoid_: Reminder, evaluator verdict
 
 ### Planning and decomposition
 
@@ -130,27 +142,22 @@ _Avoid_: Criteria frontmatter, contract state
 The computed mutable status bitmap for features.
 _Avoid_: Feature frontmatter status
 
-### Evaluator and drift
-
-**charter-evaluator**:
-The bundled internal evaluator that produces a verdict and reason after turns to steer the next agent move.
-_Avoid_: Intent sentinel, judge, completion gate
-
-**Evaluator verdict**:
-The evaluator's current classification of progress, such as on-track, drifting, blocked, or done.
-_Avoid_: Final status, completion decision
+### Drift and continuation
 
 **Drift view**:
-A computed status view that highlights uncovered criteria, stuck features, stale evidence, ready-next candidates, or wasted work.
+A computed status view that highlights uncovered criteria, stuck features, stale evidence, ready-next candidates, milestone QA/readiness debt, or wasted work.
 _Avoid_: Scheduler queue, issue list
 
 **Ready-next advisory**:
 A suggested next feature from status analysis that the agent may follow or override.
 _Avoid_: Assigned task, scheduled job
 
-**Steer**:
-A short evaluator-generated reason injected into context to influence the next agent turn.
-_Avoid_: Reminder, instruction, command
+**Milestone**:
+A first-class grouping in status: features that share a coherent outcome and aggregate their VAL coverage and evidence into milestone-level QA/readiness debt.
+_Avoid_: Phase, epic, contract block
+
+**Replan**:
+Use of `charter_plan add_feature/update_feature` (and milestone reordering) after `lock_plan` to refine internals as reality lands. Replan must never weaken or remove the Objective or VAL semantics; to change those, use `charter_manage action=amend_charter` and re-justify.
 
 ### Tool and UI surface
 
@@ -202,7 +209,7 @@ _Avoid_: Binding, bridge field
 - A **Criterion** may be fulfilled by many **Features**.
 - **Feature state** and **Criterion state** are mutable sidecars derived from authored files and evidence.
 - **Evidence records** belong to one **Criterion** and may be associated with one **Feature**.
-- The **charter-evaluator** may produce a **Steer**, but verifier evidence and hooks decide completion.
+- The runtime’s deterministic Ralph reprompt service keeps non-terminal charters moving when the agent and async children are idle; verifier evidence and hooks still decide completion.
 - A **Tactical task** may inform a **Drift view** via hook events, but pi-dag-tasks does not store a pointer into pi-charter.
 - A root Pi session may bind to one **CharterId**; subagent sessions receive charter scope through **Metadata passthrough** and do not bind themselves.
 
@@ -227,6 +234,7 @@ _Avoid_: Binding, bridge field
 - **Goal**: v1 used **Goal**. In pi-charter, "goal" survives only as an informal synonym for **Objective** and should not appear in public APIs.
 - **Mission**: Avoid using "mission" in extension names, slash commands, tools, or package names because `pi-missions` is taken and Factory.ai uses Missions publicly.
 - **Validation**: Use **Verifier** for the mechanism and **Evidence record** for the observed result. Avoid calling all of this "validation" because Factory and existing pi-missions use that word differently.
+- **Loop / stage**: pi-charter does not persist micro-stages like `orient`, `execute`, `inspect`, `decide`. Those exist only as advice rendered into `charter_status.nextActions[]` and Ralph reprompts. The persisted lifecycle stays coarse (see ADR 0008).
 - **Scheduler**: pi-charter does not schedule workers. The **Ready-next advisory** tells the agent what looks next; the agent chooses.
 
 ## Recommended defaults while user is away

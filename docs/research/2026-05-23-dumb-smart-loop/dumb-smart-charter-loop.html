@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dumb-Smart Charters — Adaptive Checkpoint Loop</title>
+<style>
+  :root {
+    --bg: #0a0f16;
+    --bg-2: #0f1722;
+    --card: #121c29;
+    --card-2: #0d1520;
+    --ink: #e6edf5;
+    --muted: #95a6b8;
+    --faint: #65788c;
+    --line: #253448;
+    --line-strong: #3a506b;
+    --blue: #7aa7ff;
+    --cyan: #66e4d4;
+    --violet: #b89bff;
+    --green: #79e2a7;
+    --yellow: #ffd166;
+    --red: #ff9f9f;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body {
+    font-family: var(--sans);
+    line-height: 1.55;
+    background:
+      radial-gradient(1000px 600px at 15% -10%, rgba(122, 167, 255, 0.13), transparent 60%),
+      radial-gradient(900px 520px at 95% 12%, rgba(184, 155, 255, 0.12), transparent 58%),
+      linear-gradient(180deg, #08101a 0%, #0a0f16 35%, #090d13 100%);
+  }
+
+  main { width: min(1160px, calc(100% - 40px)); margin: 0 auto; padding: 40px 0 90px; }
+  header { padding: 16px 0 34px; border-bottom: 1px solid var(--line); margin-bottom: 34px; }
+  .eyebrow { color: var(--cyan); font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 10px; }
+  h1 { font-size: clamp(34px, 5vw, 58px); line-height: 1.02; letter-spacing: -0.045em; margin: 0 0 16px; max-width: 980px; }
+  .lead { color: #c8d5e3; font-size: 18px; max-width: 880px; margin: 0; }
+  h2 { margin: 58px 0 14px; font-size: 13px; letter-spacing: .15em; text-transform: uppercase; color: var(--blue); }
+  h3 { margin: 0 0 8px; font-size: 18px; letter-spacing: -.01em; }
+  p { color: var(--muted); margin: 6px 0 12px; }
+  strong { color: var(--ink); }
+  code { font-family: var(--mono); font-size: .92em; color: #dbeafe; background: rgba(122,167,255,.12); border: 1px solid rgba(122,167,255,.20); padding: 1px 6px; border-radius: 5px; }
+  pre { margin: 12px 0 0; padding: 16px 18px; border-radius: 14px; border: 1px solid var(--line); background: #08101a; overflow-x: auto; color: #c9d7e5; font: 13px/1.58 var(--mono); }
+  pre code { background: transparent; border: 0; padding: 0; color: inherit; }
+
+  .grid { display: grid; gap: 16px; }
+  .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  @media (max-width: 860px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  .card {
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(18, 28, 41, .96), rgba(13, 21, 32, .96));
+    border-radius: 18px;
+    padding: 20px;
+    box-shadow: 0 18px 60px rgba(0,0,0,.18);
+  }
+  .card.small { padding: 16px; }
+  .note {
+    border: 1px solid rgba(102, 228, 212, .24);
+    background: linear-gradient(90deg, rgba(102, 228, 212, .10), rgba(122, 167, 255, .07));
+    border-radius: 16px;
+    padding: 16px 18px;
+    color: #d8fbf7;
+  }
+  .warn {
+    border: 1px solid rgba(255, 209, 102, .25);
+    background: rgba(255, 209, 102, .08);
+    border-radius: 14px;
+    padding: 14px 16px;
+  }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); font: 12px var(--mono); margin: 2px 5px 6px 0; }
+  .pill.blue { color: var(--blue); border-color: rgba(122,167,255,.38); background: rgba(122,167,255,.07); }
+  .pill.cyan { color: var(--cyan); border-color: rgba(102,228,212,.38); background: rgba(102,228,212,.07); }
+  .pill.green { color: var(--green); border-color: rgba(121,226,167,.38); background: rgba(121,226,167,.07); }
+  .pill.yellow { color: var(--yellow); border-color: rgba(255,209,102,.38); background: rgba(255,209,102,.07); }
+  .pill.red { color: var(--red); border-color: rgba(255,159,159,.38); background: rgba(255,159,159,.07); }
+
+  .split { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; align-items: start; }
+  @media (max-width: 980px) { .split { grid-template-columns: 1fr; } }
+
+  table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 14px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 12px 14px; vertical-align: top; }
+  th { text-align: left; color: var(--blue); font-size: 12px; letter-spacing: .09em; text-transform: uppercase; font-weight: 700; background: rgba(122,167,255,.05); }
+  td { color: var(--muted); }
+  td:first-child { color: var(--ink); font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+
+  ul { margin: 8px 0 0; padding-left: 20px; color: var(--muted); }
+  li { margin: 6px 0; }
+
+  .diagram-wrap { padding: 18px; border: 1px solid var(--line); border-radius: 22px; background: linear-gradient(180deg, rgba(13,21,32,.82), rgba(8,16,26,.95)); box-shadow: 0 0 0 1px rgba(122,167,255,.04), 0 28px 90px rgba(0,0,0,.24); }
+  svg { width: 100%; height: auto; display: block; }
+  .svg-node { fill: #121d2b; stroke: #334965; stroke-width: 1.4; rx: 14; }
+  .svg-node.plan { fill: rgba(184,155,255,.12); stroke: rgba(184,155,255,.65); }
+  .svg-node.clarify { fill: rgba(255,209,102,.08); stroke: rgba(255,209,102,.62); }
+  .svg-node.runtime { fill: rgba(122,167,255,.12); stroke: rgba(122,167,255,.65); }
+  .svg-node.inspect { fill: rgba(102,228,212,.11); stroke: rgba(102,228,212,.65); }
+  .svg-node.exit { fill: rgba(121,226,167,.10); stroke: rgba(121,226,167,.62); }
+  .svg-node.fail { fill: rgba(255,209,102,.10); stroke: rgba(255,209,102,.58); }
+  .svg-title { font: 700 16px var(--sans); fill: #e6edf5; }
+  .svg-sub { font: 12px var(--sans); fill: #95a6b8; }
+  .svg-label { font: 12px var(--mono); fill: #b8c7d8; }
+  .arrow { stroke: #6f86a0; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+  .arrow-hot { stroke: #ffd166; stroke-width: 2.4; fill: none; marker-end: url(#arrowHot); }
+  .arrow-good { stroke: #79e2a7; stroke-width: 2.2; fill: none; marker-end: url(#arrowGood); }
+  .loop-box { fill: rgba(122,167,255,.035); stroke: rgba(122,167,255,.20); stroke-width: 1.2; rx: 24; stroke-dasharray: 8 7; }
+
+  .two-col-list { columns: 2; column-gap: 28px; }
+  @media (max-width: 780px) { .two-col-list { columns: 1; } }
+  footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--faint); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">pi-charter doctrine proposal</div>
+    <h1>Dumb-smart charters: a thin loop around strong Markdown doctrine</h1>
+    <p class="lead">The architecture should stay simple: the runtime keeps the charter alive, shows the next legal move, and blocks bad exits. The intelligence lives in Markdown prompts, skills, and persona files so better future models get better at the workflow instead of fighting a brittle orchestrator.</p>
+  </header>
+
+  <section class="note">
+    <strong>Design thesis:</strong> copy Codex and Claude's best idea, not their exact product. A goal loop can be dumb and still powerful: durable objective, explicit stopping condition, continuation pressure, fresh status, and a few hard gates where agents usually cheat.
+  </section>
+
+  <h2>01 · The loop</h2>
+  <div class="diagram-wrap" aria-label="Adaptive checkpoint loop graph">
+    <svg viewBox="0 0 1180 960" role="img">
+      <defs>
+        <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#6f86a0" /></marker>
+        <marker id="arrowHot" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#ffd166" /></marker>
+        <marker id="arrowGood" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#79e2a7" /></marker>
+      </defs>
+
+      <rect class="loop-box" x="80" y="260" width="1020" height="670" />
+      <text x="110" y="293" class="svg-label">idle reprompt applies to every non-terminal stage except CLARIFY</text>
+
+      <rect class="svg-node plan" x="275" y="45" width="230" height="86" />
+      <text x="390" y="78" text-anchor="middle" class="svg-title">PLAN</text>
+      <text x="390" y="102" text-anchor="middle" class="svg-sub">draft charter/map</text>
+
+      <rect class="svg-node clarify" x="275" y="155" width="230" height="76" />
+      <text x="390" y="185" text-anchor="middle" class="svg-title">CLARIFY</text>
+      <text x="390" y="209" text-anchor="middle" class="svg-sub">manual only; may ask</text>
+
+      <rect class="svg-node plan" x="790" y="45" width="230" height="86" />
+      <text x="905" y="78" text-anchor="middle" class="svg-title">LOCK PLAN</text>
+      <text x="905" y="102" text-anchor="middle" class="svg-sub">authority to continue</text>
+
+      <rect class="svg-node runtime" x="470" y="300" width="240" height="76" />
+      <text x="590" y="330" text-anchor="middle" class="svg-title">ORIENT</text>
+      <text x="590" y="354" text-anchor="middle" class="svg-sub">status, drift, evidence</text>
+
+      <rect class="svg-node runtime" x="470" y="400" width="240" height="76" />
+      <text x="590" y="430" text-anchor="middle" class="svg-title">SET CHECKPOINT</text>
+      <text x="590" y="454" text-anchor="middle" class="svg-sub">slice + evidence target</text>
+
+      <rect class="svg-node runtime" x="470" y="500" width="240" height="76" />
+      <text x="590" y="530" text-anchor="middle" class="svg-title">EXECUTE</text>
+      <text x="590" y="554" text-anchor="middle" class="svg-sub">build / research / change</text>
+
+      <rect class="svg-node inspect" x="470" y="600" width="240" height="76" />
+      <text x="590" y="630" text-anchor="middle" class="svg-title">INSPECT</text>
+      <text x="590" y="654" text-anchor="middle" class="svg-sub">review / QA / evidence</text>
+
+      <rect class="svg-node fail" x="800" y="500" width="240" height="76" />
+      <text x="920" y="530" text-anchor="middle" class="svg-title">FIX</text>
+      <text x="920" y="554" text-anchor="middle" class="svg-sub">same checkpoint</text>
+
+      <rect class="svg-node runtime" x="470" y="705" width="240" height="76" />
+      <text x="590" y="735" text-anchor="middle" class="svg-title">DECIDE</text>
+      <text x="590" y="759" text-anchor="middle" class="svg-sub">next / replan / complete</text>
+
+      <rect class="svg-node runtime" x="150" y="705" width="240" height="76" />
+      <text x="270" y="735" text-anchor="middle" class="svg-title">NEXT CHECKPOINT</text>
+      <text x="270" y="759" text-anchor="middle" class="svg-sub">map still fits</text>
+
+      <rect class="svg-node runtime" x="470" y="855" width="240" height="76" />
+      <text x="590" y="885" text-anchor="middle" class="svg-title">REPLAN</text>
+      <text x="590" y="909" text-anchor="middle" class="svg-sub">update future map</text>
+
+      <rect class="svg-node exit" x="800" y="705" width="260" height="76" />
+      <text x="930" y="735" text-anchor="middle" class="svg-title">COMPLETE / GIVE UP</text>
+      <text x="930" y="759" text-anchor="middle" class="svg-sub">only with evidence</text>
+
+      <path class="arrow" d="M505 88 H790" />
+      <path class="arrow" d="M350 131 V153" />
+      <path class="arrow" d="M430 155 V133" />
+      <path class="arrow" d="M905 131 V220 H590 V298" />
+      <path class="arrow" d="M590 376 V398" />
+      <path class="arrow" d="M590 476 V498" />
+      <path class="arrow" d="M590 576 V598" />
+      <path class="arrow-good" d="M590 676 V703" />
+
+      <path class="arrow-hot" d="M710 638 C765 638 775 580 800 558" />
+      <path class="arrow-hot" d="M800 538 H712" />
+
+      <path class="arrow" d="M470 743 H392" />
+      <path class="arrow" d="M270 705 C270 535 330 340 468 338" />
+
+      <path class="arrow" d="M590 781 V853" />
+      <path class="arrow" d="M470 893 H270 V783" />
+
+      <path class="arrow-good" d="M710 743 H798" />
+
+      <text x="140" y="145" class="svg-label">needs clarification</text>
+      <text x="515" y="145" class="svg-label">answers return</text>
+      <text x="745" y="622" class="svg-label" fill="#ffd166">findings / failures</text>
+      <text x="606" y="694" class="svg-label" fill="#79e2a7">pass</text>
+      <text x="430" y="724" class="svg-label">next</text>
+      <text x="160" y="555" class="svg-label">start next checkpoint</text>
+      <text x="607" y="820" class="svg-label">map stale</text>
+      <text x="300" y="882" class="svg-label">after replan</text>
+      <text x="720" y="724" class="svg-label">done / give up</text>
+    </svg>
+  </div>
+
+  <pre><code>PLAN does not ask. If it lacks authority, it may route to CLARIFY when allowed.
+
+CLARIFY may ask, but only in non-autonomous runs.
+CLARIFY does not trigger idle reprompts.
+CLARIFY returns to PLAN with answers/context.
+
+LOCK PLAN is reached from PLAN only after objective, stopping condition, and initial map are adequate.
+PLAN and every later non-terminal stage get idle reprompts when the agent and subagents go idle.
+LOCK PLAN authorizes execution until completion, replan, or true give-up.
+
+ORIENT -> SET CHECKPOINT -> EXECUTE -> INSPECT
+
+INSPECT fails:
+  record findings -> EXECUTE fixes the same checkpoint
+
+INSPECT passes:
+  DECIDE
+
+DECIDE:
+  complete if stopping condition + VAL evidence pass
+  continue directly to next checkpoint if work remains and the map still fits
+  replan only if the map is stale, then go to next checkpoint
+  give up only if impossible, blocked, or budget exhausted</code></pre>
+
+  <h2>02 · The split: Markdown intelligence, tiny runtime</h2>
+  <div class="grid grid-3">
+    <div class="card">
+      <span class="pill cyan">Markdown</span>
+      <h3>Doctrine and judgment</h3>
+      <p>Prompt files explain how to behave: what “set checkpoint” means, how QA should inspect, how to replan, when to give up, and how to avoid V0 exits.</p>
+      <ul>
+        <li>stage instructions</li>
+        <li>persona prompts</li>
+        <li>gate doctrine</li>
+        <li>templates and examples</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="pill blue">Runtime</span>
+      <h3>State and legal moves</h3>
+      <p>Code owns charter state, legal next actions, reminders, Ralph reprompts, and gates. It may attach Markdown doctrine snippets, but Markdown never decides what is legal.</p>
+      <ul>
+        <li>current stage/checkpoint</li>
+        <li>legal nextActions</li>
+        <li>missing evidence</li>
+        <li>completion blockers</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="pill green">Agent</span>
+      <h3>Actual work</h3>
+      <p>The root agent remains the loop driver. It reads the rendered status packet, uses doctrine snippets as coaching, delegates when useful, implements/researches, and records evidence.</p>
+      <ul>
+        <li>implementation strategy</li>
+        <li>research synthesis</li>
+        <li>delegation</li>
+        <li>replanning judgment</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>03 · Proposed Markdown tree</h2>
+  <div class="split">
+    <div class="card">
+      <h3>Versioned doctrine snippets</h3>
+      <p>The extension ships a default pack of short coaching files. Projects and charters can override wording without changing runtime rules.</p>
+      <pre><code>doctrine/
+  adaptive-checkpoint-loop/
+    v1/
+      README.md
+      loop.md
+
+      profiles/
+        default.md
+        discovery-first.md
+        spec-ready.md
+
+      stages/
+        clarify.md
+        plan.md
+        lock-plan.md
+        orient.md
+        set-checkpoint.md
+        execute.md
+        inspect.md
+        decide.md
+        replan.md
+        complete.md
+        give-up.md
+
+      personas/
+        planner-critic.md
+        reviewer.md
+        qa.md
+        readiness-probe.md
+        evaluator.md
+
+      gates/
+        completion.md
+        milestone-qa.md
+        stale-evidence.md
+        no-v0-exit.md
+        no-tool-suppression.md
+
+      templates/
+        checkpoint.md
+        qa-brief.md
+        evidence.md
+        replan-note.md</code></pre>
+    </div>
+    <div class="card">
+      <h3>Pure guidance, no legal moves</h3>
+      <p>Stage Markdown is not config. It contains durable advice the status renderer can quote beside code-defined rules.</p>
+      <pre><code># Inspect
+
+Inspect like an outside verifier, not like the implementer.
+
+Good inspection answers:
+- what was reviewed or tested
+- what evidence/artifacts were produced
+- what risks remain
+- whether the checkpoint is credible from a user/runtime perspective
+
+Avoid:
+- rubber-stamping because tests passed once
+- relying only on the implementer's claim
+- skipping real QA for user-facing behavior</code></pre>
+    </div>
+  </div>
+
+  <h2>04 · What is state-machine driven?</h2>
+  <table>
+    <thead>
+      <tr><th>Runtime concern</th><th>Reason</th><th>Should stay dumb</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Stage</td>
+        <td>Know whether the agent is planning, executing, inspecting, deciding, or complete.</td>
+        <td>Do not infer implementation quality from code. Just track loop position.</td>
+      </tr>
+      <tr>
+        <td>Checkpoint</td>
+        <td>Bind the current slice to an evidence target so the agent cannot drift into easy unrelated work.</td>
+        <td>Do not over-model milestones. A checkpoint can be a short Markdown statement plus linked VALs.</td>
+      </tr>
+      <tr>
+        <td>Evidence gates</td>
+        <td>Agents self-deceive at completion time. Code should refuse completion without passing VAL evidence.</td>
+        <td>Do not judge aesthetics or architecture in code. Require typed review/QA/readiness evidence instead.</td>
+      </tr>
+      <tr>
+        <td>Transitions</td>
+        <td>Prevent bad exits: failed inspect must return to execute; active charters must not silently stop.</td>
+        <td>Do not schedule workers. Return legal next actions and let the root agent drive.</td>
+      </tr>
+      <tr>
+        <td>Reminders</td>
+        <td>Inject current state and doctrine snippets into context/status surfaces.</td>
+        <td>Reminders are not turns. They can appear anytime and should stay status-shaped, not static nags.</td>
+      </tr>
+      <tr>
+        <td>Ralph / idle reprompt</td>
+        <td>When the agent and subagents go idle, start a new turn for any non-terminal stage except Clarify.</td>
+        <td>This is not a reminder. It is a reprompt delivery mechanism, guarded by no-tool suppression.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>05 · What is Markdown-driven?</h2>
+  <div class="grid grid-2">
+    <div class="card small">
+      <h3>Stage coaching</h3>
+      <p>What good planning, execution, inspection, and replanning look like. These files do not name legal transitions; they make the current step less sloppy.</p>
+    </div>
+    <div class="card small">
+      <h3>Profile behavior</h3>
+      <p><code>discovery-first</code> starts with inventory/research/spikes. <code>spec-ready</code> starts with coverage extraction. Same loop, different prompts.</p>
+    </div>
+    <div class="card small">
+      <h3>Persona behavior</h3>
+      <p>Reviewer, QA, readiness, and planner-critic should be mostly prompt contracts. Runtime only needs their expected evidence shapes.</p>
+    </div>
+    <div class="card small">
+      <h3>Gate doctrine</h3>
+      <p>What counts as sloppy V0, what milestone QA means, how stale evidence should be treated, and what makes completion or give-up claims credible.</p>
+    </div>
+  </div>
+
+  <h2>06 · How agents learn what is next</h2>
+  <div class="split">
+    <div class="card">
+      <h3>Return a deterministic next-action packet</h3>
+      <p><code>charter_status</code> should not just say “active”. It should explain the loop position and the next legal moves in a compact status block.</p>
+      <pre><code>stage: inspect
+checkpoint: M2 CLI surface
+objective: Make pi-charter milestone-driven
+stoppingCondition: VALs pass + readiness evidence
+
+reminderMode: inject status/doctrine without starting a turn
+autoLoop: reprompt on idle unless stage is clarify or terminal
+
+codeDefinedRules:
+  legalNext:
+    - run checkpoint QA/review
+    - record typed evidence or findings
+  blockedForComplete:
+    - VAL-READINESS has no readiness evidence
+
+doctrineSnippets:
+  - path: doctrine/.../stages/inspect.md
+    excerpt: "Inspect like an outside verifier, not like the implementer."</code></pre>
+    </div>
+    <div class="card">
+      <h3>Inject a stage-specific reminder</h3>
+      <p>The reminder should be a steer, not a nag. It is rendered by code from current state, code-defined next actions, and short doctrine excerpts. Ralph may reuse this content, but only Ralph starts a new turn.</p>
+      <pre><code>You are in pi-charter checkpoint loop.
+
+Current stage: INSPECT
+Current checkpoint: M2 CLI surface
+
+Code-defined next actions:
+{{ legalNextActions }}
+
+Completion blockers:
+{{ completionBlockers }}
+
+Doctrine excerpt:
+{{ doctrineExcerpt }}</code></pre>
+    </div>
+  </div>
+
+  <h2>07 · Reminders vs Ralph loop</h2>
+  <div class="grid grid-2">
+    <div class="card">
+      <span class="pill cyan">Reminder</span>
+      <h3>Context injection, not a turn</h3>
+      <p>A reminder is status/doctrine text the runtime can inject into context, widgets, or tool responses anytime. It helps the current turn stay aligned, but it does not wake the agent or create work by itself.</p>
+    </div>
+    <div class="card">
+      <span class="pill blue">Ralph / idle reprompt</span>
+      <h3>Starts the agent again</h3>
+      <p>If the root agent and async subagents are idle while the charter is in any non-terminal stage except <code>CLARIFY</code>, Ralph sends a fresh reprompt so the agent continues.</p>
+    </div>
+    <div class="card">
+      <span class="pill yellow">No-tool suppression</span>
+      <h3>Prevent spin</h3>
+      <p>If a continuation turn produced no useful action, suppress blind repeat. The next reprompt should present fresh code-defined next actions and blockers instead of replaying stale prose.</p>
+    </div>
+    <div class="card">
+      <span class="pill green">Fresh status</span>
+      <h3>No stale loop prompts</h3>
+      <p>Both reminders and Ralph reprompts render from current <code>charter_status</code>: stage, checkpoint, drift, missing evidence, legal next actions, and blockers.</p>
+    </div>
+  </div>
+
+  <h2>08 · Minimal hard gates</h2>
+  <div class="warn">
+    <strong>Only hard-code what agents reliably cheat on.</strong> Everything else stays in Markdown doctrine and subagent prompts.
+  </div>
+  <ul class="two-col-list">
+    <li>Clarify is the only ask-capable phase, and only in non-autonomous runs.</li>
+    <li>No Ralph idle reprompt while in Clarify.</li>
+    <li>No lock without objective and stopping condition.</li>
+    <li>No post-clarify “should I continue?” asks.</li>
+    <li>No completion without passing VAL evidence.</li>
+    <li>Failed inspect routes back to execute.</li>
+    <li>User-facing checkpoint needs QA/readiness evidence.</li>
+    <li>Changed plan/criteria makes stale evidence visible.</li>
+    <li>Budget exhaustion routes to give-up, not fake success.</li>
+    <li>Every other non-terminal stage gets a Ralph reprompt when idle and no subagents are running.</li>
+  </ul>
+
+  <h2>09 · Why this survives model improvements</h2>
+  <div class="card">
+    <p><strong>Too-smart systems become obsolete when models improve.</strong> They encode yesterday's agent limitations into code. This design keeps the runtime as a small status renderer and gatekeeper. Better models read the same Markdown coaching more intelligently, produce better checkpoints, write better QA briefs, and replan better without requiring a new scheduler.</p>
+    <p>The runtime should be boring: doctrine loading, excerpt selection, nextActions, evidence gates, reminder injection, Ralph idle-reprompt delivery, and continuation suppression. The prompts should be excellent.</p>
+  </div>
+
+  <footer>
+    Draft design document for pi-charter. Proposed path for implementation: ship the doctrine snippets first, then keep runtime responsible for status rendering, legal nextActions, reminders, Ralph reprompts, and hard evidence gates.
+  </footer>
+</main>
+</body>
+</html>
