@@ -42,7 +42,7 @@ Ralph never stops the charter on its own (see ADR 0009). When the agent cannot f
 
 These are explicitly excluded from this decision and from any near-term charter executing on it:
 
-- New persisted statuses, checkpoint state, or `currentCheckpoint` pointer.
+- New persisted statuses, persisted checkpoint state, or any per-charter cursor pointer.
 - Any doctrine tree at `doctrine/` or equivalent.
 - TOML/JSON/YAML transition graphs and stage frontmatter parsing.
 - New authored knobs in `charter.md` such as `userFacing`.

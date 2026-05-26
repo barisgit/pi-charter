@@ -1,6 +1,6 @@
 # pi-charter
 
-`pi-charter` is a Pi extension design for durable, charter-bound agent work: the agent starts from an objective, authors or reuses a `charter.md`, decomposes the work into feature files, records evidence against criteria, and uses evaluator feedback as smart-Ralph steering.
+`pi-charter` is a Pi extension design for durable, charter-bound agent work: the agent starts from an objective, authors or reuses a `charter.md`, decomposes the work into feature files, records evidence against criteria.
 
 This repo is intentionally scaffold-first. The current source of truth is the documentation; implementation starts from `src/index.ts` after the domain language and ADRs stabilize.
 
@@ -10,7 +10,6 @@ This repo is intentionally scaffold-first. The current source of truth is the do
 
 - Four LLM-callable tools wired: `charter_manage`, `charter_plan`, `charter_record`, `charter_status`.
 - Lifecycle FSM with completion gate, hook bus, drift views, session binding, planner-critic, command verifiers.
-- Post-turn `charter-evaluator` modeled on Claude Code's `/goal` (default `anthropic/claude-sonnet-4-6`).
 - Bundled internal personas: `charter-verifier`, `charter-planner-critic` (both `scope: internal`, `anthropic/claude-sonnet-4-6`).
 - Per-project layout: `<project>/.pi/charters/<charterId>/{charter.md, state.json, plan/, work/, events.jsonl, ...}`.
 - pi-subagents bridge wired: `register-persona-dir` emit, `expose-api` subscriber, `async-started`/`async-complete` → `feature_started`/`feature_completed`/`feature_failed` event mapping.
@@ -23,7 +22,7 @@ This repo is intentionally scaffold-first. The current source of truth is the do
 |---|---|
 | `CONTEXT.md` | Domain language and boundaries for pi-charter. Read first. |
 | `docs/adr/` | Accepted architectural decisions and tradeoffs. |
-| `docs/implementation/` | Implementation-oriented specs: filesystem layout, tools, lifecycle, verifier/evaluator. |
+| `docs/implementation/` | Implementation-oriented specs: filesystem layout, tools, lifecycle, and verifiers. |
 | `docs/research/2026-05-14-pi-charter-design/` | Full research and brainstorming archive. |
 | `docs/reference/v1-pi-goals/` | Old v1 implementation preserved for reference only. |
 | `docs/reference/pi-docs/extensions.md` | Pi extension API reference copied from local Pi docs. |
@@ -36,7 +35,7 @@ Four LLM-callable tools:
 - `charter_manage` — lifecycle FSM: create, pause, resume, complete, force-complete, amend charter.
 - `charter_plan` — macro-DAG editing and viewing.
 - `charter_record` — evidence, verification, and handoff writes.
-- `charter_status` — read-only drift views, evaluator reason, and legal `nextActions[]`.
+- `charter_status` — read-only drift views and legal `nextActions[]`.
 
 Single slash tree:
 

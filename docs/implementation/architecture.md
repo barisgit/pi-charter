@@ -9,7 +9,7 @@ Pi extension entrypoint
   ├── Application layer
   │   ├── tools: charter_manage / charter_plan / charter_record / charter_status
   │   ├── commands: /charter tree
-  │   ├── event handlers: session binding, reminders, evaluator, hooks
+  │   ├── event handlers: session binding, reminders, Ralph, hooks
   │   └── nextActions FSM
   ├── Domain layer
   │   ├── Charter / Mission state
@@ -22,7 +22,7 @@ Pi extension entrypoint
       ├── session binding files under ~/.pi/agent/sessions/<sid>/charter.json
       ├── reminder bus integration
       ├── subagent metadata passthrough
-      └── optional evaluator model calls
+      └── deterministic Ralph reprompting
 ```
 
 ## Core primitives
@@ -31,11 +31,11 @@ Pi extension entrypoint
 2. **Macro DAG** — `plan/<featureId>.md` files plus computed `plan.json` sidecar.
 3. **Evidence log** — append-only evidence JSON files under `work/<featureId>/evidence/`.
 4. **State bitmaps** — `feature-state.json` and `criterion-state.json`, mutable and computed.
-5. **Evaluator steer** — post-turn advisory verdict/reason, never a completion gate.
+5. **Ralph reprompt** — status-driven continuation when the root and async children are idle.
 
 ## Control model
 
-The root agent is the loop driver. pi-charter only surfaces the current charter, drift views, legal next actions, and optional verifier/planner/evaluator persona calls. It does not run a worker scheduler.
+The root agent is the loop driver. pi-charter only surfaces the current charter, drift views, legal next actions, and optional verifier/planner persona calls. It does not run a worker scheduler.
 
 ## Integration points
 
@@ -44,7 +44,7 @@ The root agent is the loop driver. pi-charter only surfaces the current charter,
 - **Flags**: `--charter-objective`, `--charter-resume` via `pi.registerFlag()`.
 - **Hooks**: `charter:before_lock_plan`, `charter:before_complete`, `charter:before_amend_charter`, `charter:before_force_complete`.
 - **Subagents**: internal personas and metadata passthrough; children never bind sessions themselves.
-- **Reminders/status**: adaptive evaluator steer and compact status widget.
+- **Reminders/status**: deterministic Ralph reprompting and compact status widget.
 
 ## Non-goals for v1 implementation
 

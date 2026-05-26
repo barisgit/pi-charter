@@ -101,11 +101,13 @@ export function renderStatusSummary(status: CharterStatusResult): string {
 
   const nextActions = status.nextActions ?? [];
   if (nextActions.length > 0) {
-    lines.push("nextActions:");
+    lines.push("legalNextActions:");
     for (const a of nextActions.slice(0, 6)) {
       const action = a.action ? ` action=${a.action}` : "";
       lines.push(`  - ${a.tool}${action}: ${a.hint}`);
     }
+  } else {
+    lines.push("legalNextActions: (none)");
   }
 
   const commands = formatCommandsBlock(status.commands);
@@ -113,10 +115,12 @@ export function renderStatusSummary(status: CharterStatusResult): string {
 
   const blocking = status.details?.blockingForComplete;
   if (Array.isArray(blocking) && blocking.length > 0) {
-    lines.push("blockingForComplete:");
+    lines.push("completionBlockers:");
     for (const b of blocking.slice(0, 5)) {
       lines.push(`  - ${b.criterionId}: ${b.reason ?? "needs evidence"}`);
     }
+  } else {
+    lines.push("completionBlockers: (none)");
   }
 
   return lines.join("\n");

@@ -13,16 +13,16 @@ Current state (deterministic snapshot — not your memory):
 
 Continuation behavior:
 - This charter persists across turns. Do not stop just because the previous turn made partial planning progress.
-- The planning phase ends with `charter_plan action=lock_plan`. Drive toward that, not toward a smaller "passable" plan.
-
-Take the next legal planning action from `nextActions` in the snapshot above. Typical moves:
-- If `uncovered` VAL-* criteria are listed, edit `.pi/charters/{{ charterId }}/charter.md` to add or refine criteria. Do not write a repo-root `charter.md`.
-- If criteria exist but features are missing or coverage is incomplete, call `charter_plan action=add_feature` (id, milestone, order, fulfills[], body). Do not write `plan/*.md` files yourself.
-- Before `lock_plan`, delegate plan critique once: `subagent({agent:'charter-planner-critic'})`.
-- Once coverage is complete and the critique has been applied, call `charter_plan action=lock_plan`.
-
-Fidelity:
 - Keep the full objective intact. If criteria seem hard to verify, sharpen them rather than dropping them.
+
+Runtime-owned next step:
+- Choose from `legalNextActions` in the deterministic snapshot above; do not infer a lifecycle transition from this prompt.
+- Treat `completionBlockers` as authoritative when present, even during planning.
+- If the snapshot is ambiguous, call `charter_status` and follow its current `nextActions` rather than relying on memory.
+
+Planning fidelity:
+- Use uncovered VAL-* criteria, plan coverage, and verifier details from the current status surfaces to decide what to author next.
+- Do not write repo-root `charter.md` or `plan/*.md` files yourself; use the charter tools and paths surfaced by the current legal action.
 - A feature is "covered" only when at least one VAL-* it claims to fulfill has a verifier the agent will actually run.
 
-Do not pause, abandon, or budget-limit the charter on your own — those are user-controlled transitions.
+Ralph is only a reprompt. It never changes charter status; lifecycle moves must come from current legal actions and explicit charter tool calls.

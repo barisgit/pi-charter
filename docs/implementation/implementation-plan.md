@@ -53,21 +53,20 @@ Definition of done:
 - Completion is blocked without required evidence.
 - `requireFreshEvidence` and `requireReviewSubagent` predicates are enforced.
 
-## M4 — smart-Ralph status and evaluator
+## M4 — smart-Ralph status and Ralph reprompting
 
 Definition of done:
 
 - `charter_status` returns drift views and `nextActions[]`.
 - Status widget shows compact charter state.
 - Reminder/steer injection replaces v1 static reminder.
-- Deterministic evaluator summary works.
-- Model evaluator interface exists, even if default-off.
+- Deterministic Ralph reprompting works from status data.
 
 ## M5 — subagent/persona integration
 
 Definition of done:
 
-- `charter-verifier`, `charter-planner-critic`, `charter-evaluator` persona docs exist.
+- `charter-verifier` and `charter-planner-critic` persona docs exist.
 - Subagent metadata passthrough conventions are implemented or documented against pi-subagents.
 - `handoff_apply` ingests handoff envelopes.
 

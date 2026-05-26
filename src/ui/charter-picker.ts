@@ -341,9 +341,6 @@ export class CharterPickerComponent implements Component {
     const passColor = this.passCountColor(row.passCount, row.totalCount);
     const counter = this.color(passColor, `${row.passCount}/${row.totalCount}`);
     out.push(`${statusBadge} ${counter}`);
-    if (snapshot?.evaluatorVerdict) {
-      out.push(this.color(verdictColor(snapshot.evaluatorVerdict.verdict), `⚑ ${snapshot.evaluatorVerdict.verdict}`));
-    }
     // Timestamps: date + HH:MM for created, plus updated (live) or completed/terminated
     // (terminal). Helps distinguish stale active charters at a glance.
     const tsLines = this.formatTimestamps(row);
@@ -481,15 +478,6 @@ export class CharterPickerComponent implements Component {
       lines.push(...objectiveLines.map((line) => `  ${line}`));
     }
 
-    // Evaluator section.
-    if (snapshot.evaluatorVerdict) {
-      const vColor = verdictColor(snapshot.evaluatorVerdict.verdict);
-      lines.push("");
-      lines.push(`${sectionHeading("Evaluator", vColor)}  ${this.color(vColor, snapshot.evaluatorVerdict.verdict)}`);
-      for (const line of wrapText(snapshot.evaluatorVerdict.steer, Math.max(1, width - 2))) {
-        lines.push(this.color("muted", `  ${line}`));
-      }
-    }
 
     // Blocking-complete section.
     // Suppress entirely for terminal charters (completed/abandoned/budget_limited);

@@ -44,7 +44,6 @@ interface CharterFixture {
     ts: string;
     recordedBy: string;
   }>;
-  evaluatorLogLines?: string[];
   /** When true, do NOT write state.json (forces buildPickerSnapshot to return null). */
   omitState?: boolean;
 }
@@ -150,9 +149,6 @@ async function seedCharter(projectDir: string, f: CharterFixture): Promise<void>
     );
   }
 
-  if (f.evaluatorLogLines) {
-    await writeFile(join(dir, "evaluator-log.jsonl"), `${f.evaluatorLogLines.join("\n")}\n`, "utf8");
-  }
 }
 
 describe("buildPickerSnapshot (VAL-PICKER-DATA-001)", () => {
@@ -237,11 +233,6 @@ describe("buildPickerSnapshot (VAL-PICKER-DATA-001)", () => {
           { featureId: "f3-gamma", file: "VAL-E__1.json", criterionId: "VAL-E", outcome: "fail", ts: "2026-05-15T05:00:00.000Z", recordedBy: "agent:root" },
           { featureId: "f3-gamma", file: "VAL-F__1.json", criterionId: "VAL-F", outcome: "partial", ts: "2026-05-15T06:00:00.000Z", recordedBy: "agent:root" },
         ],
-        evaluatorLogLines: [
-          JSON.stringify({ ts: "2026-05-15T00:10:00.000Z", charterId, trigger: "turn_end", verdict: "on_track", confidence: 0.9, reason: "fine", cites: [] }),
-          JSON.stringify({ ts: "2026-05-15T00:20:00.000Z", charterId, trigger: "turn_end", verdict: "blocked", confidence: 0.5, reason: "stalled", cites: [] }),
-          JSON.stringify({ ts: "2026-05-15T00:30:00.000Z", charterId, trigger: "turn_end", verdict: "drifting", confidence: 0.7, reason: "off path", steerReminder: "act now", cites: [] }),
-        ],
       });
 
       const snap = await buildPickerSnapshot(projectDir, charterId);
@@ -254,12 +245,6 @@ describe("buildPickerSnapshot (VAL-PICKER-DATA-001)", () => {
       expect(snap.header.passCount).toBe(2);
       expect(snap.header.totalCount).toBe(7);
       expect(snap.objective).toBe("Drive feature X to done.");
-
-      expect(snap.evaluatorVerdict).toEqual({
-        verdict: "drifting",
-        steer: "act now",
-        ts: "2026-05-15T00:30:00.000Z",
-      });
 
       // 6 evidence records on disk → recentEvidence capped at 5, ts-desc.
       expect(snap.recentEvidence).toHaveLength(5);

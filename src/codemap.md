@@ -6,7 +6,7 @@
 src/
 ├── index.ts                   — Extension entrypoint; orchestrates registration order
 ├── application/               — Tool surface, service orchestration, event hooks
-│   ├── registration.ts         — All register*() wiring (tools, commands, evaluator,
+│   ├── registration.ts         — All register*() wiring (tools, commands, Ralph,
 │   │                            subagent bridges, widget, personas, reminders)
 │   ├── service.ts             — Charter lifecycle FSM (create/pause/resume/complete/
 │   │                            force_complete/amend_charter) + status computation
@@ -14,7 +14,6 @@ src/
 │   ├── async-bridge-service.ts — Translates subagent:async-* events into MissionEvents
 │   ├── plan-service.ts        — Feature DAG management (add/update/lock/view plan)
 │   ├── record-service.ts      — Evidence recording, command verification, handoff apply
-│   ├── evaluator-service.ts   — Per-turn evaluator: model call + steer injection
 │   ├── hooks.ts               — In-process veto bus (before_lock_plan, before_complete, etc.)
 │   └── reminders-bridge.ts   — pi-reminders event emitter for persistent charter reminders
 ├── domain/                     — Pure domain models; no I/O, no dependencies on application
@@ -77,8 +76,9 @@ UI owns **what the user sees**. All rendering functions are pure string-in / str
 5. registerCharterAsyncBridge   — surface 3: async-started/async-complete → MissionEvent
 6. registerCharterWidget        — AFTER async bridge so event handlers fire after bridge writes
 7. registerCharterRemindersBridge — pi-reminders emitter
-8. registerCharterEvaluator      — turn_end listener
-9. registerCharterPersonas       — surface 1: register bundled persona dirs
+8. registerCharterRalphLoop      — deterministic idle reprompt listener
+9. registerCharterRalphMessageRenderer — renders Ralph steer messages
+10. registerCharterPersonas      — surface 1: register bundled persona dirs
 ```
 
 ### 2. Atomic Write Pattern (`infrastructure/store.ts`)
@@ -108,7 +108,7 @@ Bidirectional pointer between a Pi session and a charter:
 All charter lifecycle events are appended (never mutated) to `events.jsonl`:
 `charter_created`, `plan_locked`, `feature_added`, `feature_started`, `feature_completed`, `feature_failed`, `evidence_recorded`, `handoff_applied`, `milestone_ready_for_review`, `charter_paused`, `charter_resumed`, `charter_completed`, `charter_force_completed`, `charter_amended`.
 
-The event log is the **authoritative history** for the evaluator, the widget's running-subagent attribution, and milestone review detection.
+The event log is the **authoritative history** for the widget's running-subagent attribution and milestone review detection.
 
 ### 5. Pure Reducer → ViewModel (`ui/widget-state.ts`)
 
@@ -237,33 +237,12 @@ charter_manage(action=lock_plan) → status=active
           appendEvent("handoff_applied")
 ```
 
-### Evaluator Flow
-
-```
-turn_end event
-  → registerCharterEvaluator's turn_end handler
-      → readSessionBinding(sessionId) → charterId
-      → loadCharterState() — skip if terminal or dormant status
-      → buildEvaluatorContext(projectDir, charterId, {recentUserMessages, recentToolNames})
-          → parseCharterMarkdown(charter.md)
-          → loadCriterionState()
-          → computeDrift()
-          → countPlanFeatureFiles()
-          → listUnreviewedMilestones()
-      → buildEvaluatorPrompt(context) → JSON prompt
-      → modelFn({context, prompt}) → EvaluatorAssessment {verdict, confidence, reason, steerReminder, cites}
-      → appendEvaluatorEntry() → evaluator-log.jsonl (last 10 entries)
-      → enforceMilestoneSteer() — inject (milestone: <id>) suffix for unreviewed milestones
-      → dedup: skip if same verdict within 120s
-      → pi.sendMessage({customType:"charter-evaluator-steer", deliverAs:"steer"})
-```
-
 ### Widget Refresh Flow
 
 ```
 Events that trigger widget refresh:
   session_start      → registerCharterWidget's session_start handler
-  turn_end           → registerCharterWidget's turn_end handler (after evaluator runs)
+  turn_end           → registerCharterWidget's turn_end handler
   charter_* tool calls → implicit (next turn_end covers them)
   subagent:async-started/complete → RunningSubagentRegistry updated
 
@@ -296,10 +275,10 @@ tryRemoveCharterReminder (called on complete/force_complete)
 - `pi.registerCommand()` — registers `/charter` and `/charters` slash commands
 - `pi.registerFlag()` — registers `--charter-objective` and `--charter-resume` session-start flags
 - `pi.on("session_start", fn)` — reconcile session binding, resume/create charter, register personas
-- `pi.on("turn_end", fn)` — evaluator run + widget refresh
+- `pi.on("turn_end", fn)` — widget refresh
 - `pi.on("session_shutdown", fn)` — unregister personas, reset selection state
 - `pi.sendUserMessage()` — bootstrap new charters from `/charter` and `--charter-objective`
-- `pi.sendMessage({customType, deliverAs:"steer"})` — evaluator steer injection
+- `pi.sendMessage({customType, deliverAs:"steer"})` — Ralph steer injection
 - `pi.events.on/emit()` — all pi-subagents and pi-reminders bridge communication
 
 ### With `pi-subagents` (via `pi.events` bus)
@@ -312,13 +291,6 @@ tryRemoveCharterReminder (called on complete/force_complete)
 
 - **Outgoing events emitted**: `reminder:upsert`, `reminder:remove`
 - Both are best-effort (no subscribers → no-op); lifecycle tools do not depend on reminder success
-
-### With `pi-ai` (model registry)
-
-- `ctx.modelRegistry.find(provider, modelId)` — resolves evaluator model handle
-- `ctx.modelRegistry.getApiKeyAndHeaders(model)` — retrieves API credentials
-- `complete(model, context, options)` — executes the evaluator model call
-- Default: `anthropic`/`claude-sonnet-4-6`; overridden by `PI_CHARTER_EVAL_PROVIDER` / `PI_CHARTER_EVAL_MODEL` env vars
 
 ### With `pi-tui` (widget rendering)
 
@@ -348,7 +320,6 @@ tryRemoveCharterReminder (called on complete/force_complete)
 │           │   └── <stamp>__<featureId>__<sessionId>.json  ← HandoffEnvelope
 │           ├── criterion-state.json     ← latest EvidenceRecord per VAL
 │           ├── feature-state.json      ← feature lifecycle state
-│           ├── evaluator-log.jsonl     ← last 10 evaluator entries
 │           └── events.jsonl            ← append-only charter event log
 
 <homeDir>/
@@ -370,8 +341,7 @@ tryRemoveCharterReminder (called on complete/force_complete)
 - **charter-planner-critic**: spawned during planning phase before `lock_plan`; stress-tests VAL coverage
 - **charter-reviewer**: spawned with `pi-charter.charterId`, `pi-charter.featureId`, `pi-charter.criterionId` metadata; records `subagent`-sourced evidence with `recordedBy = "subagent:charter-reviewer:<sessionId>"`; applies handoffs
 
-### Test Seams (`options.homeDir`, `options.modelFn`)
+### Test Seams (`options.homeDir`)
 
-Every `register*` function that reads `~/.pi` or calls a model accepts an `options` object with test-only overrides:
+Every `register*` function that reads `~/.pi` accepts an `options` object with test-only overrides:
 - `homeDir?: string` — overrides `$HOME` for all path resolution
-- `modelFn?: EvaluatorModelFn` — replaces the model call with a test double

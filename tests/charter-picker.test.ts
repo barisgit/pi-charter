@@ -38,7 +38,6 @@ function snapshot(id: string, overrides: Partial<PickerSnapshot> = {}): PickerSn
       totalCount: 3,
     },
     objective: "Ship a focused picker render implementation.",
-    evaluatorVerdict: { verdict: "on_track", steer: "Keep the implementation small.", ts: "2026-05-15T01:00:00.000Z" },
     blockingForComplete: [],
     planTree: [
       {
@@ -125,7 +124,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     const picker = makePicker();
     const right = picker.render(160).slice(1, -1).map((line) => rightCell(line, 160)).join("\n");
     // Picker renders either "Blocking complete" or "Ready to complete" depending on state.
-    const labels = ["Objective", "Evaluator", /Blocking complete|Ready to complete/, "Plan", "Recent evidence"];
+    const labels = ["Objective", /Blocking complete|Ready to complete/, "Plan", "Recent evidence"];
     let last = -1;
     for (const label of labels) {
       const index = typeof label === "string" ? right.indexOf(label) : right.search(label);

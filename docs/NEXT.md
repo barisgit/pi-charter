@@ -18,12 +18,6 @@ pi-charter is a fully tested standalone extension wired to pi-subagents. 53 test
 - Session binding (forward + reverse): `state.json.sessionId` + `~/.pi/agent/sessions/<sessionId>/charter.json`. `--charter-resume <id>` and `--charter-objective` CLI flags wire through `session_start`. Reconcile-on-start restores forward pointer from reverse if missing.
 - Slash command: `/charter` (bare = status; `/charter <text>` = create shortcut).
 
-### Evaluator (intent-sentinel fold)
-
-- `evaluator-service.ts` runs post-turn via injected `EvaluatorModelFn`. Persists last 10 verdicts in `evaluator-log.jsonl`. Never gates completion — only surfaces a steer reminder via `pi.sendMessage({deliverAs: 'steer', triggerTurn: false})`.
-- `registerCharterEvaluator(pi)` wired into `index.ts`. `turn_end` handler builds the live context (charter status + drift + recent user messages + recent tool names), invokes `complete()` from `@earendil-works/pi-ai`, parses the JSON verdict, appends to log, fires steer reminder on next turn.
-- Default model: `anthropic/claude-sonnet-4-6`. Override via `PI_CHARTER_EVAL_PROVIDER` / `PI_CHARTER_EVAL_MODEL`.
-
 ### Bundled personas
 
 - `agents/charter-verifier.md` — read-only contract-aware verifier. `scope: internal`. Tool allowlist: `read, grep, find, ls, bash, charter_record, charter_status`. Records exactly one `charter_record action=evidence` entry per run.
@@ -37,7 +31,7 @@ All four required surfaces ship on the pi-subagents side, and the three pi-chart
 - pi-subagents commits (in order): `e35aed7` (internal scope), `fff442c` (metadata passthrough), `dd54225` (expose API), `5beb3d4` (register-persona-dir), `b3a03f8` (CI vocabulary guard).
 - pi-charter side:
   - `registerCharterPersonas` — emits `SUBAGENT_REGISTER_PERSONA_DIR_EVENT` at startup, re-emits on `session_start`, and emits `SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT` on `session_shutdown`. Subscribes to `SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT` and surfaces collisions via the pi-charter file logger (pi-coding-agent has no `ctx.ui` in `pi.events.on` handlers, and stdout/stderr are off limits).
-  - `registerCharterSubagentBridge` — subscribes to `SUBAGENT_EXPOSE_API_EVENT` and caches the `SubagentExposedAPI` bag in module state. `getSubagentApi()` returns the handle (or `undefined` when pi-subagents is absent). The evaluator still uses inline `complete()` by default; `spawnRaw` routing is a future opt-in.
+  - `registerCharterSubagentBridge` — subscribes to `SUBAGENT_EXPOSE_API_EVENT` and caches the `SubagentExposedAPI` bag in module state. `getSubagentApi()` returns the handle (or `undefined` when pi-subagents is absent).
   - `registerCharterAsyncBridge` — subscribes to `SUBAGENT_ASYNC_STARTED_EVENT` and `SUBAGENT_ASYNC_COMPLETE_EVENT`. When payload `metadata` carries `pi-charter.projectDir` + `pi-charter.charterId` (and optionally `pi-charter.featureId` / `pi-charter.criterionId`), appends `feature_started` / `feature_completed` / `feature_failed` to the charter's `events.jsonl`. `exitCode !== 0` maps to `feature_failed`.
 
 Spec lives in `docs/research/2026-05-14-pi-charter-design/orchestration-layering.md §3.2`. Local event constants and payload types are redeclared in `src/infrastructure/subagent-bridge.ts` so pi-charter does NOT import from pi-subagents (matches the `pi-prune-router` / `pi-prune-swe-pruner-provider` pattern).
@@ -53,7 +47,6 @@ When the host LLM delegates via `subagent({agent: 'charter-verifier' | 'charter-
 
 ## Open ladder
 
-- Optional: route the evaluator through `getSubagentApi()?.spawnRaw(...)` when available, so the per-turn drift reasoner runs in an isolated child instead of an in-process `complete()` call. Currently a deliberate non-default — inline `complete()` is cheaper/faster for the every-turn cadence.
 - Auto-apply handoff envelopes: extend the async-complete handler to read a `pi-charter.handoff` blob from the subagent summary/details and route to `charter_record action=handoff_apply`. Today the bridge only writes attribution events; handoff envelopes still need `charter_record action=handoff_apply` invoked explicitly by the host agent.
 - Optional bundled TUI approver subscribing to `charter:before_lock_plan` (default ON via `PI_CHARTER_TUI=on`; flipped OFF for Symphony-style orchestration).
 

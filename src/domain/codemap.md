@@ -111,7 +111,6 @@ completion gate reads criterion.requireReviewSubagent + trustRank + RecordedBy
 - `charter_manage`, `charter_plan`, `charter_record` use `ParsedCharterMarkdown`, `CharterCriterion`, `EvidenceRecord` as request/response shapes.
 - `charter_plan` `add_feature` internally produces markdown that `parseFeatureMarkdown` must round-trip.
 
-### Consumed by evaluator (`src/evaluator/`)
 - Reads `CharterState`, `CharterCriterion`, and `EvidenceRecord` to compute criterion bitmap and completion readiness.
 
 ### Consumed by the status widget

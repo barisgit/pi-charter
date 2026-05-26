@@ -28,7 +28,7 @@ Reference for coding agents working in this repository.
 ## Implementation guidance
 
 - Lift from v1 only proven extension plumbing: TypeBox schemas, atomic temp-file writes, lazy state loading, reminder event shape, status widget basics, and command parsing.
-- Replace v1 static reminders with evaluator-generated steering.
+- Replace v1 static reminders with deterministic Ralph steering.
 - Replace v1 string evidence with typed append-only evidence records.
 - Use `crypto.randomUUID()` for charter ids; do not reuse v1 hash ids.
 - Use Pi extension APIs from `docs/reference/pi-docs/extensions.md` and live installed docs if in doubt.

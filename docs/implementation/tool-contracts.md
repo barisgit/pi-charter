@@ -92,11 +92,6 @@ Return shape:
   phase: "planning" | "active" | "review" | "terminal";
   objective: string;
   budget?: BudgetState;
-  evaluator: {
-    lastVerdict?: "on_track" | "drifting" | "blocked" | "done";
-    lastReason?: string;
-    lastTs?: string;
-  };
   drift: {
     uncovered: unknown[];
     stuck: unknown[];
@@ -122,7 +117,6 @@ The tool result is the lifecycle guide. If status is `planning`, suggest plannin
 - `/charter resume <id>`
 - `/charter pause`
 - `/charter force-complete`
-- `/charter untrust-evaluator`
 
 ## CLI flags
 

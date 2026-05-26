@@ -70,7 +70,7 @@ Planning charters are eligible only once they have useful planning material: par
 Use the existing evaluator reminder format and keep it small:
 
 ```text
-charter-evaluator (<verdict>, confidence <0.00>):
+legacy evaluator persona (<verdict>, confidence <0.00>):
 <one-sentence reason>
 Next turn: <one concrete instruction>
 Cites: <criterionId and/or featureId>

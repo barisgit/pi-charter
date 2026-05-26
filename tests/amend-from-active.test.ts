@@ -197,10 +197,10 @@ describe("amendCharter active/review -> planning", () => {
           "f1-active": { status: "completed", completedAt: "2026-05-15T01:30:00.000Z" },
         },
       }, null, 2)}\n`, "utf8");
-      await writeFile(join(dir, "evaluator-log.jsonl"), "{\"ts\":\"2026-05-15T01:45:00.000Z\",\"verdict\":\"on_track\"}\n", "utf8");
+      await writeFile(join(dir, "legacy-sidecar.jsonl"), "{\"ts\":\"2026-05-15T01:45:00.000Z\",\"status\":\"seeded\"}\n", "utf8");
       const beforeCriterion = await readFile(join(dir, "criterion-state.json"), "utf8");
       const beforeFeature = await readFile(join(dir, "feature-state.json"), "utf8");
-      const beforeEvaluator = await readFile(join(dir, "evaluator-log.jsonl"), "utf8");
+      const beforeLegacySidecar = await readFile(join(dir, "legacy-sidecar.jsonl"), "utf8");
       const beforePlan = await snapshotPlanFiles(dir);
 
       await amendCharter(projectDir, {
@@ -212,7 +212,7 @@ describe("amendCharter active/review -> planning", () => {
 
       expect(await readFile(join(dir, "criterion-state.json"), "utf8")).toBe(beforeCriterion);
       expect(await readFile(join(dir, "feature-state.json"), "utf8")).toBe(beforeFeature);
-      expect(await readFile(join(dir, "evaluator-log.jsonl"), "utf8")).toBe(beforeEvaluator);
+      expect(await readFile(join(dir, "legacy-sidecar.jsonl"), "utf8")).toBe(beforeLegacySidecar);
       expect(await snapshotPlanFiles(dir)).toEqual(beforePlan);
     });
   });

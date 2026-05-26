@@ -19,7 +19,7 @@ workflow language. The HTML preserves the reasoning that led there.
 ## What is canonical instead
 
 - `docs/adr/0008-loop-doctrine-and-runtime-boundary.md` — code owns lifecycle / nextActions / gates / Ralph; Markdown carries doctrine and persona behavior only; milestones first-class in status; VALs are the only contract.
-- `docs/adr/0009-remove-charter-evaluator-prefer-deterministic-ralph.md` — `charter-evaluator` removed; deterministic Ralph drives continuation; Ralph never self-stops.
+- `ADR 0009` — `legacy evaluator persona` removed; deterministic Ralph drives continuation; Ralph never self-stops.
 - `CONTEXT.md` — updated domain language (Checkpoint, Reminder, Ralph reprompt, Replan, Milestone).
 - `skills/pi-charter/SKILL.md` — execution-loop doctrine and stuck handling (updated as part of the charter that implements the ADRs above).
 

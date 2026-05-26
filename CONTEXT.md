@@ -1,6 +1,6 @@
 # pi-charter Context
 
-pi-charter is a Pi extension for durable, charter-bound agent work: an agent receives an objective, authors or reuses a charter, decomposes the work into features, records evidence against criteria, and uses evaluator feedback to stay aligned until the charter is satisfied.
+pi-charter is a Pi extension for durable, charter-bound agent work: an agent receives an objective, authors or reuses a charter, decomposes the work into features, records evidence against criteria, and stays aligned until the charter is satisfied.
 
 This context defines the domain language. It intentionally describes the product model, not TypeScript implementation details.
 
@@ -25,7 +25,7 @@ Boundaries that define what the agent should not do, what must be preserved, and
 _Avoid_: Notes, preferences, non-goals
 
 **Mission**:
-The runtime execution container bound to one charter, session, budget, evaluator state, plan, and evidence history.
+The runtime execution container bound to one charter, session, budget, plan, and evidence history.
 _Avoid_: Charter, project, campaign
 
 **CharterId**:
@@ -33,7 +33,7 @@ The stable UUID identifying one mission directory and preventing stale writes.
 _Avoid_: Session id, goal id, task id
 
 **pi-charter**:
-The Pi extension that manages charters, plans, evidence, status, hooks, and evaluator steering.
+The Pi extension that manages charters, plans, evidence, status, and hooks.
 _Avoid_: pi-goals v2, pi-missions
 
 ### Lifecycle
@@ -72,7 +72,7 @@ _Avoid_: Auto-spawn scheduler, autonomous worker pool
 
 **Checkpoint**:
 A behavioral notion used in doctrine and prompts for “the current ready feature plus the evidence that proves it”. It is not a persisted concept; agents read it from `drift.readyNext` and the feature’s `fulfills[]`.
-_Avoid_: Stage, slice-state, currentCheckpoint
+_Avoid_: Stage, slice-state, per-charter execution cursor (the v1 "current checkpoint" notion is gone)
 
 **Reminder**:
 Status/doctrine text injected into context, widgets, or tool responses; it does not start a turn.
@@ -80,7 +80,7 @@ _Avoid_: Steer, prompt, nag
 
 **Ralph reprompt**:
 A fresh continuation message sent when the root agent and async subagents are all idle and the charter is non-terminal; it starts a new turn.
-_Avoid_: Reminder, evaluator verdict
+_Avoid_: Reminder
 
 ### Planning and decomposition
 
@@ -174,7 +174,7 @@ The execution-write tool for recording evidence, verification results, and hando
 _Avoid_: evidence tool, verifier tool
 
 **charter_status**:
-The read-only tool that returns status, drift views, evaluator reason, and legal next actions.
+The read-only tool that returns status, drift views, and legal next actions.
 _Avoid_: mission_status, goal_status
 
 **nextActions**:

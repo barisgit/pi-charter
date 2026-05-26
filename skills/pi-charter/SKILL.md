@@ -12,12 +12,76 @@ pass evidence. Four phases, driven in one continuous run:
 ```
 1. CREATE    charter_manage action=create
 2. PLAN      edit charter.md (criteria) -> add_feature -> planner-critic -> lock_plan
-3. EXECUTE   per feature: implement -> charter-reviewer / charter-qa / charter-readiness-probe -> evidence recorded
+3. EXECUTE   per feature: implement -> charter-reviewer -> user/runtime-facing charter-qa -> fix -> milestone charter-qa -> charter-readiness-probe -> evidence recorded
 4. COMPLETE  charter_manage action=complete    (gated on pass evidence)
 ```
 
 Once the plan is locked, do not stop between features to ask "should I
 keep going?". The objective + locked plan is your authorization to ship.
+
+## Loop doctrine
+
+The canonical execution loop for an active charter is:
+
+```
+charter-planner-critic → lock_plan → implement → charter-reviewer → user/runtime-facing charter-qa → fix → milestone charter-qa → charter-readiness-probe → complete
+```
+
+Canonical implementation segment: `implement → charter-reviewer → user/runtime-facing charter-qa → fix → milestone charter-qa → charter-readiness-probe`.
+
+**Code owns the loop; Markdown carries doctrine.**
+`charter_status nextActions[]` in `src/application/service.ts`, the
+lifecycle FSM, evidence gates, drift views, Ralph idle reprompt, and
+reminders are runtime-owned. Markdown
+(`charter.md`, this skill, personas) carries judgment and coaching only.
+Markdown never names a legal transition, defines a stage graph, or adds an
+authored surface-classification knob. Canonical boundary statement: `docs/adr/0008-loop-doctrine-and-runtime-boundary.md` (ADR 0008).
+
+### Stuck handling
+
+If `charter_status nextActions[]` offers no legal next move, call
+`charter_manage action=pause` (waiting on user) or
+`charter_manage action=abandon` (work no longer valid). Do not idle, do
+not loop without progress, and do not invent transitions.
+
+Never leave a charter `in_progress` with no evidence update and no call
+to `pause` / `abandon`. Ralph never stops the charter on its own (see
+ADR 0009); only the main agent exits the loop via one of the above or
+`force_complete`.
+
+### Replan policy
+
+Within a locked plan, the agent may replan by adding, updating, or
+reordering features and by amending milestone composition or ordering via
+`charter_plan` without calling `amend_charter`. Checkpoints are
+behavioral advice rendered into `charter_status` and Ralph output, not
+persisted state. Only the locked objective and VAL semantics require
+`charter_manage action=amend_charter` with written justification and a
+fresh planner-critic round. This matches ADR 0008.
+
+### User-facing vs runtime-facing QA
+
+`charter-qa` fires when output is **user-visible** (an agent reads it to
+drive the loop) **or runtime-visible** (an operator or service consumes
+it programmatically). The persona exercises the surface; it does not
+re-verify internal code paths.
+
+- **User-facing example:** `skills/pi-charter/SKILL.md` and
+  `agents/charter-*.md` are user-facing — an agent reads them to drive
+  the loop. `charter-qa` checks that the prose is coherent, loop steps
+  are discoverable, and stuck handling is unambiguous. A diff or grep
+  check is not sufficient; the surface requires a holistic read from the
+  consumer's perspective.
+- **Runtime-facing example:** `charter_status` JSON and `nextActions[]`
+  are runtime-facing — the main agent and Ralph consume them
+  programmatically. `charter-qa` checks that the shape matches the
+  documented contract, milestone grouping appears, and `nextActions`
+  include expected moves for the current state.
+
+If a milestone's output is purely internal (a private helper with no
+external callers and no observable output), document the QA-skip
+decision in the feature body and omit `charter-qa` for that milestone.
+
 
 ## Planning is the work
 
@@ -329,10 +393,9 @@ before completing. Returns:
 - `drift.readyNext[]` — features whose preconditions are satisfied.
 - `nextActions[]` — legal next moves. **Take one of these.**
 
-A post-turn evaluator may inject a `drifting | blocked |
-ready_to_complete` steer as a reminder on your next turn. Treat it as a
-nudge to re-read `charter_status`, not as a literal instruction.
-`on_track` is **not** a completion signal — only the `complete` gate is.
+If a Ralph reprompt appears, treat it as a nudge to re-read
+`charter_status` and follow legal `nextActions[]`, not as a separate
+completion signal. Only the `complete` gate finishes a charter.
 
 ## Tactical tasks vs. charter features
 
@@ -352,7 +415,7 @@ turn-to-turn surface.
   under `.pi/charters/<id>/`, and the tools own `plan/*.md`.
 - **Asking decisions the objective already implies** (commit author,
   branch name, build flags). Pick the obvious default and proceed.
-- **Trusting evaluator `on_track` as a completion signal.** It's a steer.
+- **Treating a Ralph reprompt as completion authority.** It is only a status-driven continuation nudge.
 - **Forgetting `pi-charter.projectDir` in subagent metadata.** Without
   it, the child can't locate the charter dir and won't record evidence.
 - **Assuming `handoff_apply` always completes the feature.** It only

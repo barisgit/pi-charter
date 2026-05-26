@@ -14,6 +14,7 @@ import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
 import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
 import { logger } from "../infrastructure/logger";
+import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "./plan-tree";
 
 export type { NextAction };
 
@@ -44,6 +45,15 @@ export interface CharterStatusDetails {
   blockingForComplete: BlockingForCompleteEntry[];
 }
 
+export interface MilestoneStatusSummary {
+  milestoneId: string;
+  featureCount: number;
+  fulfilledValCount: number;
+  valPassCount: number;
+  qaEvidenceCount: number;
+  featureIds: string[];
+}
+
 export interface CharterStatusResult {
   charterId: string;
   name?: string;
@@ -55,13 +65,13 @@ export interface CharterStatusResult {
   budget?: Budget;
   clarificationNote?: string;
   architecturePresent: boolean;
-  evaluator: { lastVerdict?: string; lastReason?: string; lastTs?: string };
   drift: {
     uncovered: { criterionId: string; reason: string }[];
     stuck: { featureId: string; status: string; startedAt?: string }[];
     stale: { criterionId: string; ageMs: number; lastTs: string }[];
     readyNext: { featureId: string; fulfills: string[]; probeResult?: ReadinessProbeResult }[];
   };
+  milestones: MilestoneStatusSummary[];
   guidelines: string[];
   nextActions: NextAction[];
   details?: CharterStatusDetails;
@@ -106,6 +116,8 @@ export async function getCharterStatus(
   const drift = await computeDrift(projectDir, { charterId });
   const blockingForComplete = await computeBlockingForCompleteSafely(dir, charterId);
   const milestoneReviewActions = await computeMilestoneReviewNextActionsSafely(dir);
+  const milestoneQAActions = await computeMilestoneQANextActionsSafely(dir);
+  const milestones = await computeMilestoneStatusSummariesSafely(dir, charterId);
   const qaBriefs = await listQaBriefs(dir);
   const commands = await loadCharterCommands(dir);
   const architecturePresent = await hasNonTrivialArchitecture(architectureMarkdownPath(projectDir, charterId));
@@ -121,10 +133,10 @@ export async function getCharterStatus(
     budget: state.budget,
     clarificationNote: state.clarificationNote,
     architecturePresent,
-    evaluator: {},
     drift,
+    milestones,
     guidelines: migrationHint ? [migrationHint, ...guidelinesForStatus(state.status)] : guidelinesForStatus(state.status),
-    nextActions: migrationHint ? migrationReplanNextActions() : state.status === "awaiting-clarification" ? nextActionsForStatus(state.status) : [...nextActionsForStatus(state.status), ...milestoneReviewActions],
+    nextActions: migrationHint ? migrationReplanNextActions() : state.status === "awaiting-clarification" ? nextActionsForStatus(state.status) : [...nextActionsForStatus(state.status), ...milestoneReviewActions, ...milestoneQAActions],
     details: { blockingForComplete },
     qaBriefs,
     commands,
@@ -202,6 +214,22 @@ async function computeMilestoneReviewNextActionsSafely(dir: string): Promise<Nex
   }
 }
 
+async function computeMilestoneQANextActionsSafely(dir: string): Promise<NextAction[]> {
+  try {
+    return await computeMilestoneQANextActions(dir);
+  } catch {
+    return [];
+  }
+}
+
+async function computeMilestoneStatusSummariesSafely(dir: string, charterId: string): Promise<MilestoneStatusSummary[]> {
+  try {
+    return await computeMilestoneStatusSummaries(dir, charterId);
+  } catch {
+    return [];
+  }
+}
+
 export interface UnreviewedMilestone {
   milestoneId: string;
   planDigest: string;
@@ -210,18 +238,22 @@ export interface UnreviewedMilestone {
   readyTs: string;
 }
 
-/**
- * Pure helper consumed by both `getCharterStatus` and the evaluator. Reads
- * `events.jsonl` and `criterion-state.json`, returns the set of
- * milestone_ready_for_review events whose criterionIds are not yet fully
- * covered by charter-reviewer-attributed pass evidence.
- *
- * Coverage is decided by `criterion-state.recordedBy` starting with
- * `subagent:charter-reviewer:` (the authoritative identity prefix written by
- * applyHandoff), not by event payloads. This keeps the surface honest when
- * other persona subagents also write evidence.
- */
-export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedMilestone[]> {
+export interface UnQAedMilestone {
+  milestoneId: string;
+  planDigest: string;
+  criterionIds: string[];
+  /** Timestamp of the originating milestone_ready_for_review event. */
+  readyTs: string;
+}
+
+interface LatestMilestoneReadyEvent {
+  milestoneId: string;
+  planDigest: string;
+  criterionIds: string[];
+  ts: string;
+}
+
+async function listLatestMilestoneReadyEvents(dir: string): Promise<LatestMilestoneReadyEvent[]> {
   const eventsPath = join(dir, "events.jsonl");
   let raw = "";
   try {
@@ -254,7 +286,29 @@ export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedM
       readyByMilestone.set(milestoneId, { ts, planDigest, criterionIds });
     }
   }
-  if (readyByMilestone.size === 0) return [];
+
+  return [...readyByMilestone.entries()].map(([milestoneId, ready]) => ({
+    milestoneId,
+    planDigest: ready.planDigest,
+    criterionIds: ready.criterionIds,
+    ts: ready.ts,
+  }));
+}
+
+/**
+ * Pure helper consumed by `getCharterStatus`. Reads
+ * `events.jsonl` and feature evidence records, returns the set of
+ * milestone_ready_for_review events whose criterionIds are not yet fully
+ * covered by charter-reviewer-attributed pass evidence.
+ *
+ * Coverage is decided by persisted evidence records whose `recordedBy` starts
+ * with `subagent:charter-reviewer:` (the authoritative identity prefix written
+ * by applyHandoff), not by event payloads. This keeps the surface honest when
+ * other persona subagents also write evidence.
+ */
+export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedMilestone[]> {
+  const readyEvents = await listLatestMilestoneReadyEvents(dir);
+  if (readyEvents.length === 0) return [];
 
   // VAL-11 contract: a milestone counts as reviewed iff every criterionId has
   // AT LEAST ONE evidence record where `recordedBy` starts with
@@ -263,14 +317,14 @@ export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedM
   // record would otherwise clobber a valid charter-reviewer review.
   const verifierReviewsByCriterion = await loadCharterVerifierReviewsByCriterion(dir);
   const unreviewed: UnreviewedMilestone[] = [];
-  for (const [milestoneId, ready] of readyByMilestone) {
+  for (const ready of readyEvents) {
     const missing = ready.criterionIds.filter((id) => {
       const reviews = verifierReviewsByCriterion.get(id) ?? [];
       return !reviews.some((review) => review.ts >= ready.ts);
     });
     if (missing.length === 0) continue;
     unreviewed.push({
-      milestoneId,
+      milestoneId: ready.milestoneId,
       planDigest: ready.planDigest,
       criterionIds: ready.criterionIds,
       readyTs: ready.ts,
@@ -346,6 +400,10 @@ async function loadEvidenceJson(absolutePath: string, relativePath: string): Pro
  * with the record `ts`. VAL-11 uses this to compare against milestone_ready_for_review.ts.
  */
 async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<string, { ts: string }[]>> {
+  return loadSubagentPassEvidenceByCriterion(dir, "subagent:charter-reviewer:");
+}
+
+async function loadSubagentPassEvidenceByCriterion(dir: string, recordedByPrefix: string): Promise<Map<string, { ts: string }[]>> {
   const out = new Map<string, { ts: string }[]>();
   const workDir = join(dir, "work");
   let featureDirs: string[];
@@ -361,7 +419,7 @@ async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<s
       const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : undefined;
       const ts = typeof parsed.ts === "string" ? parsed.ts : undefined;
       if (!criterionId || !recordedBy || !ts) continue;
-      if (!recordedBy.startsWith("subagent:charter-reviewer:")) continue;
+      if (!recordedBy.startsWith(recordedByPrefix)) continue;
       const list = out.get(criterionId) ?? [];
       list.push({ ts });
       out.set(criterionId, list);
@@ -370,12 +428,111 @@ async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<s
   return out;
 }
 
+async function computeMilestoneStatusSummaries(dir: string, charterId: string): Promise<MilestoneStatusSummary[]> {
+  const groups = groupFeaturesByMilestone(await readPlanFeatures(dir));
+  if (groups.length === 0) return [];
+  const criterionState = await loadCriterionState(dir, charterId);
+  const qaEvidenceByCriterion = await loadSubagentPassEvidenceByCriterion(dir, "subagent:charter-qa:");
+
+  return groups.map((group) => {
+    const criterionIds = milestoneCriterionIds(group.features);
+    return {
+      milestoneId: group.milestoneId,
+      featureCount: group.features.length,
+      fulfilledValCount: criterionIds.length,
+      valPassCount: criterionIds.filter((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass").length,
+      qaEvidenceCount: criterionIds.filter((criterionId) => (qaEvidenceByCriterion.get(criterionId) ?? []).length > 0).length,
+      featureIds: group.features.map((feature) => feature.id),
+    };
+  });
+}
+
+function milestoneCriterionIds(features: PlanFeatureRef[]): string[] {
+  return Array.from(new Set(features.flatMap((feature) => feature.fulfills))).sort();
+}
+
+export async function listUnQAedMilestones(dir: string): Promise<UnQAedMilestone[]> {
+  const readyEvents = await listLatestMilestoneReadyEvents(dir);
+  if (readyEvents.length === 0) return [];
+
+  const groups = groupFeaturesByMilestone(await readPlanFeatures(dir));
+  const groupsById = new Map(groups.map((group) => [group.milestoneId, group]));
+  const qaEvidenceByCriterion = await loadSubagentPassEvidenceByCriterion(dir, "subagent:charter-qa:");
+  const out: UnQAedMilestone[] = [];
+
+  for (const ready of readyEvents) {
+    if (ready.criterionIds.length === 0) continue;
+    const group = groupsById.get(ready.milestoneId);
+    if (!group) continue;
+    if (!(await milestoneHasImplementationEvidence(dir, group.features))) continue;
+
+    const qaCovered = ready.criterionIds.filter((criterionId) => {
+      const records = qaEvidenceByCriterion.get(criterionId) ?? [];
+      return records.some((record) => record.ts >= ready.ts);
+    });
+    if (qaCovered.length === ready.criterionIds.length) continue;
+
+    out.push({
+      milestoneId: ready.milestoneId,
+      planDigest: ready.planDigest,
+      criterionIds: ready.criterionIds,
+      readyTs: ready.ts,
+    });
+  }
+
+  return out;
+}
+
+async function milestoneHasImplementationEvidence(dir: string, features: PlanFeatureRef[]): Promise<boolean> {
+  for (const feature of features) {
+    const evidence = await loadFeatureEvidence(dir, feature.id);
+    for (const criterionId of feature.fulfills) {
+      if (!evidence.some(({ record }) => isImplementationEvidenceForCriterion(record, criterionId))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function isImplementationEvidenceForCriterion(record: Record<string, unknown>, criterionId: string): boolean {
+  if (record.outcome !== "pass") return false;
+  if (record.criterionId !== criterionId) return false;
+  const recordedBy = typeof record.recordedBy === "string" ? record.recordedBy : "";
+  if (recordedBy.startsWith("subagent:charter-reviewer:")) return true;
+  const kind = evidenceKindFromRecord(record);
+  return kind === "command" || kind === "qa" || kind === "review";
+}
+
+function evidenceKindFromRecord(record: Record<string, unknown>): string | undefined {
+  if (typeof record.kind === "string") return record.kind;
+  const details = record.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
+  const detailRecord = details as Record<string, unknown>;
+  if (typeof detailRecord.kind === "string") return detailRecord.kind;
+  const typedEvidence = detailRecord.typedEvidence;
+  if (typedEvidence && typeof typedEvidence === "object" && !Array.isArray(typedEvidence)) {
+    const typedRecord = typedEvidence as Record<string, unknown>;
+    if (typeof typedRecord.kind === "string") return typedRecord.kind;
+  }
+  return undefined;
+}
+
 async function computeMilestoneReviewNextActions(dir: string): Promise<NextAction[]> {
   const unreviewed = await listUnreviewedMilestones(dir);
   return unreviewed.map((entry) => ({
     tool: "subagent" as const,
     hint: `Delegate to charter-reviewer for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
     metadata: { milestoneId: entry.milestoneId, criterionIds: entry.criterionIds },
+  }));
+}
+
+async function computeMilestoneQANextActions(dir: string): Promise<NextAction[]> {
+  const unqaed = await listUnQAedMilestones(dir);
+  return unqaed.map((entry) => ({
+    tool: "subagent" as const,
+    hint: `Run milestone QA with charter-qa for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
+    metadata: { milestoneId: entry.milestoneId, criterionIds: entry.criterionIds, agent: "charter-qa" },
   }));
 }
 
@@ -1109,7 +1266,7 @@ function guidelinesForStatus(status: CharterStatus): string[] {
     "Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in subagent({action:'list'}) — invoke them by name directly; the call works. Full workflow in skill: skills/pi-charter/SKILL.md.",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
   ];
-  if (status === "review") return ["Inspect evidence before completing; evaluator done is not a gate."];
+  if (status === "review") return ["Inspect evidence before completing."];
   if (status === "paused") return ["Resume before recording new evidence or changing plan state."];
   if (status === "awaiting-clarification") return ["Awaiting user clarification. Do not take further charter action until the user responds, then call charter_manage action=resume."];
   return ["Terminal charters are read-only except explicit follow-up/new charter actions."];

@@ -71,7 +71,7 @@ This report folds Q1 and Q5 together (system shapes) and Q2 and Q4 together (loo
 
 **FACT.** The post-turn evaluator pattern is well-established. Reflexion (verbal RL critic, 2023) is the canonical reference; LLM-as-Judge is the SOTA framing. Pydantic Evals, LangSmith, and Claude Code's `/goal` evaluator all run cheap separate models against trajectory.
 
-**Gaps the explorer flagged against pi-charter v2's folded charter-evaluator** (REPORTED, all single-source from the Q2/Q4 explorer digest):
+**Gaps the explorer flagged against pi-charter v2's folded legacy evaluator persona** (REPORTED, all single-source from the Q2/Q4 explorer digest):
 
 | # | Gap | What state of the art does |
 |---|---|---|

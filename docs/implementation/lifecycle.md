@@ -50,7 +50,7 @@ Specs are plain English context. If the prompt says "use `docs/spec.md`", the ag
 At each turn or status check:
 
 1. Recompute sidecars if authored files changed.
-2. Read drift views and evaluator steer.
+2. Read drift views and `nextActions[]`.
 3. Agent chooses one action:
    - implement a ready feature;
    - record evidence;
@@ -80,6 +80,6 @@ If any predicate fails, return to `active` with clear `nextActions[]`.
 - `budget_limited` records the budget dimension and partial progress.
 - `abandoned` records reason and leaves artifacts intact.
 
-## Evaluator role
+## Ralph role
 
-The evaluator steers; it does not complete. A `done` verdict may move attention to review, but verifier evidence and hooks decide terminal completion.
+Ralph reprompts from current status when the root agent and async children are idle. It does not complete, pause, or abandon a charter; verifier evidence and hooks decide terminal completion.

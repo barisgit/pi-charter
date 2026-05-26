@@ -15,13 +15,13 @@ Top-level orchestration. Each service is a pure-functional, side-effect-scoped u
 | `registerCharterTools(pi, options?)` | `function` | Registers `charter_manage`, `charter_plan`, `charter_record`, `charter_status` tools |
 | `registerCharterCommands(pi)` | `function` | Registers `/charter` and `/charters` slash commands |
 | `registerCharterFlags(pi, options?)` | `function` | Registers `--charter-objective` and `--charter-resume` flags; handles `session_start` |
-| `registerCharterEvaluator(pi, options?)` | `function` | Wires `turn_end` hook that runs the evaluator and injects steer reminders |
+| `registerCharterRalphLoop(pi, options?)` | `function` | Wires the deterministic idle reprompt loop |
 
 **Design patterns**
 - **Command pattern** per tool: `pi.registerTool({ name, parameters, execute })`.
 - **TypeBox schemas** (`Type.Object(...)`) for all tool parameter validation; schemas ride alongside the tool definition.
 - **Strategy dispatch** inside each `execute` callback: a `switch (params.action)` routes to the appropriate service function.
-- **Dependency injection seam**: `options.homeDir` and `options.modelFn` are test seams that bypass real filesystem and model calls.
+- **Dependency injection seam**: `options.homeDir` is a test seam that bypasses the real home-directory layout.
 - **Closure-scoped re-entry guard**: the `/charters` picker sets `isPickerOpen = true` in the closure to prevent double-overlays.
 
 **Data/control flow**
@@ -29,7 +29,6 @@ Top-level orchestration. Each service is a pure-functional, side-effect-scoped u
 ```
 host session_start
   └─ registerCharterFlags: reconcileSessionBinding → rebind → upsertCharterReminder
-     registerCharterEvaluator: registers turn_end hook only (lazy, fires each turn)
 
 user /charter "..."
   └─ registerCharterCommands: /charter handler → pi.sendUserMessage(...)
@@ -40,16 +39,15 @@ user /charters
          verb "select" → setCharterSelection → requestSelectionRefresh
          verb "pause/resume/status" → resolveCharterForVerb → service call
 
-each turn_end
-  └─ registerCharterEvaluator: turn_end handler
-         → readSessionBinding → loadCharterState → runEvaluator → reminderFromEntry
-         → pi.sendMessage({ customType: "charter-evaluator-steer", deliverAs: "steer" })
+Ralph idle events
+  └─ registerCharterRalphLoop: subagent:all-idle handler
+         → readSessionBinding → buildRalphPromptForCharter → pi.sendMessage(..., triggerTurn:true)
 ```
 
 **Integration points**
-- Imports: `plan-service`, `record-service`, `service` (lifecycle), `binding-service`, `evaluator-service`, `reminders-bridge`, `store`, `subagent-bridge`, `async-bridge-service`, `widget`, `widget-state`, `widget-service`, `charter-selection`.
+- Imports: `plan-service`, `record-service`, `service` (lifecycle), `binding-service`, `reminders-bridge`, `store`, `subagent-bridge`, `async-bridge-service`, `widget`, `widget-state`, `widget-service`, `charter-selection`.
 - Emits: `reminder:upsert`, `reminder:remove` (via `reminders-bridge`); `pi.sendUserMessage`, `pi.sendMessage`; `pi.on("turn_end")`; `pi.on("session_start")`.
-- Consumes: `ctx.sessionManager.getSessionId`, `ctx.cwd`, `ctx.modelRegistry`, `pi.getFlag(...)`.
+- Consumes: `ctx.sessionManager.getSessionId`, `ctx.cwd`, `pi.getFlag(...)`.
 
 ---
 
@@ -308,69 +306,6 @@ computeDrift(projectDir, { charterId, now?, freshnessWindowMs? }) => DriftViews
 
 **Integration points**
 - Reads: `charter.md` (domain/charter-md), `plan/*.md` (domain/feature-md), `criterion-state.json`, `feature-state.json`, `state.json`.
-- Called by: `service.ts` (`getCharterStatus`), `evaluator-service.ts` (`buildEvaluatorContext`), `reminders-bridge.ts` (`computeActiveNext`).
-
----
-
-## `evaluator-service.ts`
-
-**Responsibility** — Post-turn reasoner. Runs on every `turn_end`, loads charter state, asks an LLM for a verdict, and returns a steer reminder for injection on the next turn. Never gates completion.
-
-**Public API**
-
-| Export | Signature |
-|---|---|
-| `runEvaluator` | `(projectDir, {charterId, trigger, modelFn, recentUserMessages?, recentToolNames?, now?}) => EvaluatorEntry` |
-| `buildEvaluatorContext` | `(projectDir, charterId, options?) => EvaluatorContext` |
-| `buildEvaluatorPrompt` | `(context: EvaluatorContext) => string` |
-| `reminderFromEntry` | `(entry: EvaluatorEntry \| undefined) => string \| undefined` |
-| `readEvaluatorLog` | `(projectDir, charterId) => EvaluatorEntry[]` |
-
-**Verdict enum**: `on_track | drifting | blocked | ready_to_complete | unclear`
-
-**EvaluatorContext contents**
-- Charter objective, status, criteria with outcomes.
-- `featureCount`.
-- Full `drift` from `computeDrift`.
-- `unreviewedMilestones` — milestones with a `milestone_ready_for_review` event whose criteria have no charter-reviewer evidence.
-- `recentUserMessages` / `recentToolNames` — last 5 messages, last 12 tool names from the session branch.
-
-**Steer enforcement (`enforceMilestoneSteer`)**
-If any `unreviewedMilestones` exist and the LLM steer reminder omits a milestone id, appends a deterministic `(milestone: <id>)` suffix for every missing id.
-
-**Skip logic (`shouldSkipPlanningEvaluation`)**
-Returns `true` (verdict `on_track`) when:
-- Status is `planning` AND no criteria exist yet; OR
-- Status is `planning` AND no feature plan AND no evidence yet.
-
-**Dedup contract (managed by `registration.ts` caller)**
-- Last 10 entries retained in `evaluator-log.jsonl`.
-- Dedup window: skip sending if last entry has same verdict within 120 s.
-
-**Design patterns**
-- **Injected model function**: `EvaluatorModelFn` is a seam for tests; production uses `buildEvaluatorModelFn` which calls `ctx.modelRegistry.find(...)`.
-- **Deterministic suffix**: `enforceMilestoneSteer` ensures VAL-11 milestone citations are always present, making the output grep-testable.
-- **Append-only log**: `evaluator-log.jsonl` is append-only with a 10-entry read window.
-
-**Data/control flow**
-
-```
-turn_end hook
-  └─ buildEvaluatorContext → loadCharterState + parse charter.md + loadCriterionState
-                            + computeDrift + countPlanFeatureFiles + listUnreviewedMilestones
-  └─ buildEvaluatorPrompt → JSON-serialized context
-  └─ modelFn({ context, prompt }) → EvaluatorAssessment
-  └─ enforceMilestoneSteer
-  └─ appendEvaluatorEntry → writeFile(evaluator-log.jsonl, last 10 lines)
-  └─ reminderFromEntry → formatted string or undefined
-  └─ dedup check (prior entry verdict + timestamp)
-  └─ pi.sendMessage({ customType: "charter-evaluator-steer", deliverAs: "steer" })
-```
-
-**Integration points**
-- Reads: `state.json`, `charter.md` (domain/charter-md), `criterion-state.json`, `events.jsonl`, `plan/*.md` (domain/feature-md), `evaluator-log.jsonl`.
-- Writes: `evaluator-log.jsonl`.
-- Calls: `parseCharterMarkdown` (domain), `loadCharterState` (store), `loadCriterionState` (record-service), `computeDrift` (drift-service), `listUnreviewedMilestones` (service).
 
 ---
 
@@ -535,7 +470,6 @@ recordedBy ::= "agent:root"           # default root agent
   events.jsonl            # Append-only event log
   criterion-state.json    # Latest evidence pointer per VAL
   feature-state.json      # Feature status (completed/in_progress/failed)
-  evaluator-log.jsonl      # Last 10 evaluator entries
   plan.json               # Snapshot of plan coverage (generated)
   plan/
     <featureId>.md        # Feature definitions
@@ -557,8 +491,6 @@ charter_manage → service.ts → store.ts → filesystem
 charter_plan   → plan-service.ts → domain/charter-md, domain/feature-md → filesystem
 charter_record → record-service.ts → domain/charter-md → filesystem
 charter_status → service.ts → drift-service.ts → filesystem
-                └→ evaluator-service.ts → filesystem
-turn_end       → evaluator-service.ts
 session_start   → binding-service.ts + reminders-bridge.ts
 subagent events → async-bridge-service.ts → events.jsonl
 ```

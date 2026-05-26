@@ -13,7 +13,7 @@
 > The early sections (§§0–17) capture the original brainstorm. Several decisions made later supersede pieces of them in place. **If §§18–22 disagree with §§0–17, the higher-numbered section is the locked truth.** Specifically:
 >
 > - **§18** establishes the three-tier model (Mission / Macro DAG / Contract durable in pi-charter; Tactical tasks ephemeral in pi-dag-tasks). Wherever §§0–2 call the macro DAG "work DAG" or place it in pi-dag-tasks, read §18 instead. **§18.8/18.10/18.12 themselves are partially superseded by §10 (per-mission directory layout) and §21 (smart-Ralph drops `workerSessionIds[]` / `skillName` / `currentWorkerSessionId` from Feature, drops auto-advance).**
-> - **§19** adds bundled internal personas (`charter-verifier`, `charter-planner-critic`, `charter-evaluator`) on top of pi-subagents `spawn` / `spawnRaw` / `registerPersonaDir` / opaque `metadata` passthrough. Wherever earlier sections say "the subagent inherits the active `charterId` via spawn config", read §19.5 (metadata passthrough) instead. Wherever earlier sections imply pi-subagents knows about goals, read the layering hard rules.
+> - **§19** adds bundled internal personas (`charter-verifier`, `charter-planner-critic`, `legacy evaluator persona`) on top of pi-subagents `spawn` / `spawnRaw` / `registerPersonaDir` / opaque `metadata` passthrough. Wherever earlier sections say "the subagent inherits the active `charterId` via spawn config", read §19.5 (metadata passthrough) instead. Wherever earlier sections imply pi-subagents knows about goals, read the layering hard rules.
 > - **§20** locks the full rename to `pi-charter` / `Charter` / `charter_*` / `charter-*` personas / `charter:*` hooks. Any `Goal` or `Mission` typename, `goal_*` or `mission_*` tool, `goal-*` or `mission-*` persona, or `~/.pi/goals/` / `~/.pi/missions/` path in §§0–17 is old vocabulary; read §20.1's rename table. `"goal"` survives only as `Charter.objective` (the English noun, the field name).
 > - **§21** locks the smart-Ralph loop. There is no auto-spawn worker scheduler. `preconditions[]` is advisory. `Feature` does NOT carry `skillName`, `workerSessionIds[]`, `currentWorkerSessionId`, `completedWorkerSessionId`. Wherever §18 still has those fields, treat them as removed.
 > - **§21 + b9 decision** locks: pi-dag-tasks carries NO pointer field into pi-charter. No `featureId`, no `charterId`, no `fulfills`. Wherever §§0–3/7/18 say tasks declare `fulfills[]` or carry `featureId`, that is wrong — read §12 (rewritten) instead.
@@ -512,7 +512,7 @@ This is Factory's handoff JSON, mostly verbatim. The parent applies it:
 
 Pi already has subagents (`subagent` tool). v2 adds:
 - A new tool `charter_handoff_apply` that accepts the envelope.
-- Bundled internal personas (`charter-verifier`, `charter-planner-critic`) registered via `subagent.registerPersonaDir` and the system prompt for `charter-evaluator` built dynamically via `subagent.spawnRaw` (§19).
+- Bundled internal personas (`charter-verifier`, `charter-planner-critic`) registered via `subagent.registerPersonaDir` and the system prompt for `legacy evaluator persona` built dynamically via `subagent.spawnRaw` (§19).
 - When pi-charter code spawns a child, it stamps `metadata: { "pi-charter.charterId": ..., "pi-charter.criterionId": ..., "pi-charter.featureId": ... }` on the spawn payload. pi-subagents never reads `metadata`; it just stamps it onto every `subagent:*` hook event payload. pi-charter' hook subscriber reads it on `subagent:completed` and routes the handoff back into the mission's evidence log.
 - The child does NOT get a `~/.pi/agent/sessions/<sid>/charter.json` reverse-binding written for it. The child sees the mission only via inherited metadata + explicit `charterId` args on tools it calls (§22.5).
 
@@ -874,7 +874,7 @@ Four milestones, with the assumption v1 stays running until M2 ships and intent-
 - Plan-approval gate fires `charter:before_lock_plan` event. Bundled TUI approver subscribes; `tuiApprover: on` default, `PI_CHARTER_TUI=off` override.
 
 ### M3 — Evaluator + handoff + intent-sentinel fold (2–3 days)
-- `charter-evaluator` via `spawnRaw` with dynamic system prompt (§19.3, §20.6 dual-mode).
+- `legacy evaluator persona` via `spawnRaw` with dynamic system prompt (§19.3, §20.6 dual-mode).
 - Intent-sentinel marked deprecated; 2-week soft period; then uninstall.
 - Steering reason injection via reminder bus.
 - Handoff envelope schema + `charter_handoff_apply`; auto-apply when the agent invokes `charter-verifier`.
@@ -905,7 +905,7 @@ These are the obvious follow-ons. Calling them out so we don't accidentally acce
 
 ## 17. The strongest single sentence about v2
 
-> v2 makes "done" inspectable: every mission carries a contract of evidenced behavioral assertions, a macro DAG of features that `fulfills[]` those criteria, a post-turn `charter-evaluator` (folded with intent-sentinel, dual-mode) that surfaces drift each turn, and a handoff envelope that binds command → exit-code → observation triples to evidence — all owned by `pi-charter`, with the agent itself as the loop (smart-Ralph, §21); tactical tasks live in `pi-dag-tasks` as a fully separate extension that carries no pointer field back.
+> v2 makes "done" inspectable: every mission carries a contract of evidenced behavioral assertions, a macro DAG of features that `fulfills[]` those criteria, a post-turn `legacy evaluator persona` (folded with intent-sentinel, dual-mode) that surfaces drift each turn, and a handoff envelope that binds command → exit-code → observation triples to evidence — all owned by `pi-charter`, with the agent itself as the loop (smart-Ralph, §21); tactical tasks live in `pi-dag-tasks` as a fully separate extension that carries no pointer field back.
 
 If a future agent reads only this paragraph, they have enough to reconstruct the architecture.
 
@@ -1170,7 +1170,7 @@ pi-charter ships **three bundled personas** inside the extension package, regist
 |---|---|---|
 | `charter-verifier` | `subagent.spawn({agent: "charter-verifier", ...})` | Stable contract-aware prompt; structures output as evidence records; calls back into pi-charter via `charter_record_evidence` and `charter_handoff_apply` |
 | `charter-planner-critic` | `subagent.spawn({agent: "charter-planner-critic", ...})` | Adversarial pass during planning phase: flags uncovered scope, orphan features, cyclic preconditions, budget sanity |
-| `charter-evaluator` | `subagent.spawnRaw({systemPrompt: buildEvaluatorPrompt(goal, recentEvents, contractDigest), prompt: ..., ...})` | System prompt MUST be built fresh each turn (embeds live criteria status + last 3 verdicts + drift signals); cannot be a static file |
+| `legacy evaluator persona` | `subagent.spawnRaw({systemPrompt: buildEvaluatorPrompt(goal, recentEvents, contractDigest), prompt: ..., ...})` | System prompt MUST be built fresh each turn (embeds live criteria status + last 3 verdicts + drift signals); cannot be a static file |
 
 ### 19.2 Why the verifier ships bundled, not user-authored
 
@@ -1182,7 +1182,7 @@ A generic `reviewer.md` persona doesn't know about:
 
 That's pi-charter-specific knowledge. Asking the user to write a contract-aware reviewer from scratch is a sharp adoption cliff. Bundling the verifier earns its rent because of the specialization, not because we're hoarding personas. **Users can still override** by dropping `~/.pi/agent/agents/charter-verifier.md` (global) or `<project>/.pi/charters/<charterId>/agents/charter-verifier.md` (per-mission, per §10 per-project layout) — the resolver checks those paths first.
 
-### 19.3 Why charter-evaluator stays raw (not bundled)
+### 19.3 Why legacy evaluator persona stays raw (not bundled)
 
 The evaluator system prompt embeds:
 - the goal's current objective text
@@ -1275,7 +1275,7 @@ Half-rename (extension=pi-charter, kernel=Goal, tool=`goal_create`) was a smell.
 | `GoalV2` (kernel type) | `Mission` |
 | `GoalState`, `GoalEvent`, `GoalRuntime` | `MissionState`, `CharterEvent`, `MissionRuntime` |
 | `goal_create`, `goal_status`, ... | `charter_manage({action:'create'})`, `charter_status`, ... |
-| `goal-verifier`, `goal-planner-critic`, `goal-evaluator` (bundled personas) | `charter-verifier`, `charter-planner-critic`, `charter-evaluator` |
+| `goal-verifier`, `goal-planner-critic`, `goal-evaluator` (bundled personas) | `charter-verifier`, `charter-planner-critic`, `legacy evaluator persona` |
 | `goal:before_create`, `goal:before_complete`, ... (hooks) | `charter:before_create`, `charter:before_complete`, ... |
 | `~/.pi/goals/goal-<id>.json` | `~/.pi/charters/charter-<id>.json` |
 | `/goal` slash command | `/charter` |
@@ -1378,9 +1378,9 @@ No `--charter-spec`. Specs are handled by plain English in the prompt ("Use ./de
 
 The spawn prompt MAY hint to the agent ("you are tasked with completing the charter described in ./design/oauth.md"); the agent reads the file and decides whether to call `charter_manage({action: 'create'})` itself. If `--charter-objective` was passed, the charter is already created and the agent just sees it in `charter_status`.
 
-### 20.6 Intent-sentinel fold into `charter-evaluator` (dual-mode)
+### 20.6 Intent-sentinel fold into `legacy evaluator persona` (dual-mode)
 
-`intent-sentinel` is deprecated and folded into pi-charter' bundled `charter-evaluator` persona. Reasons captured in §19's bundled-persona discussion + the orchestration-layering doc: same primitive (cheap separate-model trajectory supervisor), same memory model, same warnings UI.
+`intent-sentinel` is deprecated and folded into pi-charter' bundled `legacy evaluator persona` persona. Reasons captured in §19's bundled-persona discussion + the orchestration-layering doc: same primitive (cheap separate-model trajectory supervisor), same memory model, same warnings UI.
 
 The folded evaluator runs in **two prompt modes**:
 
@@ -1399,7 +1399,7 @@ The trajectory supervisor and the completion gate are different concerns and mus
 
 | Concern | Primitive | Model | Failure mode |
 |---|---|---|---|
-| **"Is the agent doing the right work?"** | `charter-evaluator` | soft, cheap, can be wrong without disaster | nudge / `<system-reminder>` |
+| **"Is the agent doing the right work?"** | `legacy evaluator persona` | soft, cheap, can be wrong without disaster | nudge / `<system-reminder>` |
 | **"Is the work actually done?"** | verifier + `charter:before_complete` hooks | hard, deterministic | block `charter_complete` |
 
 This preserves Codex's asymmetric-authority pattern: the model can propose-complete, but verifier and hooks must agree before the state transitions to `completed`. The evaluator's verdicts feed steering reminders, never the completion gate.
@@ -1426,7 +1426,7 @@ Biggest real risk: **duplicate-contract drift** (upstream spec says one thing, p
 
 ### 20.9 Tier-S/A additions from this addendum
 
-- **S5 — charter-evaluator dual-mode.** Replaces intent-sentinel verbatim in free-form mode; gains mission-scoped mode for typed drift. Single source of truth for "what the agent should do next."
+- **S5 — legacy evaluator persona dual-mode.** Replaces intent-sentinel verbatim in free-form mode; gains mission-scoped mode for typed drift. Single source of truth for "what the agent should do next."
 - **S6 — Upstream spec via filesystem.** Symphony writes `<charterDir>/charter.md` before spawn; planning notices and skips authoring. No tool parameter, no auto-detect. Eliminates duplicate-charter drift in the orchestrated-spawn case.
 - **A7 — env-var override stack for autonomy gates.** Same agent code runs in CI (auto-approved) and at a human TUI (gated), differing only by env.
 - **B13 — no substrate-injected wrap policy.** Codifies that pi-charter only starts charters through an explicit caller (agent tool / user slash / CLI). "Agent calls `charter_manage({action: 'create'})`" is agent-initiated and fine; what's ruled out is the substrate silently wrapping a session on inferred intent.
@@ -1439,7 +1439,7 @@ Inserts a deprecation step for `intent-sentinel`:
 - **M0**: pi-subagents API additions (unchanged from §19 / orchestration-layering.md).
 - **M1**: pi-charter M1+M2 (schema, planning, contract, manual-verifier, bundled personas, v1 auto-migration). Intent-sentinel still installed alongside.
 - **M2**: command + prompt + hook verifiers; charter-verifier persona functional.
-- **M3**: `charter-evaluator` with `spawnRaw` lands in dual-mode; intent-sentinel marked deprecated; 2-week soft period; then uninstall intent-sentinel.
+- **M3**: `legacy evaluator persona` with `spawnRaw` lands in dual-mode; intent-sentinel marked deprecated; 2-week soft period; then uninstall intent-sentinel.
 
 Total: ~1 week of focused build for M0+M1; M2 + M3 are incremental.
 
@@ -1475,7 +1475,7 @@ What survives:
 - Contract layer (VAL-* + verifier kinds + fresh-evidence invariant)
 - Macro DAG with `fulfills[]` (demoted from gates to map)
 - Planning phase + `charter-planner-critic` adversarial pass
-- `charter-evaluator` running every turn (intent-sentinel fold, dual-mode)
+- `legacy evaluator persona` running every turn (intent-sentinel fold, dual-mode)
 - Bundled `charter-verifier` persona (now agent-invoked, not auto-spawned)
 - Autonomous-first entry (`pi --charter-objective` / `pi --charter-resume` flags + `idempotencyKey` + `result.json` + TUI approver knob; spec handling via plain English instruction, not a tool parameter)
 

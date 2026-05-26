@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { complete, StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -8,7 +8,6 @@ import { applyHandoff, recordEvidence, recordEvidenceBatch, recordEvidenceFromFi
 import { amendCharter, askCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
-import { runEvaluator, reminderFromEntry, readEvaluatorLog, type EvaluatorAssessment, type EvaluatorModelFn, type EvaluatorVerdict } from "./evaluator-service";
 import { buildRalphPromptForCharter } from "./ralph-service";
 import { formatCommandsInline } from "./subagent-bootstrap";
 import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
@@ -179,6 +178,8 @@ interface RegisterCharterToolsOptions {
   /** Test seam: keep production bound to the normal home directory. */
   homeDir?: string;
 }
+
+const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 
 export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterToolsOptions = {}): void {
   pi.registerTool({
@@ -510,8 +511,8 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
   pi.registerTool({
     name: "charter_status",
     label: "Charter Status",
-    description: "Read the current charter status, drift views, evaluator reason, and legal nextActions.",
-    promptSnippet: "Inspect charter state, drift views, evaluator steer, and legal nextActions before choosing the next move.",
+    description: "Read the current charter status, drift views, and legal nextActions.",
+    promptSnippet: "Inspect charter state, drift views, and legal nextActions before choosing the next move.",
     promptGuidelines: [
       "Use charter_status before deciding what to do next in an active charter.",
       "Follow charter_status nextActions instead of guessing lifecycle transitions.",
@@ -539,6 +540,7 @@ export function formatCharterStatusText(result: {
   clarificationNote?: string;
   migrationHint?: string;
   drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[]; probeResult?: string }[] };
+  milestones?: { milestoneId: string; featureCount: number; fulfilledValCount: number; valPassCount: number; qaEvidenceCount: number; featureIds: string[] }[];
   qaBriefs?: string[];
   commands?: Record<string, string>;
   nextActions: { tool: string; action?: string; hint: string }[];
@@ -562,6 +564,14 @@ export function formatCharterStatusText(result: {
   lines.push(
     `  drift: uncovered=${result.drift.uncovered.length} stuck=${result.drift.stuck.length} stale=${result.drift.stale.length} readyNext=${result.drift.readyNext.length}`,
   );
+  if ((result.milestones?.length ?? 0) > 0) {
+    lines.push("  milestones:");
+    for (const milestone of result.milestones!) {
+      const featurePreview = milestone.featureIds.slice(0, 3).join(", ");
+      const more = milestone.featureIds.length > 3 ? ", ..." : "";
+      lines.push(`    - ${milestone.milestoneId}: features=${milestone.featureCount} VALs=${milestone.fulfilledValCount} pass=${milestone.valPassCount} QA=${milestone.qaEvidenceCount} :: ${featurePreview}${more}`);
+    }
+  }
   const blocking = result.details?.blockingForComplete ?? [];
   if (blocking.length > 0) {
     const preview = blocking.map((row) => `${row.featureId ?? row.criterionId}(${row.reason})`).join(", ");
@@ -981,493 +991,6 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
   });
 }
 
-const EVALUATOR_CUSTOM_TYPE = "charter-evaluator-steer";
-// Default evaluator model: cheap-fast tier, same shape Claude Code's /goal uses.
-// Override per-environment via PI_CHARTER_EVAL_PROVIDER / PI_CHARTER_EVAL_MODEL.
-// Per-turn evaluator runs every turn end. Sonnet, not Haiku: the evaluator
-// judges drift against the full charter + drift views + recent tool history;
-// that's a reasoning job, not a cheap-fast one. Latency at turn boundaries is
-// not the bottleneck.
-//
-// The model id MUST match `getModel('anthropic', <id>)` from pi-ai’s registry
-// (dash form, not dotted). Verified resolvable via
-// `getModel('anthropic', 'claude-sonnet-4-6')`.
-const DEFAULT_EVAL_PROVIDER = "anthropic";
-const DEFAULT_EVAL_MODEL = "claude-sonnet-4-6";
-const EVAL_TIMEOUT_MS = 60_000;
-// Bumped from 600 — with thinking enabled the model needs headroom to think
-// before emitting the JSON verdict. Anthropic counts thinking tokens against
-// maxTokens, so 600 was being eaten by the reasoning phase alone.
-const EVAL_MAX_TOKENS = 4096;
-
-// Surface evaluator misconfiguration exactly once per process so users notice
-// when no model is wired — previously this was a silent `return` and a wrong
-// model id (e.g. dotted "claude-sonnet-4.6" instead of "claude-sonnet-4-5")
-// meant the evaluator never ran and nobody saw why.
-let evaluatorMisconfigNotified = false;
-
-// Statuses where the evaluator has nothing useful to say: completed/abandoned
-// charters are terminal; paused / budget_limited explicitly want the agent to
-// stop chasing the charter. Skip the model call entirely (cost) and skip the
-// steer (which was firing 'ready_to_complete' on already-completed charters
-// and hammering the agent every turn).
-const EVALUATOR_SKIP_STATUSES = new Set([
-  "completed",
-  "abandoned",
-  "paused",
-  "awaiting-clarification",
-  "budget_limited",
-]);
-
-// Per-charter cooldown: if the last evaluator entry has the same verdict and
-// was emitted within this window, skip. Prevents the same nudge firing every
-// turn while the agent is mid-task.
-const EVALUATOR_DEDUP_MS = 120_000;
-const EVALUATOR_TRIGGER_VERDICTS = new Set<EvaluatorVerdict>([
-  "blocked",
-  "drifting",
-  "ready_to_complete",
-]);
-
-interface RegisterCharterEvaluatorOptions {
-  /** Test seam: keep production bound to the normal home directory. */
-  homeDir?: string;
-  /** Test seam: avoid real model calls while exercising registration wiring. */
-  modelFn?: EvaluatorModelFn;
-}
-
-/**
- * Ralph reprompt: dumb deterministic continuation loop.
- *
- * Replaces `registerCharterEvaluator`. Fires when pi-subagents reports the
- * whole session (main + every async child) is idle, looks up the bound
- * charter, and — if the charter is in a non-terminal status — sends a
- * status-driven prompt as a steer that triggers the next turn.
- *
- * Invariants:
- *   - The charter never stops on its own. Only paused/completed/abandoned/
- *     budget_limited states skip the reprompt.
- *   - No dedupe, no model call, no LLM judgment about whether to continue.
- *   - Trigger source is `subagent:all-idle`, never `turn_end`, so we don't
- *     reprompt while async subagents are still running.
- */
-const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
-
-/**
- * Debounce window between `subagent:all-idle` and the actual reprompt. Gives
- * the user a chance to type something instead of getting an instant auto-turn
- * the moment the agent stops streaming.
- */
-const RALPH_DEBOUNCE_MS = 10_000;
-
-/**
- * Minimum wall-clock gap between two ralph sends in the same session. Backstop
- * against duplicate handlers, runaway debounce timers, and "all-idle fires
- * twice in a row" edge cases. The send-time idle gate is the real fix; this is
- * belt-and-suspenders.
- */
-const RALPH_MIN_INTERVAL_MS = 30_000;
-
-// Module-level counter so we can see at a glance how many loop instances
-// got registered (every /reload re-runs the extension factory; if disposeSubs
-// isn't fully clearing prior subscriptions, the counter will tell us).
-let ralphLoopInstanceCounter = 0;
-
-export function registerCharterRalphLoop(
-  pi: ExtensionAPI,
-  options: { homeDir?: string; debounceMs?: number; minIntervalMs?: number } = {},
-): void {
-  const instanceId = ++ralphLoopInstanceCounter;
-  const log = logger.child({ component: "ralph-loop", instanceId });
-  log.info("registerCharterRalphLoop: init", { totalInstancesEverRegistered: ralphLoopInstanceCounter });
-  const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
-  const minIntervalMs = options.minIntervalMs ?? RALPH_MIN_INTERVAL_MS;
-  // pi.events has no ctx, so cache the latest session ctx from lifecycle
-  // events. SUBAGENT_ALL_IDLE_EVENT fires AFTER turn_end / async children
-  // complete, so this ctx is always populated by the time we need it.
-  let lastCtx: ExtensionContext | undefined;
-  let pendingTimer: ReturnType<typeof setTimeout> | undefined;
-  // Track async subagents directly so we have a live busy-or-not snapshot at
-  // send time. `ctx.isIdle()` only covers the root agent; async children are
-  // tracked here in the same way the idle-probe widget does.
-  const liveAsync = new Set<string>();
-  let lastSentAt = 0;
-  const cancelPending = () => {
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      pendingTimer = undefined;
-    }
-  };
-  const subs: Array<() => void> = [];
-  let disposed = false;
-  const disposeSubs = () => {
-    if (disposed) return;
-    disposed = true;
-    for (const unsubscribe of subs) unsubscribe();
-    subs.length = 0;
-  };
-  const captureCtx = (_event: unknown, ctx: ExtensionContext) => {
-    lastCtx = ctx;
-  };
-  pi.on("session_start", async (event, ctx) => captureCtx(event, ctx));
-  pi.on("agent_start", async (event, ctx) => captureCtx(event, ctx));
-  // Any new busy period invalidates a pending Ralph fire — we don't want to
-  // reprompt while the agent or a subagent is back to work.
-  pi.on("turn_start", async (event, ctx) => {
-    captureCtx(event, ctx);
-    cancelPending();
-  });
-  pi.on("turn_end", async (event, ctx) => captureCtx(event, ctx));
-  pi.on("session_shutdown", async (event) => {
-    log.info("session_shutdown: disposing subs", { reason: event.reason, subCount: subs.length, disposed });
-    cancelPending();
-    liveAsync.clear();
-    disposeSubs();
-  });
-  subs.push(pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
-    try {
-      const payload = raw as { runId?: string } | undefined;
-      log.debug("event: async-started", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
-      if (payload?.runId) liveAsync.add(payload.runId);
-      cancelPending();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.warn("async-started handler threw", { error: message });
-    }
-  }));
-  subs.push(pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
-    try {
-      const payload = raw as { runId?: string } | undefined;
-      log.debug("event: async-complete", { runId: payload?.runId, liveAsyncBefore: liveAsync.size, disposed });
-      if (payload?.runId) liveAsync.delete(payload.runId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.warn("async-complete handler threw", { error: message });
-    }
-  }));
-
-  subs.push(pi.events.on(SUBAGENT_ALL_IDLE_EVENT, (_payload: unknown) => {
-    try {
-      log.info("event: all-idle", { disposed, hasCtx: !!lastCtx, liveAsync: liveAsync.size });
-      const ctx = lastCtx;
-      if (!ctx) {
-        log.warn("all-idle: no lastCtx, dropping");
-        return;
-      }
-      if (disposed) {
-        log.warn("all-idle fired on disposed instance (LEAK)");
-        return;
-      }
-      cancelPending();
-    log.debug("all-idle: scheduling reprompt", { debounceMs });
-    pendingTimer = setTimeout(() => {
-      pendingTimer = undefined;
-      // The captured ctx may be stale by now (reload, session swap,
-      // subagent ctx replacement). Wrap every ctx.* call so a stale-ctx
-      // throw is logged as a skipped reprompt instead of crashing the
-      // process via uncaughtException.
-      try {
-        if (disposed) {
-          log.warn("timer fired on disposed instance (LEAK)");
-          return;
-        }
-        let rootIdle: boolean;
-        let pendingMessages: boolean;
-        try {
-          rootIdle = ctx.isIdle();
-          pendingMessages = ctx.hasPendingMessages();
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log.warn("reprompt skipped: stale ctx at gate check", { error: message });
-          return;
-        }
-        log.info("debounce timer fired", {
-          disposed,
-          rootIdle,
-          pendingMessages,
-          liveAsync: liveAsync.size,
-          msSinceLastSend: Date.now() - lastSentAt,
-        });
-        if (!rootIdle) {
-          log.info("reprompt skipped: root not idle");
-          return;
-        }
-        if (pendingMessages) {
-          log.info("reprompt skipped: pending user message");
-          return;
-        }
-        if (liveAsync.size > 0) {
-          log.info("reprompt skipped: async subagents running", { count: liveAsync.size });
-          return;
-        }
-        const now = Date.now();
-        if (now - lastSentAt < minIntervalMs) {
-          log.info("reprompt skipped: min interval not elapsed", {
-            elapsedMs: now - lastSentAt,
-            minIntervalMs,
-          });
-          return;
-        }
-        lastSentAt = now;
-        log.info("SENDING reprompt");
-        void runRalphReprompt(pi, ctx, options, log).catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          log.warn("runRalphReprompt threw", { error: message });
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        log.warn("ralph debounce timer threw", { error: message });
-      }
-    }, debounceMs);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.warn("all-idle handler threw", { error: message });
-    }
-  }));
-}
-
-async function runRalphReprompt(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  options: { homeDir?: string },
-  log: ReturnType<typeof logger.child> = logger.child({ component: "ralph-loop" }),
-): Promise<void> {
-  const sessionId = ctx.sessionManager.getSessionId?.();
-  log.debug("runRalphReprompt enter", { sessionId });
-  if (!sessionId) {
-    log.warn("runRalphReprompt: no sessionId");
-    return;
-  }
-  const binding = await readSessionBinding({ sessionId, homeDir: options.homeDir });
-  if (!binding) {
-    log.debug("runRalphReprompt: no session binding");
-    return;
-  }
-  log.debug("runRalphReprompt: binding", { charterId: binding.charterId, role: binding.role });
-
-  // Participant child sessions never auto-continue — the host owns the
-  // ralph loop. Keep the ambient reminder fresh and bail.
-  if (binding.role === "participant") {
-    log.debug("runRalphReprompt: participant role, syncing reminder and bailing");
-    await trySyncCharterReminder(pi, binding.projectDir, binding.charterId);
-    return;
-  }
-
-  const built = await buildRalphPromptForCharter({
-    projectDir: binding.projectDir,
-    charterId: binding.charterId,
-  });
-  if (!built) {
-    log.info("runRalphReprompt: status terminal/dormant, skip", { charterId: binding.charterId });
-    return;
-  }
-
-  log.info("pi.sendMessage: ralph steer", { charterId: binding.charterId, promptCase: built.promptCase });
-  pi.sendMessage(
-    {
-      customType: RALPH_CUSTOM_TYPE,
-      content: built.content,
-      // Visible in scrollback so the user can see the Ralph loop firing.
-      // Codex hides the equivalent message, but here the loop is the whole
-      // point of the charter UX — hiding it makes the auto-continuation feel
-      // like a black box.
-      display: true,
-      details: { charterId: binding.charterId, promptCase: built.promptCase },
-    },
-    { deliverAs: "steer", triggerTurn: true },
-  );
-}
-
-export function registerCharterEvaluator(pi: ExtensionAPI, options: RegisterCharterEvaluatorOptions = {}): void {
-  pi.on("turn_end", async (_event, ctx) => {
-    try {
-      const sessionId = ctx.sessionManager.getSessionId?.();
-      if (!sessionId) return;
-      const binding = await readSessionBinding({ sessionId, homeDir: options.homeDir });
-      if (!binding) return;
-      const projectDir = binding.projectDir;
-      const charterId = binding.charterId;
-
-      // Bail before the model call when the charter is in a terminal /
-      // dormant state. No point reasoning about drift on a closed charter.
-      const state = await loadCharterState(charterDir(projectDir, charterId)).catch(() => undefined);
-      if (!state || EVALUATOR_SKIP_STATUSES.has(state.status)) return;
-
-      if (binding.role === "participant") {
-        await trySyncCharterReminder(pi, projectDir, charterId);
-        return;
-      }
-
-      const recentUserMessages = extractRecentUserMessages(ctx, 2);
-      const recentToolNames = extractRecentToolNames(ctx, 8);
-
-      const modelFn = options.modelFn ?? buildEvaluatorModelFn(ctx);
-      if (!modelFn) {
-        if (!evaluatorMisconfigNotified && ctx.hasUI) {
-          const provider = process.env.PI_CHARTER_EVAL_PROVIDER ?? DEFAULT_EVAL_PROVIDER;
-          const modelId = process.env.PI_CHARTER_EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
-          ctx.ui.notify(
-            `charter-evaluator disabled: model ${provider}/${modelId} not found in registry. Set PI_CHARTER_EVAL_PROVIDER/PI_CHARTER_EVAL_MODEL.`,
-            "warning",
-          );
-          evaluatorMisconfigNotified = true;
-        }
-        return;
-      }
-
-      const entry = await runEvaluator(projectDir, {
-        charterId,
-        trigger: "turn_end",
-        modelFn,
-        recentUserMessages,
-        recentToolNames,
-      });
-      const reminder = reminderFromEntry(entry);
-      if (!reminder) return;
-
-      // Dedup: if the previous entry had the same verdict within the cooldown
-      // window, the model has nothing new to say. The just-written `entry` is
-      // the last line of the log; read history and compare to the prior one.
-      const history = await readEvaluatorLog(projectDir, charterId).catch(() => []);
-      const prior = history.length >= 2 ? history[history.length - 2] : undefined;
-      if (prior && prior.verdict === entry.verdict) {
-        const priorTs = Date.parse(prior.ts);
-        const currentTs = Date.parse(entry.ts);
-        if (Number.isFinite(priorTs) && Number.isFinite(currentTs) && currentTs - priorTs < EVALUATOR_DEDUP_MS) {
-          return;
-        }
-      }
-      pi.sendMessage(
-        {
-          customType: EVALUATOR_CUSTOM_TYPE,
-          content: reminder,
-          display: true,
-          details: entry,
-        },
-        { deliverAs: "steer", triggerTurn: EVALUATOR_TRIGGER_VERDICTS.has(entry.verdict) },
-      );
-    } catch (error) {
-      // Never block the agent loop on evaluator failures.
-      const message = error instanceof Error ? error.message : String(error);
-      if (ctx.hasUI) ctx.ui.notify(`charter-evaluator skipped: ${message}`, "warning");
-    }
-  });
-}
-
-function extractRecentUserMessages(ctx: { sessionManager: { getBranch?: () => unknown[] } }, limit: number): string[] {
-  const entries = (ctx.sessionManager.getBranch?.() ?? []) as Array<{ type?: string; content?: unknown }>;
-  const userTexts: string[] = [];
-  for (const entry of entries) {
-    if (entry?.type !== "user_message") continue;
-    const text = extractEntryText(entry.content);
-    if (text) userTexts.push(text);
-  }
-  return userTexts.slice(-limit);
-}
-
-function extractRecentToolNames(ctx: { sessionManager: { getBranch?: () => unknown[] } }, limit: number): string[] {
-  const entries = (ctx.sessionManager.getBranch?.() ?? []) as Array<{ type?: string; name?: string; toolName?: string }>;
-  const names: string[] = [];
-  for (const entry of entries) {
-    if (entry?.type !== "tool_call") continue;
-    const name = entry.name ?? entry.toolName;
-    if (typeof name === "string" && name) names.push(name);
-  }
-  return names.slice(-limit);
-}
-
-function extractEntryText(content: unknown): string {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => (typeof part === "object" && part && "text" in part ? String((part as { text: unknown }).text ?? "") : ""))
-      .filter(Boolean)
-      .join("\n")
-      .trim();
-  }
-  return "";
-}
-
-type ModelRegistryLike = {
-  find: (provider: string, modelId: string) => unknown;
-  getApiKeyAndHeaders: (model: unknown) => Promise<{ ok: true; apiKey: string; headers?: Record<string, string> } | { ok: false; error: string }>;
-};
-
-function buildEvaluatorModelFn(ctx: { modelRegistry?: unknown }) {
-  const registry = ctx.modelRegistry as ModelRegistryLike | undefined;
-  if (!registry) return undefined;
-  const provider = process.env.PI_CHARTER_EVAL_PROVIDER ?? DEFAULT_EVAL_PROVIDER;
-  const modelId = process.env.PI_CHARTER_EVAL_MODEL ?? DEFAULT_EVAL_MODEL;
-  const model = registry.find(provider, modelId);
-  if (!model) return undefined;
-  type CompleteArgs = Parameters<typeof complete>;
-  type CompleteContext = CompleteArgs[1];
-  type CompleteOptions = CompleteArgs[2];
-  return async (input: { prompt: string }): Promise<EvaluatorAssessment> => {
-    const auth = await registry.getApiKeyAndHeaders(model);
-    if (!auth.ok) throw new Error(auth.error);
-    const context: CompleteContext = {
-      systemPrompt: "You are charter-evaluator. Reply with ONLY a single JSON object matching the requested schema. No prose.",
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: input.prompt }],
-          timestamp: Date.now(),
-        },
-      ],
-    } as CompleteContext;
-    // Drift reasoning is non-trivial; keep thinking enabled at 'medium'.
-    // Explicit thinkingBudgets are well above Anthropic's 1024 floor so the
-    // budget-based fallback path can't trigger `budget_tokens < 1024` errors.
-    const options = {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      timeoutMs: EVAL_TIMEOUT_MS,
-      maxTokens: EVAL_MAX_TOKENS,
-      reasoning: "medium",
-      thinkingBudgets: { minimal: 4096, low: 4096, medium: 8192, high: 16384 },
-    } as unknown as CompleteOptions;
-    const response = await complete(model as CompleteArgs[0], context, options);
-    if (response.stopReason === "error") {
-      const errMessage = (response as unknown as { errorMessage?: string }).errorMessage ?? "unknown";
-      throw new Error(`evaluator model error: ${errMessage}`);
-    }
-    const text = response.content
-      .filter((part): part is { type: "text"; text: string } => part.type === "text")
-      .map((part) => String(part.text ?? ""))
-      .join("\n");
-    return parseEvaluatorJson(text);
-  };
-}
-
-function parseEvaluatorJson(text: string): EvaluatorAssessment {
-  const stripped = stripJsonFences(text).trim();
-  const start = stripped.indexOf("{");
-  const end = stripped.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("evaluator response did not contain a JSON object");
-  const json = stripped.slice(start, end + 1);
-  const obj = JSON.parse(json) as Record<string, unknown>;
-  const verdict = String(obj.verdict ?? "") as EvaluatorVerdict;
-  const allowed: EvaluatorVerdict[] = ["on_track", "drifting", "blocked", "ready_to_complete", "unclear"];
-  if (!allowed.includes(verdict)) throw new Error(`evaluator returned unknown verdict: ${obj.verdict}`);
-  const confidence = typeof obj.confidence === "number" ? obj.confidence : 0.5;
-  const reason = typeof obj.reason === "string" ? obj.reason : "";
-  const steerReminder = typeof obj.steerReminder === "string" ? obj.steerReminder : undefined;
-  const citesRaw = Array.isArray(obj.cites) ? obj.cites : [];
-  const cites = citesRaw
-    .map((c) => (typeof c === "object" && c ? (c as Record<string, unknown>) : null))
-    .filter((c): c is Record<string, unknown> => c !== null)
-    .map((c) => ({
-      criterionId: typeof c.criterionId === "string" ? c.criterionId : undefined,
-      featureId: typeof c.featureId === "string" ? c.featureId : undefined,
-    }))
-    .filter((c) => c.criterionId || c.featureId);
-  return { verdict, confidence, reason, steerReminder, cites };
-}
-
-function stripJsonFences(text: string): string {
-  return text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
-}
 
 // ---------------------------------------------------------------------------
 // pi-subagents bridge: surface 2 — capture exposed API bag
@@ -1617,6 +1140,106 @@ const DETAIL_WIDGET_KEY = "charter-detail";
 interface RegisterCharterWidgetOptions {
   /** Test seam: keep production bound to the normal home directory. */
   homeDir?: string;
+}
+
+interface RegisterCharterRalphLoopOptions {
+  /** Test seam: keep production bound to the normal home directory. */
+  homeDir?: string;
+  /** Test seam: collapse or widen the all-idle debounce. */
+  debounceMs?: number;
+  /** Test seam: collapse or widen duplicate prompt suppression. */
+  minIntervalMs?: number;
+  now?: () => number;
+}
+
+export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
+  const runningSubagents = new Set<string>();
+  const debounceMs = options.debounceMs ?? 100;
+  const minIntervalMs = options.minIntervalMs ?? 5_000;
+  const now = options.now ?? (() => Date.now());
+  let lastCtx: ExtensionContext | undefined;
+  let lastSentAt = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let sending = false;
+
+  const rememberCtx = (_event: unknown, ctx: ExtensionContext): void => {
+    lastCtx = ctx;
+  };
+
+  pi.on("session_start", rememberCtx);
+  pi.on("turn_end", rememberCtx);
+  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+    const payload = raw as SubagentAsyncStartedPayload | undefined;
+    if (payload?.runId) runningSubagents.add(payload.runId);
+  });
+  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+    const payload = raw as SubagentAsyncCompletePayload | undefined;
+    if (payload?.runId) runningSubagents.delete(payload.runId);
+  });
+  pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => scheduleRalph());
+
+  function scheduleRalph(): void {
+    if (timer) clearTimeout(timer);
+    if (debounceMs <= 0) {
+      void maybeSendRalph();
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = undefined;
+      void maybeSendRalph();
+    }, debounceMs);
+  }
+
+  async function maybeSendRalph(): Promise<void> {
+    if (sending || runningSubagents.size > 0) return;
+    const ctx = lastCtx;
+    if (!ctx) return;
+
+    sending = true;
+    try {
+      // Captured ctx can become stale across session replacement
+      // (newSession/fork/switchSession/reload). Any ExtensionContext method
+      // may throw 'stale after session replacement'; if it does, drop the
+      // captured ctx and wait for the next session_start/turn_end to refresh.
+      if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+      if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
+      const at = now();
+      if (minIntervalMs > 0 && at - lastSentAt < minIntervalMs) return;
+      const sessionId = ctx.sessionManager.getSessionId?.();
+      if (!sessionId) return;
+
+      const binding = await readSessionBinding({ sessionId, homeDir: options.homeDir });
+      if (!binding) return;
+      const prompt = await buildRalphPromptForCharter({
+        projectDir: binding.projectDir,
+        charterId: binding.charterId,
+        cwd: ctx.cwd,
+      });
+      if (!prompt) return;
+      lastSentAt = at;
+      pi.sendMessage(
+        {
+          customType: RALPH_CUSTOM_TYPE,
+          content: prompt.content,
+          display: true,
+          details: {
+            charterId: binding.charterId,
+            promptCase: prompt.promptCase,
+          },
+        },
+        { deliverAs: "steer", triggerTurn: true },
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("stale after session replacement")) {
+        // Drop the captured ctx; the next session_start/turn_end refreshes it.
+        lastCtx = undefined;
+      }
+      logger.warn("ralph loop skipped", { error: message });
+    } finally {
+      sending = false;
+    }
+  }
 }
 
 /**

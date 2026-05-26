@@ -774,7 +774,7 @@ flowchart TD
     subgraph S0["Tier 1 — Charter kernel (pi-charter)"]
       G["Charter<br/>objective · CharterStatus FSM · budget (tokens / wallclock / turns)<br/>digests · turnsActive"]
       ST["state.json<br/>kernel + sessionId binding (§22)"]
-      EVN["charter-evaluator<br/>cheap model · dual-mode (mission-scoped / free-form)<br/>cites criterionId or featureId or dropped<br/>steers · never gates completion"]
+      EVN["deterministic Ralph reprompt (post-ADR 0009)<br/>old separate-model supervisor removed<br/>uses charter_status nextActions · never gates completion"]
       G --- ST
       G --- EVN
     end
@@ -877,9 +877,9 @@ flowchart TD
     subgraph EX["3. Execution loop (smart-Ralph)"]
       direction TB
       E0["plan_approved event<br/>contract and plan digests lock"]
-      E1["Read charter_status<br/>drift views: uncovered, stuck, stale, ready-next<br/>plus last charter-evaluator reason"]
+      E1["Read charter_status<br/>drift views: uncovered, stuck, stale, ready-next<br/>plus deterministic Ralph continuation context"]
       E2["Agent picks ONE this turn<br/>implement, verify, review-delegate,<br/>parallel-delegate, amend, complete, pause"]
-      EV["charter-evaluator every turn<br/>cites criterionId or featureId or dropped<br/>steers, never gates completion"]
+      EV["deterministic Ralph reprompt<br/>uses current charter_status context<br/>steers, never gates completion"]
       E0 --> E1 --> E2
       E2 -. loop .-> E1
       EV -. steer reminder .-> E1
@@ -1021,12 +1021,12 @@ flowchart TD
       <h3 style="font-size: 16px;">Contract-aware verifiers ship with the extension</h3>
       <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px;">
         <ul style="margin: 0;">
-          <li>pi-charter ships <code>charter-verifier</code> + <code>charter-planner-critic</code> + <code>charter-evaluator</code> as <b>internal-scope</b> personas — invocable only by extension code, never advertised to root LLM</li>
+          <li>pi-charter ships <code>charter-verifier</code> + <code>charter-planner-critic</code> as <b>internal-scope</b> personas in this pre-ADR sketch — invocable only by extension code, never advertised to root LLM</li>
           <li>Resolver search path: <code>&lt;context-dir&gt;/agents/</code> → <code>~/.pi/agent/agents/</code> → extension-registered. <b>Users override by file-shadowing</b></li>
           <li>Bundled persona frontmatter declares its tool allowlist explicitly (incl. <code>charter_record_evidence</code> + <code>charter_handoff_apply</code>)</li>
         </ul>
         <ul style="margin: 0;">
-          <li>Two pi-subagents TS surfaces: <code>spawn({agent, task})</code> for named/stable + <code>spawnRaw({systemPrompt, prompt})</code> for dynamic state (the <code>charter-evaluator</code> embeds live criteria status + last 3 verdicts)</li>
+          <li>Two pi-subagents TS surfaces: <code>spawn({agent, task})</code> for named/stable + <code>spawnRaw({systemPrompt, prompt})</code> for dynamic state (the old separate-model supervisor idea embedded live criteria status + last 3 verdicts)</li>
           <li>Opaque <code>metadata</code> passthrough on hook events — pi-charter tags spawns with <code>"pi-charter.charterId"</code>; pi-subagents never reads it. No mission vocabulary leaks downstack</li>
           <li><b>Substrate payoff:</b> same mechanism works for any future pi-extension (pi-qa, pi-docs, pi-deep-research) — ship bundled personas, use <code>spawnRaw</code> for live prompts, tag with namespaced metadata</li>
         </ul>
@@ -1076,7 +1076,7 @@ flowchart TD
   </div>
 
   <div class="callout" style="border-color: var(--codex); background: var(--bg-2); margin-top: 16px;">
-    <b>intent-sentinel → folded.</b> The existing <code>intent-sentinel</code> extension (cheap separate-model trajectory supervisor with memories, mute, cooldown, subagent-skip guard) is the same primitive as the proposed <code>charter-evaluator</code>. v2 folds it: same machinery runs in <i>mission-scoped</i> mode when a mission is active and <i>free-form</i> mode otherwise (verbatim intent-sentinel behavior). 2-week soft deprecation window then uninstall.
+    <b>intent-sentinel → folded.</b> The existing <code>intent-sentinel</code> extension (cheap separate-model trajectory supervisor with memories, mute, cooldown, subagent-skip guard) was treated here as the same primitive as a proposed charter-scoped supervisor. ADR 0009 superseded that idea with deterministic Ralph reprompts driven by <code>charter_status</code>. This section is historical only.
   </div>
 </section>
 

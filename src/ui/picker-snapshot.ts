@@ -5,7 +5,7 @@
  *
  * `buildPickerSnapshot` gathers a single charter's slice across charter.md,
  * state.json, criterion-state.json, feature-state.json, plan/*.md,
- * work/<featureId>/evidence/*.json and evaluator-log.jsonl. Per-source
+ * work/<featureId>/evidence/*.json. Per-source
  * errors are swallowed so one bad file does not poison the snapshot; only a
  * missing or unreadable state.json returns null.
  *
@@ -24,12 +24,12 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { parseCharterMarkdown } from "../domain/charter-md";
-import { parseFeatureMarkdown } from "../domain/feature-md";
 import {
   computeBlockingForComplete,
   loadBlockingContext,
 } from "../application/service";
-import { loadCriterionState } from "../application/record-service";
+import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "../application/plan-tree";
+import { loadCriterionState, type CriterionStateFile } from "../application/record-service";
 import { charterDir, chartersRoot, loadCharterState } from "../infrastructure/store";
 import type { CharterStatus } from "../domain/types";
 
@@ -43,7 +43,6 @@ export interface PickerSnapshot {
     totalCount: number;
   };
   objective: string;
-  evaluatorVerdict: { verdict: string; steer: string; ts: string } | null;
   blockingForComplete: string[];
   planTree: PlanMilestoneNode[];
   recentEvidence: EvidenceRow[];
@@ -126,7 +125,7 @@ export async function buildPickerSnapshot(
 
   const criterionState = await safeLoadCriterionState(dir, charterId);
   const featureState = await safeLoadFeatureState(dir);
-  const features = await safeReadFeatures(dir);
+  const features = await readPlanFeatures(dir);
 
   const totalCount = parsed?.criteria.length ?? 0;
   const passCount = Object.values(criterionState.criteria).filter(
@@ -141,7 +140,6 @@ export async function buildPickerSnapshot(
 
   const planTree = buildPlanTree(features, featureState, criterionState, titleByCriterionId);
 
-  const evaluatorVerdict = await readEvaluatorVerdict(dir);
   const blockingForComplete = await safeComputeBlocking(dir, charterId);
   const recentEvidence = await collectRecentEvidence(dir, features);
 
@@ -155,7 +153,6 @@ export async function buildPickerSnapshot(
       totalCount,
     },
     objective: state.objective,
-    evaluatorVerdict,
     blockingForComplete,
     planTree,
     recentEvidence,
@@ -255,11 +252,11 @@ async function safeReadFile(path: string): Promise<string | null> {
   }
 }
 
-async function safeLoadCriterionState(dir: string, charterId: string) {
+async function safeLoadCriterionState(dir: string, charterId: string): Promise<CriterionStateFile> {
   try {
     return await loadCriterionState(dir, charterId);
   } catch {
-    return { charterId, criteria: {} as Record<string, { outcome?: string }> };
+    return { charterId, criteria: {} };
   }
 }
 
@@ -279,39 +276,6 @@ async function safeLoadFeatureState(dir: string): Promise<FeatureStateMap> {
   }
 }
 
-interface ReadFeature {
-  id: string;
-  milestone: string;
-  order: number;
-  fulfills: string[];
-}
-
-async function safeReadFeatures(dir: string): Promise<ReadFeature[]> {
-  let names: string[];
-  try {
-    names = await readdir(join(dir, "plan"));
-  } catch {
-    return [];
-  }
-  const out: ReadFeature[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".md")) continue;
-    try {
-      const md = await readFile(join(dir, "plan", name), "utf8");
-      const parsed = parseFeatureMarkdown(md);
-      out.push({
-        id: parsed.id,
-        milestone: parsed.milestone,
-        order: parsed.order,
-        fulfills: parsed.fulfills,
-      });
-    } catch {
-      // skip malformed feature files
-    }
-  }
-  return out;
-}
-
 /**
  * Build a map of VAL id → title taken from the raw H3 line via
  * `extractTitleFromH3` (NOT the charter-md parser's `title`, which falls
@@ -328,23 +292,14 @@ function buildTitleMap(markdown: string): Map<string, string> {
 }
 
 function buildPlanTree(
-  features: ReadFeature[],
+  features: PlanFeatureRef[],
   featureState: FeatureStateMap,
-  criterionState: { criteria: Record<string, { outcome?: string }> },
+  criterionState: CriterionStateFile,
   titleByCriterionId: Map<string, string>,
 ): PlanMilestoneNode[] {
-  const byMilestone = new Map<string, ReadFeature[]>();
-  for (const feature of features) {
-    const list = byMilestone.get(feature.milestone) ?? [];
-    list.push(feature);
-    byMilestone.set(feature.milestone, list);
-  }
-  const milestoneIds = [...byMilestone.keys()].sort();
   const nodes: PlanMilestoneNode[] = [];
-  for (const milestoneId of milestoneIds) {
-    const list = byMilestone.get(milestoneId)!;
-    list.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-    const featureNodes: PlanFeatureNode[] = list.map((feature) => {
+  for (const milestone of groupFeaturesByMilestone(features)) {
+    const featureNodes: PlanFeatureNode[] = milestone.features.map((feature) => {
       const status = normalizeFeatureStatus(featureState.features[feature.id]?.status);
       const criteria: PlanCriterionNode[] = feature.fulfills.map((criterionId) => ({
         criterionId,
@@ -360,7 +315,7 @@ function buildPlanTree(
         criteria,
       };
     });
-    nodes.push({ milestoneId, features: featureNodes });
+    nodes.push({ milestoneId: milestone.milestoneId, features: featureNodes });
   }
   return nodes;
 }
@@ -375,54 +330,25 @@ function normalizeOutcome(value: string | undefined): "pass" | "fail" | "partial
   return null;
 }
 
-async function readEvaluatorVerdict(
-  dir: string,
-): Promise<{ verdict: string; steer: string; ts: string } | null> {
-  const text = await safeReadFile(join(dir, "evaluator-log.jsonl"));
-  if (!text) return null;
-  const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
-  let last: { verdict: string; steer: string; ts: string } | null = null;
-  for (const line of lines) {
-    try {
-      const entry = JSON.parse(line) as {
-        verdict?: unknown;
-        steerReminder?: unknown;
-        reason?: unknown;
-        ts?: unknown;
-      };
-      if (entry.verdict === undefined || entry.verdict === null) continue;
-      const verdict = typeof entry.verdict === "string" ? entry.verdict : String(entry.verdict);
-      const steer =
-        typeof entry.steerReminder === "string"
-          ? entry.steerReminder
-          : typeof entry.reason === "string"
-            ? entry.reason
-            : "";
-      const ts = typeof entry.ts === "string" ? entry.ts : "";
-      last = { verdict, steer, ts };
-    } catch {
-      // ignore malformed log lines
-    }
-  }
-  return last;
-}
-
 async function safeComputeBlocking(dir: string, charterId: string): Promise<string[]> {
   try {
-    const charterMd = await readFile(join(dir, "charter.md"), "utf8");
-    const charter = parseCharterMarkdown(charterMd);
-    const criterionState = await loadCriterionState(dir, charterId);
+    const charterMd = await safeReadFile(join(dir, "charter.md"));
+    if (!charterMd) return [];
+    const parsed = safeParseCharter(charterMd);
+    if (!parsed) return [];
+    const criterionState = await safeLoadCriterionState(dir, charterId);
     const context = await loadBlockingContext(dir, charterId);
-    const blocking = computeBlockingForComplete(charter.criteria, criterionState, context);
-    return blocking.map((entry) => entry.criterionId);
+    return computeBlockingForComplete(parsed.criteria, criterionState, context)
+      .map((entry) => `${entry.criterionId}: ${entry.reason}`);
   } catch {
     return [];
   }
 }
 
+
 async function collectRecentEvidence(
   dir: string,
-  features: ReadFeature[],
+  features: PlanFeatureRef[],
 ): Promise<EvidenceRow[]> {
   const rows: EvidenceRow[] = [];
   for (const feature of features) {

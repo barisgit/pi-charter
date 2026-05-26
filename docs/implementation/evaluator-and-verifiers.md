@@ -1,10 +1,10 @@
-# Evaluator and verifiers
+# Verifiers and hooks
 
 ## Separation of concerns
 
 - **Verifier** decides whether a criterion has passing evidence.
-- **Evaluator** decides whether the trajectory looks aligned and what the agent should consider next.
 - **Hooks** decide whether high-risk state transitions may proceed.
+- **Ralph** only reprompts the agent from current `charter_status`; it does not judge completion.
 
 Do not collapse these roles.
 
@@ -49,21 +49,6 @@ The verifier should not blindly rerun everything. It should inspect state and ru
 - `requireReviewSubagent` is true and no verifier-authored pass exists;
 - the user explicitly requested a fresh review.
 
-## charter-evaluator behavior
-
-The evaluator runs after turns or on status demand and returns:
-
-```json
-{
-  "verdict": "on_track | drifting | blocked | done",
-  "reason": "short, actionable steering text",
-  "criterionId": "VAL-... optional",
-  "featureId": "... optional"
-}
-```
-
-In charter-scoped mode, a steer must cite a `criterionId`, a `featureId`, or be dropped as invalid. In free-form mode (no active charter), the evaluator can behave like the old intent-sentinel.
-
 ## Legacy migration
 
 Pre-m1 charters often lack an explicit `Verifier:` line on every VAL. To keep
@@ -85,11 +70,4 @@ upgrade evidence before they can complete.
 
 1. Implement deterministic command verifiers and manual records first.
 2. Stub prompt verifiers behind a clear interface.
-3. Implement evaluator as a simple deterministic drift summarizer before adding model calls.
-4. Add model-backed evaluator only after status/tool flow works.
-
-## Known open gaps
-
-- Evaluator self-uncertainty is not designed yet.
-- Evaluator context-window management is not designed yet.
-- Multi-evaluator routing is deliberately out of scope for the first implementation.
+3. Keep continuation in `charter_status nextActions[]` and deterministic Ralph.
