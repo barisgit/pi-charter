@@ -11,7 +11,6 @@ import { logger } from "../infrastructure/logger";
 const DEFAULT_RECORDED_BY: RecordedBy = "agent:root";
 /** Persona prefix used when applyHandoff derives recordedBy from subagentSessionId. */
 const DEFAULT_HANDOFF_PERSONA = "charter-reviewer";
-const warnedLegacyQaScreenshots = new Set<string>();
 import {
   appendEvent,
   charterDir,
@@ -147,8 +146,7 @@ async function recordEvidenceFromFileLocked(
 ): Promise<RecordEvidenceFromFileResult> {
   const dir = charterDir(projectDir, input.charterId);
   const loaded = await loadTypedEvidenceFile(projectDir, dir, input.evidenceFile);
-  const normalizedJson = normalizeLegacyQaEvidence(input.charterId, loaded.json);
-  const validation = validateEvidenceFile(normalizedJson);
+  const validation = validateEvidenceFile(loaded.json);
   if (!validation.ok) {
     throw new CharterToolError(`Evidence file ${input.evidenceFile} does not match the typed evidence schema: ${validation.error}`, {
       code: "evidence.schema_violation",
@@ -803,37 +801,6 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-function normalizeLegacyQaEvidence(charterId: string, json: unknown): unknown {
-  if (!isLegacyQaEvidence(json)) return json;
-  const featureId = typeof json.featureId === "string" ? json.featureId : "<missing>";
-  const warningKey = `${charterId}:${featureId}`;
-  if (!warnedLegacyQaScreenshots.has(warningKey)) {
-    warnedLegacyQaScreenshots.add(warningKey);
-    logger.warn("qa evidence uses deprecated screenshots[] field; migrate to artifacts:[{kind, path, caption?}]", {
-      charterId,
-      component: "record-service",
-      featureId,
-    });
-  }
-  const normalized: Record<string, unknown> = {
-    ...json,
-    artifacts: Array.isArray(json.artifacts)
-      ? json.artifacts
-      : json.screenshots.map((path) => ({ kind: "screenshot", path })),
-  };
-  delete normalized.screenshots;
-  return normalized;
-}
-
-function isLegacyQaEvidence(json: unknown): json is Record<string, unknown> & { kind: "qa"; screenshots: string[] } {
-  return !!json
-    && typeof json === "object"
-    && !Array.isArray(json)
-    && (json as { kind?: unknown }).kind === "qa"
-    && Array.isArray((json as { screenshots?: unknown }).screenshots)
-    && (json as { screenshots: unknown[] }).screenshots.every((path) => typeof path === "string");
-}
-
 async function loadEvidenceFeature(dir: string, featureId: string, charterId: string): Promise<{ fulfills: string[] }> {
   let feature;
   try {
@@ -1243,7 +1210,7 @@ async function collectTypedEvidenceCandidates(
     } catch {
       continue;
     }
-    const validation = validateEvidenceFile(normalizeLegacyQaEvidence("", raw));
+    const validation = validateEvidenceFile(raw);
     if (!validation.ok) continue;
     const evidence = validation.value;
     if (options.featureId && evidence.featureId !== options.featureId) continue;

@@ -12,7 +12,6 @@ import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
 import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
-import { logger } from "../infrastructure/logger";
 import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "./plan-tree";
 import { listUntriagedHandoffItems, type HandoffTriageItem } from "./handoff-query";
 
@@ -184,7 +183,6 @@ export async function getCharterStatus(
 
 export const V1_REPLAN_REQUIRED_HINT = "This charter has the pi-charter v1 disk shape (charter.md ## Criteria + criterion-state.json). v2 will not auto-migrate it; initiate a replan with charter_manage action=amend_charter and manually port checks using docs/v1-to-v2-migration.md, or force_complete/abandon it if it should not continue.";
 const QA_BRIEFS_DIR = "qa-briefs";
-const LEGACY_QA_BRIEFS_DIR = "qa";
 
 async function loadCharterCommands(dir: string): Promise<CharterCommands> {
   try {
@@ -216,12 +214,7 @@ export function assertNotV1NeedsReplan(state: CharterState): void {
 
 async function listQaBriefs(dir: string): Promise<string[]> {
   const entries = await readQaBriefEntries(join(dir, QA_BRIEFS_DIR));
-  if (entries) return qaBriefNames(entries);
-  const legacyDir = join(dir, LEGACY_QA_BRIEFS_DIR);
-  const legacyEntries = await readQaBriefEntries(legacyDir);
-  if (!legacyEntries) return [];
-  logger.warn(`legacy qa/ briefs dir is deprecated; rename ${legacyDir} to ${join(dir, QA_BRIEFS_DIR)}.`);
-  return qaBriefNames(legacyEntries);
+  return qaBriefNames(entries);
 }
 
 async function readQaBriefEntries(path: string) {
@@ -379,12 +372,10 @@ export interface LoadedFeatureEvidenceRecord {
 }
 
 /**
- * Walk both evidence layouts for one feature and return parseable JSON evidence
- * records sorted by their record timestamp:
- *   - legacy flat: work/<featureId>/evidence/<criterionId>__<stamp>.json
- *   - v2.1 run dir: work/<featureId>/evidence/<stamp>/evidence.json
- * Malformed JSON and non-JSON artifacts are ignored so old/partial evidence
- * directories never crash status/readiness computations.
+ * Walk dir-per-run evidence for one feature and return parseable JSON evidence
+ * records sorted by their record timestamp. Malformed JSON and non-JSON
+ * artifacts are ignored so old/partial evidence directories never crash
+ * status/readiness computations.
  */
 export async function loadFeatureEvidence(dir: string, featureSegment: string): Promise<LoadedFeatureEvidenceRecord[]> {
   const evidenceDir = join(dir, "work", featureSegment, "evidence");
@@ -397,12 +388,6 @@ export async function loadFeatureEvidence(dir: string, featureSegment: string): 
 
   const records: LoadedFeatureEvidenceRecord[] = [];
   for (const entry of entries) {
-    if (entry.endsWith(".json")) {
-      const loaded = await loadEvidenceJson(join(evidenceDir, entry), join("work", featureSegment, "evidence", entry));
-      if (loaded) records.push(loaded);
-      continue;
-    }
-
     let runEntries: string[];
     try {
       runEntries = await readdir(join(evidenceDir, entry));
@@ -1236,8 +1221,8 @@ async function loadFeatureStateSafe(dir: string, charterId: string): Promise<Fea
 }
 
 /**
- * Walk work/<featureId>/evidence records (legacy flat and v2.1 dir-per-run)
- * and collect every pass evidence record's `recordedBy` keyed by criterionId.
+ * Walk work/<featureId>/evidence run directories and collect every pass
+ * evidence record's `recordedBy` keyed by criterionId.
  * We need every record (not just the latest in criterion-state) so the
  * identity-disjoint predicate can demand at least one session-disjoint reviewer.
  */

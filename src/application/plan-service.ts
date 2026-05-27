@@ -130,9 +130,11 @@ export interface LockPlanResult {
   nextActions: NextAction[];
 }
 
-export async function lockPlan(
+type LockPlanInput = { charterId: string; now?: string };
+
+export async function lockPlan<T extends LockPlanInput>(
   projectDir: string,
-  input: { charterId: string; now?: string; legacy?: boolean },
+  input: T,
 ): Promise<LockPlanResult> {
   const dir = charterDir(projectDir, input.charterId);
   const now = input.now ?? new Date().toISOString();
@@ -220,22 +222,18 @@ export async function lockPlan(
   }
   const cycle = detectPreconditionCycle(plan.features);
   if (cycle) failures.push(`precondition cycle: ${cycle.join(" -> ")}`);
-  // Weak verifier BLOCKs (non-legacy only). Legacy charters defer both BLOCKs
-  // to completeCharter so existing in-flight work keeps loading. Two distinct
-  // failures so the error message stays specific:
+  // Weak verifier BLOCKs. Two distinct failures keep the error message specific:
   //  - missing Verifier line entirely (VAL-1)
   //  - manual verifier with no criterion-level Because (VAL-6)
-  if (!input.legacy) {
-    const missingVerifier = plan.parseWarnings
-      .filter((w) => w.reason === "missing-verifier")
-      .map((w) => w.criterionId);
-    if (missingVerifier.length) {
-      failures.push(`missing Verifier: line: ${missingVerifier.join(", ")}`);
-    }
-    const weak = plan.criteria.filter((criterion) => criterion.verifier === "manual" && !criterion.because);
-    if (weak.length) {
-      failures.push(`weak verifier (manual + no Because): ${weak.map((c) => c.id).join(", ")}`);
-    }
+  const missingVerifier = plan.parseWarnings
+    .filter((w) => w.reason === "missing-verifier")
+    .map((w) => w.criterionId);
+  if (missingVerifier.length) {
+    failures.push(`missing Verifier: line: ${missingVerifier.join(", ")}`);
+  }
+  const weak = plan.criteria.filter((criterion) => criterion.verifier === "manual" && !criterion.because);
+  if (weak.length) {
+    failures.push(`weak verifier (manual + no Because): ${weak.map((c) => c.id).join(", ")}`);
   }
   if (failures.length) {
     // Distinguish empty-criteria/empty-features from drift/cycle/weak-verifier
@@ -247,12 +245,8 @@ export async function lockPlan(
     else if (readinessBlocking.length) code = "lock_plan.readiness_blocking";
     else if (cycle) code = "lock_plan.cycle";
     else if (architectureGate.required && !architectureGate.present) code = "lock_plan.missing_architecture";
-    else if (!input.legacy) {
-      const missing = plan.parseWarnings.filter((w) => w.reason === "missing-verifier");
-      const weak = plan.criteria.filter((c) => c.verifier === "manual" && !c.because);
-      if (missing.length) code = "lock_plan.missing_verifier";
-      else if (weak.length) code = "lock_plan.weak_verifier";
-    }
+    else if (missingVerifier.length) code = "lock_plan.missing_verifier";
+    else if (weak.length) code = "lock_plan.weak_verifier";
     if (code === "lock_plan.drift" && validationShapeFailures.length && !hasCoverageDrift) code = "lock_plan.validation_shape";
     if (code === "lock_plan.drift" && duplicateFulfills.length) code = "lock_plan.duplicate_fulfills";
     const nextActions: NextAction[] = [

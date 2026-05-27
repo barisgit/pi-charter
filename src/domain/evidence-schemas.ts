@@ -132,7 +132,7 @@ export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult 
   }
 
   if (kind === "qa" && hasOwnProperty(json, "screenshots")) {
-    return { ok: false, error: "qa evidence uses legacy screenshots[] field; migrate to artifacts:[{kind, path, caption?}]" };
+    return { ok: false, error: "Invalid qa evidence: screenshots: is no longer supported; use artifacts:[{kind, path, caption?}]" };
   }
 
   const schema = schemasByKind[kind];
@@ -152,6 +152,12 @@ export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult 
   const fieldPath = typeof missingField === "string" ? `/${missingField}` : first?.instancePath || "/";
   const message = first?.message ?? "schema validation failed";
   return { ok: false, error: `Invalid ${kind} evidence at ${fieldPath}: ${message}` };
+}
+
+export function parseEvidence(json: unknown): EvidenceFile {
+  const validation = validateEvidenceFile(json);
+  if (!validation.ok) throw new Error(validation.error);
+  return validation.value;
 }
 
 function getEvidenceKind(json: unknown): unknown {

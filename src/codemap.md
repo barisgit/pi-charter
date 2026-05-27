@@ -122,8 +122,8 @@ The event log is the **authoritative history** for the widget's running-subagent
 Evidence records are **append-only sidecars**:
 
 ```
-work/<featureId>/evidence/<criterionId>__<stamp>.json   ← one per record
-criterion-state.json                                        ← latest per criterion
+work/<featureId>/evidence/<stamp>/evidence.json      ← one per run
+criterion-state.json                                  ← latest per criterion
 ```
 
 `criterion-state.json` is the running summary (latest outcome per VAL). Individual evidence files are preserved for audit, handoff reconstruction, and the identity-disjoint review predicate.
@@ -223,7 +223,7 @@ charter_manage(action=lock_plan) → status=active
           → appendEvent("feature_completed" | "feature_failed")
       → agent calls charter_record(action=evidence) OR charter_record(action=verify)
         → record-service.recordEvidence() OR record-service.verifyCriterion()
-          write work/<featureId>/evidence/<criterionId>__<stamp>.json
+          write work/<featureId>/evidence/<stamp>/evidence.json
           update criterion-state.json
           appendEvent("evidence_recorded")
           projectFeatureCompletionFromEvidence() → feature-state update
@@ -315,7 +315,8 @@ tryRemoveCharterReminder (called on complete/force_complete)
 │           ├── work/
 │           │   └── <featureId>/
 │           │       └── evidence/
-│           │           └── <criterionId>__<stamp>.json  ← EvidenceRecord (append-only)
+│           │           └── <stamp>/
+│           │               └── evidence.json  ← EvidenceRecord (append-only)
 │           ├── handoffs/
 │           │   └── <stamp>__<featureId>__<sessionId>.json  ← HandoffEnvelope
 │           ├── criterion-state.json     ← latest EvidenceRecord per VAL

@@ -98,13 +98,7 @@ function parseCommands(section: string, warnings: ParseWarning[]): CharterComman
 }
 
 export interface ParseCharterOptions {
-  /**
-   * When true, criteria missing a `Verifier:` line still parse but the
-   * resulting warning is non-fatal at lock_plan time. Defaults to false.
-   * The legacy flag does not suppress the warning itself — callers that
-   * care (lock_plan) read `parseOptions.legacy` to decide whether to BLOCK.
-   */
-  legacy?: boolean;
+  [key: string]: unknown;
   /**
    * Sibling criteria.md contents. When present, criteria are parsed from this
    * file and any legacy `## Criteria` section in charter.md is ignored.
@@ -112,10 +106,7 @@ export interface ParseCharterOptions {
   criteriaMarkdown?: string;
 }
 
-export function parseCharterMarkdown(markdown: string, _options: ParseCharterOptions = {}): ParsedCharterMarkdown {
-  // `_options.legacy` is currently a marker for downstream consumers (lock_plan);
-  // the parser itself always emits the same warning set so the caller can decide.
-  void _options.legacy;
+export function parseCharterMarkdown<T extends ParseCharterOptions>(markdown: string, _options: T = {} as T): ParsedCharterMarkdown {
   const sections = splitH2Sections(markdown);
   const objective = cleanBlock(sections.get("objective") ?? "");
   const warnings: ParseWarning[] = [];

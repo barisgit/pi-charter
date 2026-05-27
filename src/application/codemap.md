@@ -214,7 +214,7 @@ charter_plan tool
 
 **Evidence record shape**
 Each write creates:
-- `work/<featureId>/evidence/<criterionId>__<stamp>.json` — the evidence document.
+- `work/<featureId>/evidence/<stamp>/evidence.json` — the evidence document.
 - Updates `criterion-state.json` with the latest record for that criterion.
 - Appends `evidence_recorded` to `events.jsonl`.
 
@@ -476,7 +476,8 @@ recordedBy ::= "agent:root"           # default root agent
   work/
     <featureId>/
       evidence/
-        <criterionId>__<stamp>.json   # Evidence documents (append-only)
+        <stamp>/
+          evidence.json   # Evidence documents (append-only)
   handoffs/
     <stamp>__<featureId>__<sessionId>.json  # Handoff envelopes
 
