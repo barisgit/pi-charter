@@ -32,7 +32,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   const dir = charterDir(projectDir, charterId);
   const criteria = Array.from({ length: 30 }, (_, index) => {
     const id = `VAL-R-${String(index).padStart(2, "0")}`;
-    return [`### ${id} — Criterion ${index}`, `Description: Criterion ${index}.`, "Verifier: manual", ""].join("\n");
+    return [`### ${id} — Criterion ${index}`, `Description: Criterion ${index}.`, "Verifier: manual", "Because: test fixture rationale", ""].join("\n");
   });
   await writeFile(
     join(dir, "charter.md"),
@@ -48,7 +48,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   const state = JSON.parse(await readFile(join(dir, "state.json"), "utf8"));
   state.planning = { ...(state.planning ?? {}), valCeilingOverride: true };
   await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T00:30:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T00:30:00.000Z" });
   return dir;
 }
 

@@ -71,7 +71,7 @@ async function makeActiveSubagentCharter(projectDir: string, charterId: string):
     `---\nid: f4-verifier-subagent-dispatch\nmilestone: m2\norder: 1\nfulfills:\n  - VAL-SUBAGENT-001\npreconditions: []\n---\n\n# F4\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-20T01:10:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-20T01:10:00.000Z" });
   return dir;
 }
 

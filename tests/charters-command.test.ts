@@ -121,14 +121,14 @@ async function seedActiveCharter(projectDir: string, opts: { name: string; objec
   const dir = join(projectDir, ".pi/charters", created.charterId);
   await writeFile(
     join(dir, "charter.md"),
-    `# Charter\n## Objective\n${opts.objective ?? `objective for ${opts.name}`}\n## Criteria\n### VAL-1 first\nVerifier: manual\n## Scope and constraints\n- none\n`,
+    `# Charter\n## Objective\n${opts.objective ?? `objective for ${opts.name}`}\n## Criteria\n### VAL-1 first\nVerifier: manual\nBecause: test fixture rationale\n## Scope and constraints\n- none\n`,
   );
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
     `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
-  await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T00:01:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T00:01:00.000Z" });
   return created.charterId;
 }
 

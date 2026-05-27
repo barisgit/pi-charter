@@ -37,13 +37,16 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-drift-1") 
     "",
     "### VAL-D-001 — Callback works",
     "Verifier: manual",
+    "Because: test fixture rationale",
     "",
     "### VAL-D-002 — Tokens persisted",
     "Verifier: manual",
+    "Because: test fixture rationale",
     "Require fresh evidence: true",
     "",
     "### VAL-D-003 — Logging",
     "Verifier: manual",
+    "Because: test fixture rationale",
     "",
     "## Scope and constraints",
     "",
@@ -73,7 +76,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-drift-1") 
   await writeFile(join(dir, "plan", "f3-logging.md"), feature("f3-logging", ["VAL-D-003"]), "utf8");
   await mkdir(join(dir, "library"), { recursive: true });
   await writeFile(join(dir, "library", "architecture.md"), `# Architecture\n\n${"Drift fixture architecture. ".repeat(10)}`, "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
 }
 
 describe("charter_status drift views", () => {

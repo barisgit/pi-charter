@@ -57,22 +57,27 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-A — A",
       "Description: A.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-B — B",
       "Description: B.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-C — C",
       "Description: C.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-D — D",
       "Description: D.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-E — E",
       "Description: E.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
     ].join("\n"),
     "utf8",
@@ -90,7 +95,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: f2\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-D\n  - VAL-E\npreconditions: []\n---\n\n# F2\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
   return dir;
 }
 

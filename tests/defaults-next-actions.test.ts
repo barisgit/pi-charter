@@ -154,13 +154,17 @@ describe("VAL-3 nextActions deep-equal across bound vs explicit calls", () => {
       const { tools } = makeHarness(homeDir);
       const explicit = await call(tools.get("charter_record")!, {
         action: "evidence", charterId,
-        criterionId: "VAL-NA-001", featureId: "f1",
-        outcome: "pass", summary: "ok", because: "manual probe",
+        entries: [{
+          criterionId: "VAL-NA-001", featureId: "f1",
+          outcome: "pass", summary: "ok", because: "manual probe",
+        }],
       }, projectDir, "sess-na");
       const bound = await call(tools.get("charter_record")!, {
         action: "evidence",
-        criterionId: "VAL-NA-002", featureId: "f1",
-        outcome: "pass", summary: "ok", because: "manual probe",
+        entries: [{
+          criterionId: "VAL-NA-002", featureId: "f1",
+          outcome: "pass", summary: "ok", because: "manual probe",
+        }],
       }, projectDir, "sess-na");
       expect(bound.details.nextActions).toEqual(explicit.details.nextActions);
     });

@@ -36,7 +36,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   const dir = charterDir(projectDir, charterId);
   await writeFile(
     join(dir, "charter.md"),
-    `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\n`,
+    `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\nBecause: test fixture rationale\n`,
     "utf8",
   );
   await mkdir(join(dir, "plan"), { recursive: true });
@@ -50,7 +50,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: f2-tokens\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-AUTH-002\npreconditions:\n  - f1-state\n---\n\n# Tokens\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
   return dir;
 }
 
@@ -109,7 +109,7 @@ describe("charter_record evidence", () => {
       const dir = charterDir(projectDir, charterId);
       await writeFile(
         join(dir, "charter.md"),
-        `# Charter\n\n## Objective\n\nx.\n\n## Criteria\n\n### VAL-X-001 — X\n\nDescription: x.\nVerifier: manual\n`,
+        `# Charter\n\n## Objective\n\nx.\n\n## Criteria\n\n### VAL-X-001 — X\n\nDescription: x.\nVerifier: manual\nBecause: test fixture rationale\n`,
         "utf8",
       );
       await expect(
@@ -139,7 +139,7 @@ describe("charter_record verify (command verifier)", () => {
       `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\n# F1\n\n${VALIDATION_MD}`,
       "utf8",
     );
-    await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+    await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
     return dir;
   }
 
@@ -184,12 +184,12 @@ describe("charter_record verify (command verifier)", () => {
       const dir = charterDir(projectDir, charterId);
       await writeFile(
         join(dir, "charter.md"),
-        `# Charter\n\n## Objective\n\nverify.\n\n## Criteria\n\n### VAL-CMD-001 — Manual\n\nDescription: cmd.\nVerifier: manual\n`,
+        `# Charter\n\n## Objective\n\nverify.\n\n## Criteria\n\n### VAL-CMD-001 — Manual\n\nDescription: cmd.\nVerifier: manual\nBecause: test fixture rationale\n`,
         "utf8",
       );
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "f1.md"), `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\nx\n\n${VALIDATION_MD}`, "utf8");
-      await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+      await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
       await expect(
         verifyCriterion(projectDir, { charterId, criterionId: "VAL-CMD-001" }),
       ).rejects.toThrow(/not implemented|command verifier/i);

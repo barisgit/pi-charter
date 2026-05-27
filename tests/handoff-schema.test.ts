@@ -84,6 +84,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     "",
     "### VAL-S-001 — Sample criterion",
     "Verifier: manual",
+    "Because: test fixture rationale",
     "",
     "## Scope and constraints",
     "",
@@ -109,7 +110,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     ].join("\n"),
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
 }
 
 async function expectRejection(promise: Promise<unknown>): Promise<CharterToolError> {

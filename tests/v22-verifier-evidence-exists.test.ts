@@ -86,7 +86,7 @@ async function makeActiveCharter(
     ].join("\n"),
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-21T09:10:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-21T09:10:00.000Z" });
   return dir;
 }
 
@@ -187,36 +187,6 @@ describe("v2.2 evidence-exists verifier dispatch", () => {
 
       expect(freshResult.outcome).toBe("pass");
       expect(freshResult.stdout).toContain(freshPath);
-    });
-  });
-
-  test("evidence-exists matches both dir-per-run and legacy flat layout", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "00000000-0000-4000-8000-00000000e504";
-      const dir = await makeActiveCharter(projectDir, charterId, { evidenceKind: "qa" });
-      const legacyPath = await writeEvidenceRecord(dir, {
-        kind: "qa",
-        ts: "2026-05-21T12:00:00.000Z",
-        layout: "legacy",
-      });
-      const dirPath = await writeEvidenceRecord(dir, {
-        kind: "qa",
-        ts: "2026-05-21T12:01:00.000Z",
-        layout: "dir",
-      });
-
-      const result = await verifyCriterion(projectDir, {
-        charterId,
-        criterionId: CRITERION_ID,
-        featureId: FEATURE_ID,
-        now: "2026-05-21T12:30:00.000Z",
-      });
-
-      expect(result.outcome).toBe("pass");
-      expect(result.stdout).toContain(legacyPath);
-      expect(result.stdout).toContain(dirPath);
-      const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
-      expect(stored.details.matchingRecords.map((record: { path: string }) => record.path)).toEqual([legacyPath, dirPath]);
     });
   });
 

@@ -49,10 +49,12 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-v23-partia
       "### VAL-PARTIAL-001 — First criterion passes",
       "Description: First validation target.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-PARTIAL-002 — Second criterion passes",
       "Description: Second validation target.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "## Scope and constraints",
       "",
@@ -67,7 +69,7 @@ async function makeActiveCharter(projectDir: string, charterId = "cha-v23-partia
     `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-PARTIAL-001, VAL-PARTIAL-002]\npreconditions: []\n---\n\n# f1\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-27T10:05:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-27T10:05:00.000Z" });
   return dir;
 }
 

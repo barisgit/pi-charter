@@ -49,10 +49,12 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-QA — QA companion",
       "Description: QA evidence records a markdown companion.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-REVIEW — Review companion",
       "Description: Review evidence records a markdown companion.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
     ].join("\n"),
     "utf8",
@@ -62,7 +64,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   await writeFile(join(dir, "library", "architecture.md"), `# Architecture\n\n${"Markdown companion fixture. ".repeat(12)}\n`, "utf8");
   await writeFeature(dir, "f-qa", "VAL-QA");
   await writeFeature(dir, "f-review", "VAL-REVIEW");
-  await lockPlan(projectDir, { charterId, now: "2026-05-21T10:10:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-21T10:10:00.000Z" });
   return dir;
 }
 

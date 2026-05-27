@@ -50,6 +50,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-TRIAGE-001 — Main feature passes",
       "Description: The main feature has enough evidence to complete once handoff leftovers are triaged.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "## Scope and constraints",
       "",
@@ -64,7 +65,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-TRIAGE-001]\npreconditions: []\n---\n\n# f1\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-27T12:05:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-27T12:05:00.000Z" });
   await recordEvidence(projectDir, {
     charterId,
     criterionId: "VAL-TRIAGE-001",
@@ -260,7 +261,7 @@ describe("v2.3 handoff triage completion gate", () => {
         body: `Follow-up feature absorbs leftover work from session fixer-follow-up-1.\n\n${VALIDATION_MD}`,
         now: "2026-05-27T12:36:00.000Z",
       });
-      await lockPlan(projectDir, { charterId, now: "2026-05-27T12:40:00.000Z", legacy: true });
+      await lockPlan(projectDir, { charterId, now: "2026-05-27T12:40:00.000Z" });
 
       const result = await completeCharter(projectDir, { charterId, now: "2026-05-27T13:00:00.000Z" });
       expect(result.status).toBe("completed");

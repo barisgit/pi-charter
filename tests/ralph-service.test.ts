@@ -41,7 +41,7 @@ async function makePlanningCharter(projectDir: string): Promise<string> {
   // Planning state: no criteria authored yet, so drift surfaces uncovered/empty plan.
   await writeFile(
     join(dir, "charter.md"),
-    `# Charter\n## Objective\nRalph planning objective\n## Criteria\n### VAL-PLN-001 — bootstrap\nVerifier: manual\n## Scope and constraints\n- none\n`,
+    `# Charter\n## Objective\nRalph planning objective\n## Criteria\n### VAL-PLN-001 — bootstrap\nVerifier: manual\nBecause: test fixture rationale\n## Scope and constraints\n- none\n`,
   );
   return charter.charterId;
 }
@@ -54,14 +54,14 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
   const dir = join(projectDir, ".pi/charters", charter.charterId);
   await writeFile(
     join(dir, "charter.md"),
-    `# Charter\n## Objective\nRalph active objective\n## Criteria\n### VAL-ACT-001 — go\nVerifier: manual\n## Scope and constraints\n- none\n`,
+    `# Charter\n## Objective\nRalph active objective\n## Criteria\n### VAL-ACT-001 — go\nVerifier: manual\nBecause: test fixture rationale\n## Scope and constraints\n- none\n`,
   );
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
     `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-ACT-001]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
-  await lockPlan(projectDir, { charterId: charter.charterId, legacy: true });
+  await lockPlan(projectDir, { charterId: charter.charterId });
   return charter.charterId;
 }
 

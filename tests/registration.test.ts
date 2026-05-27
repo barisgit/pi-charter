@@ -97,14 +97,14 @@ async function createBoundActiveCharter(input: { projectDir: string; homeDir: st
   const dir = join(input.projectDir, ".pi/charters", charter.charterId);
   await writeFile(
     join(dir, "charter.md"),
-    `# Charter\n## Objective\nShip Ralph loop\n## Criteria\n### VAL-1 Blocked verdict continues Ralph loop\nVerifier: manual\n### VAL-2 Drifting verdict continues Ralph loop\nVerifier: manual\n### VAL-3 Ready verdict continues Ralph loop\nVerifier: manual\n### VAL-4 On-track verdict does not continue Ralph loop\nVerifier: manual\n### VAL-5 Dormant statuses do not continue Ralph loop\nVerifier: manual\n### VAL-6 Same verdict dedup suppresses steer and trigger\nVerifier: manual\n## Scope and constraints\n- none\n`,
+    `# Charter\n## Objective\nShip Ralph loop\n## Criteria\n### VAL-1 Blocked verdict continues Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-2 Drifting verdict continues Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-3 Ready verdict continues Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-4 On-track verdict does not continue Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-5 Dormant statuses do not continue Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-6 Same verdict dedup suppresses steer and trigger\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n## Scope and constraints\n- none\n`,
   );
   await mkdir(join(dir, "plan"), { recursive: true });
   await writeFile(
     join(dir, "plan/f1.md"),
     `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1, VAL-2, VAL-3, VAL-4, VAL-5, VAL-6]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
   );
-  await lockPlan(input.projectDir, { charterId: charter.charterId, now: "2026-05-15T00:01:00.000Z", legacy: true });
+  await lockPlan(input.projectDir, { charterId: charter.charterId, now: "2026-05-15T00:01:00.000Z" });
   await bindCharterToSession(input.projectDir, {
     charterId: charter.charterId,
     sessionId: input.sessionId,

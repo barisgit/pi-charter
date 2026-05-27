@@ -77,7 +77,7 @@ describe("v2.1 qa artifacts schema", () => {
     });
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBe("qa evidence uses legacy screenshots[] field; migrate to artifacts:[{kind, path, caption?}]");
+    if (!result.ok) expect(result.error).toBe("Invalid qa evidence: screenshots: is no longer supported; use artifacts:[{kind, path, caption?}]");
   });
 
   test("rejects parent-dir escape", () => {

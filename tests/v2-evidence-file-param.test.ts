@@ -49,18 +49,22 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-COMMAND — Command evidence",
       "Description: Command evidence records pass/fail from check results.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-REVIEW — Review evidence",
       "Description: Review evidence records explicit outcome.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-READINESS — Readiness evidence",
       "Description: Readiness evidence records explicit outcome.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-QA — QA evidence",
       "Description: QA evidence records artifact captures.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
     ].join("\n"),
     "utf8",
@@ -72,7 +76,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   await writeFeature(dir, "f-review", "VAL-REVIEW");
   await writeFeature(dir, "f-readiness", "VAL-READINESS");
   await writeFeature(dir, "f-qa", "VAL-QA");
-  await lockPlan(projectDir, { charterId, now: "2026-05-21T10:10:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-21T10:10:00.000Z" });
   return dir;
 }
 
@@ -214,40 +218,6 @@ describe("charter_record evidenceFile parameter", () => {
     });
   });
 
-  test("legacy-qa-screenshots-evidence-file-warns-once", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "00000000-0000-4000-8000-000000000f58";
-      const dir = await makeActiveCharter(projectDir, charterId);
-      const warnings: LogEntry[] = [];
-      logger.addHandler((entry) => {
-        if (entry.level === "warn" && entry.message.includes("deprecated screenshots[]")) warnings.push(entry);
-      });
-      try {
-        const evidenceFile = await writeJsonEvidence(projectDir, "legacy-qa-evidence", {
-          kind: "qa",
-          featureId: "f-qa",
-          milestone: "m1",
-          surfaces: ["artifact schema"],
-          outcome: "pass",
-          screenshots: ["captures/legacy.png"],
-          findings: [],
-          summary: "Legacy QA passed.",
-          because: "Reader back-compat migrates screenshots to artifacts.",
-        });
-
-        const first = await callRecord(projectDir, { action: "evidence", charterId, evidenceFile });
-        await callRecord(projectDir, { action: "evidence", charterId, evidenceFile });
-
-        expect(warnings).toHaveLength(1);
-        const stored = JSON.parse(await readFile(join(dir, first.details.entries[0].path), "utf8"));
-        expect(stored.artifacts).toEqual(["captures/legacy.png"]);
-        expect(stored.details.typedEvidence.artifacts).toEqual([{ kind: "screenshot", path: "captures/legacy.png" }]);
-      } finally {
-        logger.clearHandlers();
-      }
-    });
-  });
-
   test("mixed-inputs-rejected", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-000000000f54";
@@ -267,10 +237,12 @@ describe("charter_record evidenceFile parameter", () => {
           action: "evidence",
           charterId,
           evidenceFile,
-          criterionId: "VAL-COMMAND",
-          outcome: "pass",
-          summary: "inline summary",
-          because: "inline because",
+          entries: [{
+            criterionId: "VAL-COMMAND",
+            outcome: "pass",
+            summary: "inline summary",
+            because: "inline because",
+          }],
         });
       } catch (error) {
         err = error;

@@ -65,30 +65,6 @@ describe("v2.1 briefs dir rename", () => {
     });
   });
 
-  test("reads legacy qa/ briefs dir when qa-briefs absent", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "cha-legacy-qa-briefs";
-      await createCharter(projectDir, {
-        objective: "Read legacy QA briefs",
-        charterId,
-        now: "2026-05-21T00:00:00.000Z",
-      });
-      const charterDir = join(projectDir, ".pi", "charters", charterId);
-      await rm(join(charterDir, "qa-briefs"), { recursive: true, force: true });
-      await mkdir(join(charterDir, "qa"), { recursive: true });
-      await writeFile(join(charterDir, "qa", "dashboard.md"), "# Dashboard QA\n", "utf8");
-      await writeFile(join(charterDir, "qa", "notes.txt"), "ignored\n", "utf8");
-      const spy = spyOnWarn();
-      activeSpy = spy;
-
-      const status = await getCharterStatus(projectDir, { charterId });
-
-      expect(status.qaBriefs).toEqual(["dashboard"]);
-      const matching = spy.calls.filter((line) => line.includes("legacy qa/ briefs dir is deprecated"));
-      expect(matching.length).toBe(1);
-    });
-  });
-
   test("src/ contains no references to the literal qa/ briefs path", async () => {
     const proc = Bun.spawn(["grep", "-rnE", "join\\([^)]*['\"]qa['\"]", "src/"], { stdout: "pipe", stderr: "pipe" });
     const stdout = await new Response(proc.stdout).text();

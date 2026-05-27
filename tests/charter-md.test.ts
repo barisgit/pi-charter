@@ -55,7 +55,7 @@ describe("parseCharterMarkdown warnings", () => {
     ]);
   });
 
-  test("legacy charter parses under legacy: true without throwing; warnings include missing-verifier", () => {
+  test("old-style criteria parse without throwing; warnings include missing-verifier", () => {
     const md = [
       "# Charter",
       "",
@@ -73,7 +73,7 @@ describe("parseCharterMarkdown warnings", () => {
       "",
     ].join("\n");
 
-    const parsed = parseCharterMarkdown(md, { legacy: true });
+    const parsed = parseCharterMarkdown(md);
     expect(parsed.criteria).toHaveLength(2);
     const reasons = parsed.warnings.map((w) => `${w.criterionId}:${w.reason}`).sort();
     expect(reasons).toEqual([

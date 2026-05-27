@@ -212,11 +212,13 @@ describe("charter reminders bridge", () => {
       await executeTool(tools.get("charter_record"), {
         action: "evidence",
         charterId,
-        criterionId: "VAL-REM-001",
-        featureId: "f1",
-        outcome: "pass",
-        summary: "first criterion passed",
-        because: "manual sign-off for first reminder criterion",
+        entries: [{
+          criterionId: "VAL-REM-001",
+          featureId: "f1",
+          outcome: "pass",
+          summary: "first criterion passed",
+          because: "manual sign-off for first reminder criterion",
+        }],
       }, projectDir);
       expect(events.at(-1)?.channel).toBe("reminder:upsert");
       expect(events.at(-1)?.payload.text).toContain("1/2 VAL pass");

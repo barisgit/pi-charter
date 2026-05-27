@@ -50,6 +50,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-HANDOFF-001 — Handoff files are persisted",
       "Description: Worker handoff files land under the feature work directory.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "## Scope and constraints",
       "",
@@ -64,7 +65,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: m1-test\nmilestone: m1\norder: 1\nfulfills: [VAL-HANDOFF-001]\npreconditions: []\n---\n\n# m1-test\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-27T09:10:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-27T09:10:00.000Z" });
   return dir;
 }
 

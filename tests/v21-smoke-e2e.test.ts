@@ -55,6 +55,7 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
       `### ${CRITERION_ID} — Smoke e2e`,
       "Description: QA smoke records artifacts and markdown narrative.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "## Scope and constraints",
       "",
@@ -84,7 +85,7 @@ async function makeActiveCharter(projectDir: string): Promise<string> {
     ].join("\n"),
     "utf8",
   );
-  await lockPlan(projectDir, { charterId: CHARTER_ID, now: "2026-05-21T12:55:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId: CHARTER_ID, now: "2026-05-21T12:55:00.000Z" });
   return dir;
 }
 

@@ -721,7 +721,7 @@ describe("record-service.ts — CharterToolError throw sites", () => {
       );
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "f1.md"), FEATURE_MD("f1", ["VAL-CMD-001"]), "utf8");
-      await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z", legacy: true });
+      await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
       const err = await expectCharterToolError(
         verifyCriterion(projectDir, { charterId, criterionId: "VAL-CMD-001" }),
       );

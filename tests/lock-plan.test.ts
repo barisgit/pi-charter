@@ -121,31 +121,4 @@ describe("lockPlan weak-verifier BLOCK", () => {
       expect(result.status).toBe("active");
     });
   });
-
-  test("legacy: true allows lock_plan even when Verifier: is missing entirely", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "cha-lock-3";
-      const charterMd = [
-        "# Charter",
-        "",
-        "## Objective",
-        "Legacy lock should pass.",
-        "",
-        "## Criteria",
-        "",
-        "### VAL-LEG-001 — Legacy",
-        "Description: missing verifier line, legacy charter",
-        "",
-        "## Scope and constraints",
-        "",
-        "- none",
-        "",
-      ].join("\n");
-      await seedCharter(projectDir, charterId, charterMd, [
-        { id: "f1", fulfills: ["VAL-LEG-001"] },
-      ]);
-      const result = await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z", legacy: true });
-      expect(result.status).toBe("active");
-    });
-  });
 });

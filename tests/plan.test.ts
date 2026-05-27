@@ -35,7 +35,7 @@ describe("charter plan view", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       const dir = charterDir(projectDir, created.charterId);
-      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\n\n## Scope and constraints\n\n- Keep existing sessions valid.\n`, "utf8");
+      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\nBecause: test fixture rationale\n\n## Scope and constraints\n\n- Keep existing sessions valid.\n`, "utf8");
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "f1-callback-state.md"), `---\nid: f1-callback-state\nmilestone: m1-auth\norder: 1\nfulfills:\n  - VAL-AUTH-001\npreconditions: []\n---\n\n# Callback state\n\nValidate OAuth state.\n`, "utf8");
       await writeFile(join(dir, "plan", "f2-orphan.md"), `---\nid: f2-orphan\nmilestone: m1-auth\norder: 2\nfulfills: []\npreconditions:\n  - f1-callback-state\n---\n\n# Orphan\n\nNo criteria yet.\n`, "utf8");
@@ -57,7 +57,7 @@ describe("charter plan view", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       const dir = charterDir(projectDir, created.charterId);
-      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\n`, "utf8");
+      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\nBecause: test fixture rationale\n`, "utf8");
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "f1-only.md"), `---\nid: f1-only\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-AUTH-001\npreconditions: []\n---\n\n# Only one\n`, "utf8");
 
@@ -75,12 +75,12 @@ describe("charter plan view", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       const dir = charterDir(projectDir, created.charterId);
-      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\n`, "utf8");
+      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nImplement OAuth callback.\n\n## Criteria\n\n### VAL-AUTH-001 — Callback validates state\n\nDescription: Invalid state is rejected.\nVerifier: command\n\n### VAL-AUTH-002 — Tokens are persisted\n\nDescription: Tokens are stored.\nVerifier: manual\nBecause: test fixture rationale\n`, "utf8");
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "f1-state.md"), `---\nid: f1-state\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-AUTH-001\npreconditions: []\n---\n\n# State\n\n${VALIDATION_MD}`, "utf8");
       await writeFile(join(dir, "plan", "f2-tokens.md"), `---\nid: f2-tokens\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-AUTH-002\npreconditions:\n  - f1-state\n---\n\n# Tokens\n\n${VALIDATION_MD}`, "utf8");
 
-      const result = await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+      const result = await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T02:30:00.000Z" });
       expect(result.status).toBe("active");
       expect(result.planDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
       const state = await loadCharterState(projectDir, created.charterId);
@@ -98,7 +98,7 @@ describe("charter plan view", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       const dir = charterDir(projectDir, created.charterId);
-      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nCycle.\n\n## Criteria\n\n### VAL-CYC-001 — X\n\nDescription: x.\nVerifier: manual\n`, "utf8");
+      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nCycle.\n\n## Criteria\n\n### VAL-CYC-001 — X\n\nDescription: x.\nVerifier: manual\nBecause: test fixture rationale\n`, "utf8");
       await mkdir(join(dir, "plan"), { recursive: true });
       await writeFile(join(dir, "plan", "a.md"), `---\nid: a\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-CYC-001\npreconditions:\n  - b\n---\n\n# A\n`, "utf8");
       await writeFile(join(dir, "plan", "b.md"), `---\nid: b\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-CYC-001\npreconditions:\n  - a\n---\n\n# B\n`, "utf8");

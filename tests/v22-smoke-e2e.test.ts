@@ -77,7 +77,7 @@ async function makeSubagentCharter(
       "fulfills:", "  - VAL-SMOKE-SUBAGENT", "preconditions: []", "---", "", VALIDATION_MD].join("\n"),
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z" });
   return dir;
 }
 
@@ -247,7 +247,7 @@ describe("v2.2 smoke e2e", () => {
           "fulfills:", "  - VAL-SMOKE-SUBAGENT", "  - VAL-SMOKE-EE", "preconditions: []", "---", "", VALIDATION_MD].join("\n"),
         "utf8",
       );
-      await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z", legacy: true });
+      await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z" });
       installSubagentStub(async () => {
         await writeSubagentReviewEvidence(dir, "f-ee", "prior-persona", "pass", new Date().toISOString());
       });
@@ -285,7 +285,7 @@ describe("v2.2 smoke e2e", () => {
           "fulfills:", "  - VAL-SMOKE-EE-FAIL", "preconditions: []", "---", "", VALIDATION_MD].join("\n"),
         "utf8",
       );
-      await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z", legacy: true });
+      await lockPlan(projectDir, { charterId, now: "2026-05-22T00:01:00.000Z" });
       const failResult = await verifyCriterion(projectDir, {
         charterId, criterionId: "VAL-SMOKE-EE-FAIL", featureId: "f-ee-fail",
         now: "2026-05-22T01:00:01.000Z",

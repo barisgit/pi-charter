@@ -48,6 +48,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-MAN-001 — Manual criterion",
       "Description: Manual rationale required.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-CMD-001 — Command criterion",
       "Description: Command-verifier criterion.",
@@ -68,7 +69,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: f2\nmilestone: m1\norder: 2\nfulfills:\n  - VAL-CMD-001\npreconditions: []\n---\n\n# F2\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
   return dir;
 }
 

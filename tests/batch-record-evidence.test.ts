@@ -49,14 +49,17 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "### VAL-A — A",
       "Description: First criterion.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-B — B",
       "Description: Second criterion.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
       "### VAL-C — C",
       "Description: Third criterion.",
       "Verifier: manual",
+      "Because: test fixture rationale",
       "",
     ].join("\n"),
     "utf8",
@@ -67,7 +70,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
     `---\nid: fa\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-A\n  - VAL-B\n  - VAL-C\npreconditions: []\n---\n\n# FA\n\n${VALIDATION_MD}`,
     "utf8",
   );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
   return dir;
 }
 
@@ -176,7 +179,7 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
     });
   });
 
-  test("mutual exclusion: both criterionId and entries rejects with the documented message", async () => {
+  test("mutual exclusion: evidenceFile and entries rejects with the documented message", async () => {
     // Exercised through the registration handler surface. Reach into the
     // execute function directly via the registered tool descriptor.
     await withTempProject(async (projectDir) => {
@@ -204,10 +207,7 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
           {
             action: "evidence",
             charterId,
-            criterionId: "VAL-A",
-            outcome: "pass",
-            summary: "single",
-            because: "x",
+            evidenceFile: "ignored.json",
             entries: [
               { criterionId: "VAL-B", outcome: "pass", summary: "batch", because: "y" },
             ],
@@ -216,7 +216,7 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
           () => {},
           ctx,
         ),
-      ).rejects.toThrow(/provide either single-entry fields or a batch `entries` array, not both/);
+      ).rejects.toThrow(/provide either evidenceFile or entries, not both/);
     });
   });
 

@@ -99,7 +99,7 @@ describe("charter_status milestone summaries", () => {
         "# Architecture\n\nMilestone status fixture. This test charter intentionally has three implementation features so the architecture gate sees a non-trivial but focused note. The runtime details are irrelevant; the note only satisfies the lock-plan precondition for this fixture.\n",
         "utf8",
       );
-      await lockPlan(projectDir, { charterId, now: "2026-05-20T00:30:00.000Z", legacy: true });
+      await lockPlan(projectDir, { charterId, now: "2026-05-20T00:30:00.000Z" });
 
       await recordEvidence(projectDir, {
         charterId,
@@ -159,7 +159,7 @@ describe("charter_status milestone QA nextAction", () => {
     await mkdir(join(dir, "plan"), { recursive: true });
     await writeFeature(dir, { id: "f-one", milestone: milestoneId, order: 1, fulfills: ["VAL-QA-001"] });
     await writeFeature(dir, { id: "f-two", milestone: milestoneId, order: 2, fulfills: ["VAL-QA-002"] });
-    await lockPlan(projectDir, { charterId, now: "2026-05-20T00:30:00.000Z", legacy: true });
+    await lockPlan(projectDir, { charterId, now: "2026-05-20T00:30:00.000Z" });
   }
 
   function milestoneQaActions(status: Awaited<ReturnType<typeof getCharterStatus>>) {

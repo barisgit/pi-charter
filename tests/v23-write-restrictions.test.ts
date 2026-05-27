@@ -84,7 +84,7 @@ async function makeActiveSubagentCharter(projectDir: string, charterId: string):
     body: `# F1\n\nSubagent write restriction verifier.\n\n${VALIDATION_MD}`,
     now: "2026-05-23T01:05:00.000Z",
   });
-  await lockPlan(projectDir, { charterId, now: "2026-05-23T01:10:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-23T01:10:00.000Z" });
   return dir;
 }
 

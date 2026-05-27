@@ -208,26 +208,37 @@ describe("VAL-1 charterId defaults to session-bound charter", () => {
       const explicit = await callTool(tools.get("charter_plan")!, {
         action: "add_feature",
         charterId,
-        id: "f-explicit",
-        milestone: "m1",
-        order: 1,
-        fulfills: ["VAL-D-100"],
-        body: "body",
+        features: [{
+          id: "f-explicit",
+          milestone: "m1",
+          order: 1,
+          fulfills: ["VAL-D-100"],
+          body: "body",
+        }],
       }, projectDir, "sess-plan-add");
       const bound = await callTool(tools.get("charter_plan")!, {
         action: "add_feature",
-        id: "f-bound",
-        milestone: "m1",
-        order: 2,
-        fulfills: ["VAL-D-100"],
-        body: "body",
+        features: [{
+          id: "f-bound",
+          milestone: "m1",
+          order: 1,
+          fulfills: ["VAL-D-100"],
+          body: "body",
+        }],
       }, projectDir, "sess-plan-add");
 
       expect(bound.details.nextActions).toEqual(explicit.details.nextActions);
       // featureId / path differ by design (different ids); compare the shape
       // by replacing the id-bearing fields with a constant marker.
-      const norm = (d: any) => ({ ...scrub(d) as object, featureId: "_", message: "_" });
-      expect(norm(bound.details)).toEqual(norm(explicit.details));
+      const normAdd = (d: any) => {
+        const scrubbed = scrub(d) as Record<string, any>;
+        return {
+          ...scrubbed,
+          message: "_",
+          features: scrubbed.features.map((feature: Record<string, unknown>) => ({ ...feature, featureId: "_" })),
+        };
+      };
+      expect(normAdd(bound.details)).toEqual(normAdd(explicit.details));
 
       // update_feature bound vs explicit on the same id.
       const updExplicit = await callTool(tools.get("charter_plan")!, {
@@ -242,6 +253,7 @@ describe("VAL-1 charterId defaults to session-bound charter", () => {
         body: "updated body",
       }, projectDir, "sess-plan-add");
       expect(updBound.details.nextActions).toEqual(updExplicit.details.nextActions);
+      const norm = (d: any) => ({ ...scrub(d) as object, featureId: "_", message: "_" });
       expect(norm(updBound.details)).toEqual(norm(updExplicit.details));
     });
   });
@@ -277,27 +289,34 @@ describe("VAL-1 charterId defaults to session-bound charter", () => {
       const explicit = await callTool(tools.get("charter_record")!, {
         action: "evidence",
         charterId,
-        criterionId: "VAL-D-001",
-        featureId: "f1",
-        outcome: "pass",
-        summary: "explicit summary",
-        because: "manual probe for defaults",
+        entries: [{
+          criterionId: "VAL-D-001",
+          featureId: "f1",
+          outcome: "pass",
+          summary: "explicit summary",
+          because: "manual probe for defaults",
+        }],
       }, projectDir, "sess-evidence");
       const bound = await callTool(tools.get("charter_record")!, {
         action: "evidence",
-        criterionId: "VAL-D-002",
-        featureId: "f1",
-        outcome: "pass",
-        summary: "explicit summary",
-        because: "manual probe for defaults",
+        entries: [{
+          criterionId: "VAL-D-002",
+          featureId: "f1",
+          outcome: "pass",
+          summary: "explicit summary",
+          because: "manual probe for defaults",
+        }],
       }, projectDir, "sess-evidence");
 
       expect(bound.details.nextActions).toEqual(explicit.details.nextActions);
       // criterionId differs to avoid clobbering the same record; everything
       // else should match structurally after scrub.
       const norm = (d: any) => {
-        const { criterionId: _c, ...rest } = scrub(d) as Record<string, unknown>;
-        return rest;
+        const scrubbed = scrub(d) as Record<string, any>;
+        return {
+          ...scrubbed,
+          entries: scrubbed.entries.map((entry: Record<string, unknown>) => ({ ...entry, criterionId: "_" })),
+        };
       };
       expect(norm(bound.details)).toEqual(norm(explicit.details));
     });

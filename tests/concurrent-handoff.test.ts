@@ -42,7 +42,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
       "",
       "## Criteria",
       "",
-      ...ids.map((id, index) => [`### ${id} — Criterion ${index}`, `Description: Criterion ${index}.`, "Verifier: manual", ""].join("\n")),
+      ...ids.map((id, index) => [`### ${id} — Criterion ${index}`, `Description: Criterion ${index}.`, "Verifier: manual", "Because: test fixture rationale", ""].join("\n")),
     ].join("\n"),
     "utf8",
   );
@@ -55,7 +55,7 @@ async function makeActiveCharter(projectDir: string, charterId: string): Promise
   const state = JSON.parse(await readFile(join(dir, "state.json"), "utf8"));
   state.planning = { ...(state.planning ?? {}), valCeilingOverride: true };
   await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T00:30:00.000Z", legacy: true });
+  await lockPlan(projectDir, { charterId, now: "2026-05-15T00:30:00.000Z" });
   return dir;
 }
 

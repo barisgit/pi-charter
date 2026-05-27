@@ -14,9 +14,8 @@ import { charterDir } from "../src/infrastructure/store";
  * call, zero plan/*.md files are written, plan.json is unchanged, and the
  * error names the offending index and reason.
  *
- * Single-entry compatibility (existing inline scalar shape) MUST keep
- * working, and BOTH-shapes-in-one-call MUST reject so callers can't trick the
- * router into routing twice.
+ * Legacy inline scalar shapes are covered by tests/legacy-purge.test.ts and
+ * are intentionally rejected at the registration schema boundary.
  */
 
 interface FakeTool {
@@ -157,62 +156,6 @@ describe("VAL-4 batch add_feature atomicity", () => {
       const eventsPath = join(charterDir(projectDir, charterId), "events.jsonl");
       const events = await readFile(eventsPath, "utf8").catch(() => "");
       expect(events).not.toMatch(/"type":"feature_added"/);
-    });
-  });
-
-  test("single-entry compatibility: legacy inline-scalar add_feature call still works", async () => {
-    await withTempProject(async ({ projectDir, homeDir }) => {
-      const charterId = "cha-batch-legacy";
-      await seedPlanningCharter(projectDir, charterId);
-      await bindCharterToSession(projectDir, { charterId, sessionId: "sess-legacy", homeDir });
-      const { tools } = makeHarness(homeDir);
-
-      const single = await callTool(tools.get("charter_plan")!, {
-        action: "add_feature",
-        id: "f-legacy",
-        milestone: "m1",
-        order: 1,
-        fulfills: ["VAL-B-001"],
-        body: "legacy body",
-      }, projectDir, "sess-legacy");
-
-      // Legacy single-add response shape is unchanged: it has featureId, path,
-      // message, nextActions.
-      expect(single.details.featureId).toBe("f-legacy");
-      expect(typeof single.details.path).toBe("string");
-      expect(typeof single.details.message).toBe("string");
-      expect(Array.isArray(single.details.nextActions)).toBe(true);
-      // Critically, no `features` array on the single-add response.
-      expect(single.details.features).toBeUndefined();
-
-      const files = await listPlanFiles(projectDir, charterId);
-      expect(files).toEqual(["f-legacy.md"]);
-    });
-  });
-
-  test("mutual exclusion: providing BOTH `id` and `features` rejects with the documented message", async () => {
-    await withTempProject(async ({ projectDir, homeDir }) => {
-      const charterId = "cha-batch-mux";
-      await seedPlanningCharter(projectDir, charterId);
-      await bindCharterToSession(projectDir, { charterId, sessionId: "sess-mux", homeDir });
-      const { tools } = makeHarness(homeDir);
-
-      await expect(callTool(tools.get("charter_plan")!, {
-        action: "add_feature",
-        id: "f-x",
-        milestone: "m1",
-        order: 1,
-        fulfills: ["VAL-B-001"],
-        body: "x",
-        features: [
-          { id: "f-y", milestone: "m1", order: 2, fulfills: ["VAL-B-002"], body: "y" },
-        ],
-      }, projectDir, "sess-mux")).rejects.toThrow(
-        "provide either single-entry fields or a batch `features` array, not both",
-      );
-
-      // No plan files landed despite the call having an apparently-valid batch.
-      expect(await listPlanFiles(projectDir, charterId)).toEqual([]);
     });
   });
 });
