@@ -38,7 +38,9 @@ live in `skills/pi-charter/SKILL.md` (ADR 0008, ADR 0009).
 
 ## Required reads
 
-Read `charter.md`, especially `charter.md ## Readiness`, plus the readiness feature spec before probing. Verify each readiness item from `## Readiness`; do not collapse multiple items into one vague pass/fail statement.
+Read `charter.md`, especially `charter.md ## Readiness`, plus the readiness feature spec before probing. Also read the latest worker handoff at `.pi/charters/<id>/work/<featureId>/handoffs/<latest>.handoff.json` before probing. Verify each readiness item from `## Readiness`; do not collapse multiple items into one vague pass/fail statement.
+
+If the latest handoff has non-empty `whatWasLeftUndone`, or any blocking `discoveredIssues` entry, readiness FAILS. Summarize the undone work or blocking issue in evidence `because` so the orchestrator can triage it.
 
 ## Surface-specific capture choice
 
@@ -120,4 +122,4 @@ Must-not-spin rule: do not retry infrastructure fixes the persona can't resolve.
 
 ## Role contract
 
-Verify readiness; do not implement fixes. A readiness pass means every readiness item is `verified` or deliberately `deferred-with-fallback`, no item is `blocking`, and the evidence/narrative artifacts obey the naming/parity rules above.
+Verify readiness; do not implement fixes. A readiness pass means every readiness item is `verified` or deliberately `deferred-with-fallback`, no item is `blocking`, the latest handoff contains no unresolved readiness work or blocking discovered issue, and the evidence/narrative artifacts obey the naming/parity rules above.

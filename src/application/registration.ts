@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
 import { addFeature, addFeatureBatch, lockPlan, updateFeature, viewPlan, type FeatureEntry } from "./plan-service";
-import { applyHandoff, recordEvidence, recordEvidenceBatch, recordEvidenceFromFile, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
+import { applyHandoff, handoff as recordHandoff, recordEvidence, recordEvidenceBatch, recordEvidenceFromFile, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
 import { amendCharter, askCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
@@ -14,6 +14,7 @@ import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import { logger } from "../infrastructure/logger";
 import { TERMINAL_STATUSES } from "../domain/types";
+import { HandoffRecordInputProperties, type HandoffRecordInput } from "../persistence/handoff-store";
 import {
   PI_CHARTER_EXTENSION_ID,
   PI_CHARTER_METADATA_KEYS,
@@ -60,6 +61,7 @@ type CharterManageInput = {
   reason?: string;
   completionNote?: string;
   target?: "completed" | "abandoned" | "budget_limited" | "planning" | "review";
+  triage?: Array<{ handoffPath: string; itemId: string; decision: "cut"; reason: string }>;
   idempotencyKey?: string;
   budget?: { tokens?: number; wallclockMs?: number; turns?: number };
 };
@@ -77,12 +79,13 @@ type CharterPlanInput = {
   order?: number;
   fulfills?: string[];
   preconditions?: string[];
+  category?: "behavior" | "infrastructure";
   body?: string;
   features?: FeatureEntry[];
 };
 
 type CharterRecordInput = {
-  action: "evidence" | "verify" | "handoff_apply";
+  action: "evidence" | "verify" | "handoff_apply" | "handoff";
   charterId?: string;
   criterionId?: string;
   featureId?: string;
@@ -91,13 +94,29 @@ type CharterRecordInput = {
   because?: string;
   evidenceFile?: string;
   artifacts?: string[];
-  details?: Record<string, unknown>;
-  entries?: EvidenceEntry[];
+  details?: object;
+  entries?: Array<{
+    criterionId: string;
+    featureId?: string;
+    outcome: "pass" | "fail" | "partial";
+    summary: string;
+    because?: string;
+    artifacts?: string[];
+    details?: object;
+    source?: "manual" | "verifier" | "subagent";
+  }>;
   timeoutMs?: number;
   subagentSessionId?: string;
   handoffNote?: string;
-  completedCriteria?: HandoffCompletedCriterion[];
-};
+  handoffFile?: string;
+  completedCriteria?: Array<{
+    criterionId: string;
+    outcome: "pass" | "fail" | "partial";
+    summary: string;
+    artifacts?: string[];
+    details?: object;
+  }>;
+} & Partial<HandoffRecordInput>;
 
 const CharterManageParams = Type.Object({
   action: StringEnum(["create", "pause", "resume", "complete", "force_complete", "amend_charter", "ask"] as const),
@@ -109,6 +128,12 @@ const CharterManageParams = Type.Object({
   reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
   completionNote: Type.Optional(Type.String({ description: "Completion note for action=complete." })),
   target: Type.Optional(StringEnum(["completed", "abandoned", "budget_limited", "planning", "review"] as const)),
+  triage: Type.Optional(Type.Array(Type.Object({
+    handoffPath: Type.String(),
+    itemId: Type.String(),
+    decision: StringEnum(["cut"] as const),
+    reason: Type.String(),
+  }), { description: "For action=amend_charter, mark handoff items as intentionally cut from scope. Idempotent by handoffPath+itemId+decision." })),
   idempotencyKey: Type.Optional(Type.String({ description: "Stable retry key for orchestrator-driven creates." })),
   budget: Type.Optional(Type.Object({
     tokens: Type.Optional(Type.Number()),
@@ -128,8 +153,9 @@ const CharterPlanParams = Type.Object({
   id: Type.Optional(Type.String({ description: "Feature id slug, e.g. m1-bootstrap. Required for add_feature/update_feature." })),
   milestone: Type.Optional(Type.String({ description: "Milestone id this feature belongs to, e.g. m1-bootstrap. Required for add_feature." })),
   order: Type.Optional(Type.Number({ description: "Sort order within the milestone (lower runs first). Required for add_feature." })),
-  fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill. Must be non-empty for add_feature." })),
+  fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill. Must be non-empty for add_feature unless category='infrastructure'." })),
   preconditions: Type.Optional(Type.Array(Type.String(), { description: "Other feature ids that should land before this one. Advisory only." })),
+  category: Type.Optional(StringEnum(["behavior", "infrastructure"] as const, { description: "Feature category: 'behavior' (default; must fulfill at least one VAL-* criterion) or 'infrastructure' (exempt from the fulfills coverage gate; used for review/qa/readiness gates and infra-only work)." })),
   body: Type.Optional(Type.String({ description: "Feature markdown body (prose under the YAML frontmatter). Required for add_feature." })),
   features: Type.Optional(Type.Array(Type.Object({
     id: Type.String(),
@@ -137,15 +163,26 @@ const CharterPlanParams = Type.Object({
     order: Type.Number(),
     fulfills: Type.Array(Type.String()),
     preconditions: Type.Optional(Type.Array(Type.String())),
+    category: Type.Optional(StringEnum(["behavior", "infrastructure"] as const, { description: "Feature category. Defaults to 'behavior'." })),
     body: Type.String(),
   }), { description: "Batch shape for action=add_feature. Atomic: all entries land or none. Response preserves request order. Mutually exclusive with the single-entry scalar fields." })),
 });
 
+// Flat single-object schema for OpenAI strict-mode compatibility (codex/gpt-5.5
+// reject root-level `Type.Union` because the resulting schema has `type: null`
+// instead of `type: 'object'`). All handoff fields are Optional here and the
+// `handoff` action handler in record-service validates the union shape
+// (handoffFile XOR inline HandoffRecord fields) at runtime via
+// `validateHandoffRecord`. Sonnet accepted the union; codex did not.
+const HandoffInputOptionalProperties = Object.fromEntries(
+  Object.entries(HandoffRecordInputProperties).map(([k, v]) => [k, Type.Optional(v as any)]),
+);
+
 const CharterRecordParams = Type.Object({
-  action: StringEnum(["evidence", "verify", "handoff_apply"] as const),
+  action: StringEnum(["evidence", "verify", "handoff", "handoff_apply"] as const),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
   criterionId: Type.Optional(Type.String({ description: "VAL-* criterion id. Required for evidence and verify." })),
-  featureId: Type.Optional(Type.String({ description: "Feature id this evidence/verification belongs to." })),
+  featureId: Type.Optional(Type.String({ description: "Feature id this evidence/verification/handoff belongs to." })),
   outcome: Type.Optional(StringEnum(["pass", "fail", "partial"] as const)),
   summary: Type.Optional(Type.String({ description: "Short manual summary for action=evidence." })),
   because: Type.Optional(Type.String({ description: "Rationale for the evidence record. Required when action=evidence and source is manual; explains why this outcome is correct so the completion gate can distinguish drive-by approvals from real review." })),
@@ -172,6 +209,12 @@ const CharterRecordParams = Type.Object({
     artifacts: Type.Optional(Type.Array(Type.String())),
     details: Type.Optional(Type.Object({}, { additionalProperties: true })),
   }))),
+  // action=handoff inputs: provide either `handoffFile` (path to a pre-written
+  // HandoffRecord JSON) or the inline HandoffRecord fields below. The handler
+  // validates the XOR at runtime via validateHandoffRecord; the schema keeps
+  // every field Optional so OpenAI strict mode (codex) accepts it.
+  handoffFile: Type.Optional(Type.String({ description: "Absolute or charter-relative path to a pre-written HandoffRecord JSON file. Mutually exclusive with inline HandoffRecord fields (sessionId/featureId/agent/...)." })),
+  ...(HandoffInputOptionalProperties as Record<string, ReturnType<typeof Type.Optional>>),
 });
 
 interface RegisterCharterToolsOptions {
@@ -189,7 +232,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
     promptSnippet: "Manage a durable charter lifecycle with minimal create input and evidence-gated completion.",
     promptGuidelines: [
       "Use charter_manage action=create when the user asks for durable charter-bound work; provide only objective, optional budget, and optional idempotencyKey.",
-      "Do not pass spec paths to charter_manage. Read spec files with normal file tools and author charter.md during planning.",
+      "Do not pass spec paths to charter_manage. Read spec files with normal file tools and author charter.md plus criteria.md during planning.",
     ],
     parameters: CharterManageParams,
     async execute(_toolCallId, params: CharterManageInput, _signal, _onUpdate, ctx) {
@@ -260,6 +303,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
             charterId: resolved.charterId,
             reason: params.reason ?? "",
             target,
+            triage: params.triage,
           });
           return toolResult(result.message, result);
         }
@@ -295,7 +339,8 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           || params.order !== undefined
           || params.fulfills !== undefined
           || params.body !== undefined
-          || params.preconditions !== undefined;
+          || params.preconditions !== undefined
+          || params.category !== undefined;
         if (params.features !== undefined && singleProvided) {
           throw new Error("provide either single-entry fields or a batch `features` array, not both");
         }
@@ -310,7 +355,10 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         if (!params.id?.trim()) throw new Error("id is required for charter_plan action=add_feature");
         if (!params.milestone?.trim()) throw new Error("milestone is required for charter_plan action=add_feature");
         if (params.order === undefined) throw new Error("order is required for charter_plan action=add_feature");
-        if (!params.fulfills || params.fulfills.length === 0) throw new Error("fulfills must list at least one VAL-* criterion id for charter_plan action=add_feature");
+        // Stage C: only behavior features (default) require non-empty fulfills; infrastructure features may have fulfills:[].
+        if (params.category !== "infrastructure" && (!params.fulfills || params.fulfills.length === 0)) {
+          throw new Error("fulfills must list at least one VAL-* criterion id for charter_plan action=add_feature (use category:'infrastructure' for gate-only features)");
+        }
         if (!params.body?.trim()) throw new Error("body is required for charter_plan action=add_feature");
         // VAL-8: legacy single-entry shape stays supported but emits a deprecation
         // notice so callers can migrate to the batch shape. Literal "deprecated"
@@ -321,8 +369,9 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           id: params.id,
           milestone: params.milestone,
           order: params.order,
-          fulfills: params.fulfills,
+          fulfills: params.fulfills ?? [],
           preconditions: params.preconditions,
+          category: params.category,
           body: params.body,
         });
         return toolResult(result.message, result);
@@ -336,6 +385,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           order: params.order,
           fulfills: params.fulfills,
           preconditions: params.preconditions,
+          category: params.category,
           body: params.body,
         });
         return toolResult(result.message, result);
@@ -388,7 +438,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         if (hasBatch) {
           const batch = await recordEvidenceBatch(ctx.cwd, {
             charterId: status.charterId,
-            entries: params.entries!,
+            entries: params.entries! as EvidenceEntry[],
           });
           await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
           return toolResult(`Recorded ${batch.entries.length} evidence entries for charter ${batch.charterId}.`, batch);
@@ -407,7 +457,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           summary: params.summary,
           because: params.because,
           artifacts: params.artifacts,
-          details: params.details,
+          details: params.details as Record<string, unknown> | undefined,
         });
         await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Recorded ${result.outcome} evidence for ${result.criterionId}.`, result);
@@ -424,6 +474,15 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         });
         await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
+      }
+      if (params.action === "handoff") {
+        const { action: _action, charterId: _charterId, ...handoffParams } = params;
+        const result = await recordHandoff(ctx.cwd, {
+          charterId: status.charterId,
+          ...handoffParams,
+        });
+        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
+        return toolResult(`Recorded handoff from ${result.sessionId} for feature ${result.featureId}.`, result);
       }
       if (params.action === "handoff_apply") {
         // VAL-HANDOFF-SCHEMA: the four de-facto-required handoff_apply fields
@@ -499,7 +558,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           featureId: params.featureId,
           subagentSessionId: params.subagentSessionId,
           handoffNote: params.handoffNote,
-          completedCriteria: params.completedCriteria,
+          completedCriteria: params.completedCriteria as HandoffCompletedCriterion[],
         });
         await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Applied handoff from ${result.subagentSessionId} for feature ${result.featureId} (${result.appliedCount} criteria).`, result);
@@ -545,7 +604,7 @@ export function formatCharterStatusText(result: {
   commands?: Record<string, string>;
   nextActions: { tool: string; action?: string; hint: string }[];
   guidelines: string[];
-  details?: { blockingForComplete?: { criterionId: string; reason: string; featureId?: string; probeResult?: string }[] };
+  details?: { blockingForComplete?: { criterionId?: string; reason: string; featureId?: string; probeResult?: string; handoffPath?: string; itemId?: string }[] };
 }): string {
   const lines: string[] = [];
   const firstObjectiveLine = result.objective.split("\n", 1)[0] ?? "";
@@ -574,7 +633,7 @@ export function formatCharterStatusText(result: {
   }
   const blocking = result.details?.blockingForComplete ?? [];
   if (blocking.length > 0) {
-    const preview = blocking.map((row) => `${row.featureId ?? row.criterionId}(${row.reason})`).join(", ");
+    const preview = blocking.map((row) => `${row.featureId ?? row.criterionId ?? row.handoffPath ?? row.itemId ?? "item"}(${row.reason})`).join(", ");
     const unit = blocking.some((row) => row.featureId) ? "item(s)" : "VAL(s)";
     lines.push(`  blocking-for-complete: ${blocking.length} ${unit}: ${preview}`);
   }
@@ -635,7 +694,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "0b. If the request is ambiguous (short phrase, 'continue from handoff', 'make it better', no measurable outcome, contradictory requirements), ask the user EXACTLY ONE clarifying question before proceeding. Do not invent an objective.",
           "1. Extract the real objective from the material you read. Derive a short kebab-case 'name' (≤32 chars, no slugified instruction text — e.g. 'oauth-google-signin' not 'continue-handoff'). Then call charter_manage action=create with the extracted objective and derived name.",
           "2. Run charter_status to confirm the planning state and legal nextActions.",
-          "3. Author the contract by editing .pi/charters/<id>/charter.md to add VAL-* criteria, scope, and constraints. Do NOT create a charter.md at the repo root.",
+          "3. Author the contract by editing .pi/charters/<id>/criteria.md for VAL-* criteria and .pi/charters/<id>/charter.md for scope/constraints. Do NOT create a charter.md at the repo root.",
           "4. Seed the macro plan by calling charter_plan action=add_feature for each feature (id, milestone, order, fulfills[], body). Do NOT write plan/<featureId>.md files yourself — the tool writes them under .pi/charters/<id>/plan/.",
           "5. Before locking, delegate to subagent({agent:'charter-planner-critic'}) to stress-test coverage; resolve every BLOCK finding.",
           "6. Call charter_plan action=lock_plan to transition to active.",
@@ -978,7 +1037,7 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
         objective,
         "",
         "1. Call charter_manage action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; do not embed objective text in id or name.",
-        "2. Run charter_status; then edit .pi/charters/<id>/charter.md to add VAL-* criteria (do NOT create a repo-root charter.md).",
+        "2. Run charter_status; then edit .pi/charters/<id>/criteria.md to add VAL-* criteria (do NOT create a repo-root charter.md).",
         "3. Seed features via charter_plan action=add_feature (id, milestone, order, fulfills[], body); do NOT write plan/*.md files yourself.",
         "4. Delegate plan critique to subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan.",
         "5. Execute feature by feature. Prefer subagent({agent:'charter-reviewer'}) for evidence over inline verifier runs; record results with charter_record action=evidence or action=verify.",
@@ -1152,10 +1211,31 @@ interface RegisterCharterRalphLoopOptions {
   now?: () => number;
 }
 
+/**
+ * Wait this long after subagent:all-idle fires before re-prompting. Gives the
+ * user a window to interrupt with a quick message after the agent stops
+ * streaming without immediately being trampled by a Ralph reprompt.
+ */
+const RALPH_DEBOUNCE_MS = 10_000;
+
+/**
+ * Floor between Ralph reprompts regardless of how often all-idle fires.
+ * Suppresses duplicates when the host emits all-idle multiple times for a
+ * single quiet stretch (turn-end + subagent completion can both land).
+ *
+ * Critically: when this floor blocks a fire we MUST reschedule ourselves for
+ * the remaining window. Ralph is event-driven on subagent:all-idle, so if a
+ * blocked fire just `return`ed we could end up in a "dedupe blackhole" where
+ * the next reprompt depends on an external event that may never come (idle
+ * agent + idle subagents = no more all-idle). The reschedule below makes the
+ * loop self-healing: the floor only delays, never silently drops a reprompt.
+ */
+const RALPH_MIN_INTERVAL_MS = 30_000;
+
 export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
   const runningSubagents = new Set<string>();
-  const debounceMs = options.debounceMs ?? 100;
-  const minIntervalMs = options.minIntervalMs ?? 5_000;
+  const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
+  const minIntervalMs = options.minIntervalMs ?? RALPH_MIN_INTERVAL_MS;
   const now = options.now ?? (() => Date.now());
   let lastCtx: ExtensionContext | undefined;
   let lastSentAt = 0;
@@ -1204,7 +1284,18 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
       if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
       const at = now();
-      if (minIntervalMs > 0 && at - lastSentAt < minIntervalMs) return;
+      if (minIntervalMs > 0 && at - lastSentAt < minIntervalMs) {
+        // Self-heal: schedule a retry for the remaining window so we never
+        // depend on another all-idle event arriving to escape the floor.
+        // Ralph must never silently stop — it's a fail-loop, not a debounce.
+        const remaining = minIntervalMs - (at - lastSentAt);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = undefined;
+          void maybeSendRalph();
+        }, remaining);
+        return;
+      }
       const sessionId = ctx.sessionManager.getSessionId?.();
       if (!sessionId) return;
 

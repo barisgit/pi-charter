@@ -5,442 +5,405 @@ description: Drive multi-feature work to completion under a durable contract wit
 
 # pi-charter
 
-A **charter** is a durable contract you (the agent) hold with yourself:
-plan once, then implement end to end until every `VAL-*` criterion has
-pass evidence. Four phases, driven in one continuous run:
+`CONTEXT.md` is the canonical domain-language reference for pi-charter. ADR 0008
+keeps the lifecycle and legal next actions in runtime code instead of Markdown.
+ADR 0009 keeps Ralph deterministic: Ralph nudges the main agent back into the
+same contract, but it does not replace the agent or invent a second evaluator.
 
+## What pi-charter is
+
+A **charter** is an evidence-gated, multi-feature contract between the main
+agent and the mission. The contract is complete only when every in-scope
+`VAL-*` criterion has pass evidence and completion is not blocked by unresolved
+handoff items.
+
+The deterministic Ralph loop is the engine. `charter_status nextActions[]`, the
+FSM, drift views, lock-plan gates, evidence gates, handoff gates, reminders, and
+completion blockers are runtime-owned. Markdown teaches doctrine and persona
+behavior; it does not define legal transitions.
+
+The bundled personas are supporting controls around that engine:
+
+- `charter-planner-critic` drafts and repairs `charter.md`, `criteria.md`, and
+  `plan/*.md`, and explains `lock_plan` failures. The actual planner-critic
+  gate is deterministic code inside `charter_plan action=lock_plan`.
+- `charter-reviewer` checks implemented diffs against the feature plan and the
+  worker handoff, then records review evidence.
+- `charter-qa` exercises user-facing or runtime-facing surfaces against the
+  feature's claimed VALs and records QA evidence.
+- `charter-readiness-probe` checks readiness dependencies and records readiness
+  evidence before completion.
+
+Planner-critic plus reviewer/QA personas enforce shape and review in practice,
+but the source of truth is the runtime contract plus typed evidence.
+
+## File tree
+
+A charter lives under `.pi/charters/<id>/`:
+
+```text
+charter.md
+criteria.md
+plan/<featureId>.md
+work/<featureId>/evidence/<ts>/
+work/<featureId>/handoffs/<sessionId>.handoff.json
+feature-state.json
+criterion-state.json
+state.json
 ```
-1. CREATE    charter_manage action=create
-2. PLAN      edit charter.md (criteria) -> add_feature -> planner-critic -> lock_plan
-3. EXECUTE   per feature: implement -> charter-reviewer -> user/runtime-facing charter-qa -> fix -> milestone charter-qa -> charter-readiness-probe -> evidence recorded
-4. COMPLETE  charter_manage action=complete    (gated on pass evidence)
+
+Authored surfaces:
+
+- `charter.md` contains `## Objective`, `## Scope and constraints`,
+  `## Mission Boundaries (NEVER VIOLATE)`, and `## Commands`.
+- `criteria.md` contains the VAL register. New charters should keep criteria
+  here; `loadParsedCharter()` still falls back to legacy `charter.md ## Criteria`.
+- `plan/<featureId>.md` contains feature frontmatter (`fulfills`, `category`,
+  `kind`, `preconditions`, milestone/order) and the feature body.
+- `work/<featureId>/evidence/<ts>/` contains typed evidence and artifacts:
+  `evidence.json`, `qa.json / qa.md`, `review.json / review.md`,
+  `readiness.json`, `command.json`, and captured artifacts.
+- `work/<featureId>/handoffs/<sessionId>.handoff.json` contains the worker's
+  typed handoff record.
+
+Evidence uses the dir-per-run layout `work/<feat>/evidence/<ts>/`.
+Use paths like `work/<feat>/evidence/<ts>/{evidence.json, qa.md, artifacts...}`.
+Do not create new flat criterion-id evidence JSON files; readers only tolerate
+that legacy shape for old charters.
+
+Subagent write boundary:
+
+- Subagents may write only under `work/<featureId>/evidence/` and
+  `work/<featureId>/handoffs/`.
+- Subagents must never write `plan/*.md`, `feature-state.json`,
+  `criterion-state.json`, `state.json`, `charter.md`, or `criteria.md`.
+- The runtime audits those orchestrator-owned files during subagent runs. If a
+  subagent tries to mutate them, the write is rejected with: `Plan is managed by
+  the orchestrator; report results via charter_record action=handoff or
+  charter_record action=evidence.`
+
+## VAL doctrine
+
+VALs are declarative behavioral assertions, not feature names, task titles, or
+implementation steps. The read-aloud test is: someone who has never seen the
+codebase should be able to verify this by reading the VAL, the verifier command,
+and the produced evidence.
+
+Good VALs:
+
+- `VAL-AUTH-SESSION-PERSISTS`: A user who completes sign-in remains signed in
+  after refreshing the dashboard.
+- `VAL-CLI-BAD-CONFIG-EXPLAINS-FIX`: When the config file is malformed, the CLI
+  exits non-zero and prints the path plus the exact field to repair.
+- `VAL-CHARTER-COMPLETE-BLOCKS-UNTRIAGED-HANDOFFS`: Completion rejects while a
+  handoff contains non-empty undone work or an untriaged discovered issue.
+
+Bad VALs:
+
+- `VAL-F1`: tautological feature id, not a behavior.
+- `VAL-ADD-HANDOFF-SCHEMA`: implementation step, not observable behavior.
+- `VAL-TESTS-PASS`: suite health can be evidence, but it is not the user or
+  runtime behavior the charter exists to deliver.
+
+Target an M:N relationship between VALs and features: one feature can satisfy
+several VALs, and one VAL can need several features. A 1:1 VAL-to-feature ratio
+is a planning smell because it usually means criteria are just renamed tasks.
+Default VAL ceiling is 8. If the mission truly needs more, use
+`charter_manage action=amend_charter` with a rationale before locking.
+
+Every VAL should name pass criteria, plausible failure modes, and a verifier
+shape. Prefer deterministic project-level commands (`bun test`,
+`bun run check-types`, `bun run lint`, integration smoke commands) over bespoke
+per-VAL scripts. Use `scripts/charter-named-test.sh [<test-file>] <phrase>`
+instead of bare `bun test -t` to avoid silent 0-match pass.
+
+## Feature doctrine
+
+Every `plan/<featureId>.md` has frontmatter that describes how it participates
+in the contract:
+
+```yaml
+id: f1-handoff-gate
+milestone: m1-contract
+order: 1
+category: behavior
+kind: impl
+fulfills:
+  - VAL-CHARTER-COMPLETE-BLOCKS-UNTRIAGED-HANDOFFS
+preconditions: []
 ```
 
-Once the plan is locked, do not stop between features to ask "should I
-keep going?". The objective + locked plan is your authorization to ship.
+Rules:
 
-## Loop doctrine
+- `fulfills: [VAL-X, VAL-Y]` lists the VALs the feature claims to advance.
+- `category: behavior` must have a non-empty `fulfills[]` list.
+- `category: infrastructure` may have an empty `fulfills[]` list for scaffold,
+  setup, cleanup, migration, or harness work that supports later behavior.
+- `kind: impl | readiness | review | qa` routes the intended persona and the
+  expected evidence type.
+- The feature body should answer the four-question gate: What does it do? What
+  are its boundaries? Where does complexity concentrate? How would an
+  independent party verify it works?
 
-The canonical execution loop for an active charter is:
+`charter_plan action=lock_plan` hard-fails orphan VAL references, duplicate VAL
+ownership problems, behavior features with empty `fulfills[]`, feature-id
+VAL tautologies, bespoke verifier script paths, and VAL count above the ceiling
+unless an amend-charter override exists. It soft-warns on 1:1 VAL-feature shape
+and on missing infrastructure features when the plan has at least four features.
 
+## Handoff doctrine
+
+Every worker emits a handoff at the end via `charter_record action=handoff`.
+The runtime writes it to `work/<featureId>/handoffs/<sessionId>.handoff.json` and
+updates `feature-state.json` with `lastWorkerSessionId` and `lastHandoffPath`.
+
+A handoff records:
+
+- `sessionId`, `featureId`, `agent`, `startedAt`, `completedAt`
+- `successState: success | partial | failure`
+- `validatorsPassed`, `fulfills[]`
+- `whatWasImplemented` with at least 50 characters and enough detail to audit the diff
+- `whatWasLeftUndone`
+- `verification.commandsRun[]`
+- `discoveredIssues[]` with `severity`, `kind`, `description`, optional
+  `suggestedFix`, and `triageState`
+- `skillFeedback`
+
+Contract implications:
+
+- `whatWasLeftUndone` non-empty means the feature is not done. It should revert
+  to `pending` on the next loop until absorbed into follow-up work or cut.
+- Evidence with `outcome: partial` or `outcome: fail`, and handoffs with
+  `successState: partial` or `successState: failure`, revert the feature to
+  `pending`.
+- `discoveredIssues` with `triageState: untriaged` block completion until the
+  item is triaged.
+- Reviewers, QA, and readiness probes must read the latest handoff before
+  judging. `readLatestHandoff(projectDir, charterId, featureId)` is the runtime
+  helper for code paths that need this lookup.
+
+Completion blocks with `untriaged-handoff-items` until each non-empty undone
+item or untriaged issue is either absorbed into a follow-up feature whose plan
+body mentions the `sessionId`, or cut with:
+
+```ts
+charter_manage({
+  action: "amend_charter",
+  triage: [{ handoffPath, itemId, decision: "cut", reason }],
+})
 ```
-charter-planner-critic → lock_plan → implement → charter-reviewer → user/runtime-facing charter-qa → fix → milestone charter-qa → charter-readiness-probe → complete
-```
 
-Canonical implementation segment: `implement → charter-reviewer → user/runtime-facing charter-qa → fix → milestone charter-qa → charter-readiness-probe`.
+## Lifecycle
 
-**Code owns the loop; Markdown carries doctrine.**
-`charter_status nextActions[]` in `src/application/service.ts`, the
-lifecycle FSM, evidence gates, drift views, Ralph idle reprompt, and
-reminders are runtime-owned. Markdown
-(`charter.md`, this skill, personas) carries judgment and coaching only.
-Markdown never names a legal transition, defines a stage graph, or adds an
-authored surface-classification knob. Canonical boundary statement: `docs/adr/0008-loop-doctrine-and-runtime-boundary.md` (ADR 0008).
+1. **Planning.** Create the charter, write the contract surfaces, add features,
+   and run planner-critic as a drafting/repair pass.
+2. **Lock.** `charter_plan action=lock_plan` runs deterministic hard-fail gates
+   and soft warnings. Fix the authored surfaces until lock succeeds.
+3. **Active execution.** Implement features, record handoffs, run reviewer/QA/
+   readiness personas, and record evidence. Partial/fail results send work back
+   to pending instead of pretending it is done.
+4. **Milestones complete.** A milestone is only meaningful when its behavior has
+   pass evidence and any required review/QA/readiness evidence is present.
+5. **Complete.** `charter_manage action=complete` is gated by `val-not-pass` and
+   `untriaged-handoff-items`. Every in-scope VAL needs a pass record, and every
+   handoff gap must be triaged.
 
-### Stuck handling
+`amend_charter` is the mid-mission tool for adding, cutting, or rescoping the
+contract. Use it when the mission changes, when new VAL semantics are needed,
+or when a handoff item is deliberately cut. Do not defer known in-mission scope
+changes to a future charter just to get completion to pass.
 
-If `charter_status nextActions[]` offers no legal next move, call
-`charter_manage action=pause` (waiting on user) or
-`charter_manage action=abandon` (work no longer valid). Do not idle, do
-not loop without progress, and do not invent transitions.
+## Planner-critic role
 
-Never leave a charter `in_progress` with no evidence update and no call
-to `pause` / `abandon`. Ralph never stops the charter on its own (see
-ADR 0009); only the main agent exits the loop via one of the above or
-`force_complete`.
+Planner-critic is now a deterministic check enshrined in `lock_plan`, not an LLM
+persona alone. The persona named `charter-planner-critic` is useful because it
+helps author drafts, explains why `lock_plan` failures fired, and proposes
+fixes, but it does not own the gate.
 
-### Replan policy
+Hard-fail examples owned by `lock_plan`:
 
-Within a locked plan, the agent may replan by adding, updating, or
-reordering features and by amending milestone composition or ordering via
-`charter_plan` without calling `amend_charter`. Checkpoints are
-behavioral advice rendered into `charter_status` and Ralph output, not
-persisted state. Only the locked objective and VAL semantics require
-`charter_manage action=amend_charter` with written justification and a
-fresh planner-critic round. This matches ADR 0008.
+- VAL tautology: a VAL description contains feature ids or only restates a
+  feature name.
+- Verifier shape: project-level commands are expected; bespoke
+  `scripts/verify/<val-id>.sh` verifier paths are rejected.
+- VAL ceiling: more than 8 VALs requires an explicit amend-charter override.
+- Coverage shape: orphan VALs, duplicate VAL conflicts, and behavior features
+  without fulfilled VALs reject the lock.
 
-### User-facing vs runtime-facing QA
+Soft-warn examples:
 
-`charter-qa` fires when output is **user-visible** (an agent reads it to
-drive the loop) **or runtime-visible** (an operator or service consumes
-it programmatically). The persona exercises the surface; it does not
-re-verify internal code paths.
+- 1:1 VAL-feature ratio instead of an M:N contract.
+- No infrastructure feature in a plan large enough to need scaffold/setup/cleanup
+  work.
 
-- **User-facing example:** `skills/pi-charter/SKILL.md` and
-  `agents/charter-*.md` are user-facing — an agent reads them to drive
-  the loop. `charter-qa` checks that the prose is coherent, loop steps
-  are discoverable, and stuck handling is unambiguous. A diff or grep
-  check is not sufficient; the surface requires a holistic read from the
-  consumer's perspective.
-- **Runtime-facing example:** `charter_status` JSON and `nextActions[]`
-  are runtime-facing — the main agent and Ralph consume them
-  programmatically. `charter-qa` checks that the shape matches the
-  documented contract, milestone grouping appears, and `nextActions`
-  include expected moves for the current state.
+## Replan policy
 
-If a milestone's output is purely internal (a private helper with no
-external callers and no observable output), document the QA-skip
-decision in the feature body and omit `charter-qa` for that milestone.
+Mid-mission changes update the current charter. If the actual mission changes,
+edit `charter.md`, edit `criteria.md`, and add or update features so the locked
+contract reflects reality. Replanning inside the current charter is preferred to
+creating a vague future charter for work discovered during this one.
 
+Use `amend_charter` when Objective, VAL semantics, Mission Boundaries, or triage
+decisions change. Use `charter_plan add_feature` or `update_feature` for feature
+shape changes that still serve the same Objective and VAL semantics.
 
 ## Planning is the work
 
-Planning is the work: implementation is mostly typing once the charter
-names the real outcomes, boundaries, verification, and risks. Do not
-rush through the planning phase as ceremony; a weak plan creates noisy
-status, shallow VALs, and reviewer churn later.
+Planning is the work: implementation is mostly typing once the charter names the
+real outcomes, boundaries, verification, and risks. Do not rush through the
+planning phase as ceremony; a weak plan creates noisy status, shallow VALs, and
+reviewer churn later.
 
 ### Failure modes to catch before lock
 
-- VALs that only say "feature works" instead of naming observable pass
-  criteria, failure modes, and the required evidence kind.
+- VALs that only say "feature works" instead of naming observable pass criteria,
+  failure modes, and the required evidence kind.
 - VAL count matching feature count, with no cross-cutting criteria for
   integration, user-facing QA, architecture, commands, or suite health.
-- Skipping `charter-planner-critic`, or running it without resolving
-  every `BLOCK` finding.
-- Locking while an awaiting-clarification decision, missing dependency,
-  or scope ambiguity is still unresolved.
-- Treating a critic `BLOCK` as advisory because the implementation path
-  feels obvious.
+- Skipping `charter-planner-critic`, or running it without resolving every
+  drafting issue it finds before `lock_plan`.
+- Locking while an awaiting-clarification decision, missing dependency, or scope
+  ambiguity is still unresolved.
+- Treating a critic `BLOCK` as advisory; v2.3 moves hard gates into runtime, so
+  `lock_plan` failures must be fixed before the plan can lock.
 
 ### What good looks like
 
-- At least one critic round has run, and every `BLOCK` has been resolved
-  in `charter.md`, feature bodies, or scope constraints.
-- Every VAL has explicit pass criteria, known failure modes, and a
-  verifier/evidence kind that an independent party can evaluate.
-- The charter includes cross-cutting VALs for non-feature outcomes such
-  as architecture, commands, QA, integration, or full-suite health.
-- Non-trivial work has `library/architecture.md` (or an equivalent
-  charter-local architecture note) before implementation starts.
-- `## Commands` declares the build/test/dev/lint/qa commands subagents
-  must use verbatim.
-- Each feature body answers the four-question gate enforced by
-  `charter-planner-critic`: What does it do? What are its boundaries?
-  Where does complexity concentrate? How would an independent party
-  verify it works?
+- At least one planner-critic drafting pass has run, and its fixes have been
+  reflected in `charter.md`, `criteria.md`, feature bodies, or scope constraints.
+- Every VAL has explicit pass criteria, known failure modes, and a verifier or
+  evidence kind that an independent party can evaluate.
+- The charter includes cross-cutting VALs for non-feature outcomes such as
+  architecture, commands, QA, integration, or full-suite health.
+- Non-trivial work has `library/architecture.md` or an equivalent charter-local
+  architecture note before implementation starts.
+- `## Commands` declares the build/test/dev/lint/qa commands subagents must use
+  verbatim.
+- Each feature body answers the four-question gate:
+  - What does it do?
+  - What are its boundaries?
+  - Where does complexity concentrate?
+  - How would an independent party verify it works?
 
 ### Done planning
 
-Done planning means the pre-lock `charter_status nextActions[]` has no
-remaining move except `lock_plan`, and then `charter_plan action=lock_plan`
-succeeds. If any other legal next action remains, keep planning.
+Done planning means the pre-lock `charter_status nextActions[]` has no remaining
+move except `lock_plan`, and then `charter_plan action=lock_plan` succeeds. If
+any other legal next action remains, keep planning.
 
 ## Online research delegation
 
-Delegate online research when the plan depends on current ecosystem
-facts the main agent should not guess. Indicators that research is
-needed include smaller or newer ecosystems such as Convex, Drizzle, and
-Hono; SDK-heavy integrations such as Vercel AI SDK, Stripe Elements, and
-Supabase Auth; or prompts like "Can this API do X?", "Are there breaking
-changes?", "Should I verify this behavior?", and "Find current docs".
+Delegate online research when the plan depends on current ecosystem facts the
+main agent should not guess. Indicators that research is needed include smaller or newer ecosystems such as Convex, Drizzle, and Hono; SDK-heavy integrations such as Vercel AI SDK, Stripe Elements, and Supabase Auth; or prompts like "Can this API do X?", "Are there breaking changes?", "Should I verify this behavior?", and "Find current docs".
 
-Do not spend research budget on foundational, slowly evolving knowledge
-unless the objective names a version-specific risk. React, PostgreSQL,
-Express, and standard-library behavior normally need local docs or code
-recon, not web research.
+Do not spend research budget on foundational, slowly evolving knowledge unless
+the objective names a version-specific risk. React, PostgreSQL, Express, and
+standard-library behavior normally need local docs or code recon, not web
+research.
 
-Store distilled, reusable findings in `library/<topic>.md`. Store raw research notes, citations, copied snippets, and uncertainty trails in
-`library/research/<topic>.md`. Keep raw research out of `library/` so the
-critic and future agents can distinguish settled project guidance from
-source material that still needs interpretation.
-
-## Hard rules
-
-1. **Never write `charter.md` or `plan/*.md` directly.** `charter.md` lives
-   at `<cwd>/.pi/charters/<id>/charter.md` and is created by
-   `charter_manage action=create`; you only edit it to add criteria.
-   Feature files are written by `charter_plan action=add_feature`.
-2. **`charter-planner-critic` is mandatory before `lock_plan`.** Resolve
-   every `BLOCK` finding it returns; `ADVISORY` is optional.
-3. **`complete` is evidence-gated.** Every `VAL-*` needs `outcome: 'pass'`
-   evidence before `charter_manage action=complete` will succeed. If the
-   gate rejects, `charter_status` lists the gaps.
-4. **Follow `charter_status nextActions[]`.** It returns the legal moves
-   for the current state; don't guess transitions.
-5. **End-of-turn questions are last resort.** If `nextActions[]` has an
-   unblocked move, take it. Surface decisions in the commit message, not
-   as blocking questions, when the objective already implies the answer.
+Store distilled, reusable findings in `library/<topic>.md`. Store raw research notes, citations, copied snippets, and uncertainty trails in `library/research/<topic>.md`. Keep raw research out of `library/` so the critic and future agents can distinguish settled project guidance from source material that still needs interpretation.
 
 ## Delegation discipline
 
-Main-agent context is the scarce resource. Anything bounded or read-only
-goes to a subagent:
+Main-agent context is the scarce resource. Anything bounded or read-only goes to
+a subagent, but subagents return evidence and handoffs instead of mutating the
+orchestrator-owned plan.
 
-| Job                                          | Subagent                  |
-|----------------------------------------------|---------------------------|
-| Plan critique before `lock_plan`             | `charter-planner-critic`  |
-| Per-feature code review + evidence write     | `charter-reviewer`        |
-| Per-milestone agentic QA + evidence write    | `charter-qa`              |
-| Readiness probe verification + evidence write| `charter-readiness-probe` |
-| Code/file recon, symbol tracing              | `explorer`                |
-| External research (vendor docs, library API) | `explorer`                |
-| Bounded implementation                       | `fixer`                   |
-| Hard-debug direction                         | `oracle` (advisory)       |
+| Job | Subagent |
+| --- | --- |
+| Plan drafting, lock failure explanation, repair proposals | `charter-planner-critic` |
+| Per-feature code review + evidence write | `charter-reviewer` |
+| Per-milestone/user/runtime QA + evidence write | `charter-qa` |
+| Readiness probe verification + evidence write | `charter-readiness-probe` |
+| Code/file recon, symbol tracing | `explorer` |
+| External research (vendor docs, library API) | `explorer` |
+| Bounded implementation | `fixer` |
+| Hard-debug direction | `oracle` (advisory) |
 
-> **Note on bundled personas:** the four charter personas
-> (`charter-planner-critic`, `charter-reviewer`, `charter-qa`,
-> `charter-readiness-probe`) are `scope: internal` and will NOT appear
-> in `subagent({action:'list'})` output. This is intentional — they only
-> make sense when a charter is bound. Invoke them by name directly
-> through `subagent({agent: 'charter-reviewer', ...})`; the call works
-> even though the agent is hidden from discovery.
->
-> Per-role model overrides live in `.pi/charter/charter-config.json`
-> under `personasModel` (`plannerCritic`, `reviewer`, `qa`,
-> `readinessProbe`); BYOA replacements go in `personas`. The full skill
-> is at `skills/pi-charter/SKILL.md` inside the pi-charter extension.
+The four charter personas are `scope: internal` and may not appear in
+`subagent({action:'list'})`; invoke them by name when a charter is bound.
 
-Call shape for the bundled personas:
-
-```
-subagent({
-  agent: 'charter-verifier',                  // or 'charter-planner-critic'
-  prompt: '<short, concrete task>',
-  metadata: {
-    'pi-charter.projectDir': <cwd>,           // required
-    'pi-charter.charterId': '<id>',
-    'pi-charter.featureId': '<id>',           // verifier only
-    'pi-charter.criterionId': 'VAL-...',      // verifier only
-  },
-})
-```
-
-Each v2 persona (reviewer / qa / readiness-probe) writes a typed JSON evidence file and calls `charter_record action=evidence evidenceFile=<path>` itself.
-Evidence and its artifacts use the v2.1 dir-per-run layout:
-
-```
-work/<feat>/evidence/<ts>/
-  evidence.json          # canonical charter_record evidence
-  qa.json / qa.md        # QA machine record + human narrative, when applicable
-  review.json / review.md
-  readiness.json
-  command.json
-  artifacts...
-```
-
-Use paths like `work/<feat>/evidence/<ts>/{evidence.json, qa.md, artifacts...}`.
-Do not create new flat `<criterionId>__<ts>.json` evidence files; readers only
-tolerate that shape for legacy charters.
-`charter-planner-critic` returns `PASS | BLOCK | ADVISORY`.
-
-**Default to `async: true`** for anything you don't need synchronously to
-choose the next move (most fixer handoffs, most verifier runs, long
-explorers). The runtime wakes main when the child finishes, so you can
-spawn the next handoff or hand control back to the user. Use sync only
-when you must read the result before the next move — typically
-`charter-planner-critic` before `lock_plan`, or an `explorer` whose
-finding decides spawn-vs-abandon.
-
-If you stay active between async spawns, sleep briefly between status
-checks rather than busy-polling.
-
-## Phase 1: Create
-
-```
-charter_manage action=create { objective: "<one-line intent>", charterId?: "short-slug" }
-```
-
-The tool stubs `charter.md` with a worked `VAL-EXAMPLE` (template format
-in-line), empty `plan/`, and `state.status: planning`. Session is bound
-to this charter; subsequent charter tools default `charterId` to it.
-
-## Phase 2: Plan
-
-### 2a. Recon before authoring
-
-A charter authored without recon produces brittle criteria and orphan
-features. Before editing `charter.md`:
-
-- Read the obvious sources of truth the objective points at (referenced
-  spec, entry-point file, existing tests, `CONTEXT.md` / ADRs in the
-  target tree).
-- Dispatch 1-3 parallel `explorer` subagents for cross-cutting questions
-  (what pattern is used, what tests exist, what config governs the
-  behavior, vendor docs). One angle per child.
-- Cite recon in the artifacts you author next — paths/symbols go into
-  feature bodies and `## Scope and constraints`. The planner-critic
-  flags features whose bodies reference no concrete code.
-
-Recon is normal discipline, not a charter phase. If recon invalidates
-the objective, say so before authoring criteria.
-
-### 2b. Author criteria
-
-Edit `<cwd>/.pi/charters/<id>/charter.md`. Replace the `VAL-EXAMPLE`
-block. **Use `### VAL-<ID>` H3 headings** with field lines beneath;
-bullet lists like `- VAL-1: ...` are silently ignored.
-
-```markdown
-### VAL-AUTH-001 Sign-in succeeds with Google OAuth
-Description: User can complete OAuth and reach the dashboard.
-Verifier: command
-Command: bun test tests/oauth-google.test.ts
-Fresh evidence required: true
-```
-
-Verifier kinds: `command` (exit 0 = pass), `manual` (person or
-v2 personas record typed evidence via `evidenceFile`), `hook` / `prompt` (advanced).
-
-Fill in `## Scope and constraints` if the stub left it empty.
-
-### 2c. Seed features
-
-```
-charter_plan action=add_feature {
-  features: [
-    {
-      id: "f1-pin-deps",
-      milestone: "m1-bootstrap",
-      order: 1,
-      fulfills: ["VAL-BOOT-001", "VAL-BOOT-002"],
-      preconditions: [],
-      body: "What this feature does and how it satisfies the listed criteria.",
-    },
-    { id: "f2-validate", milestone: "m1-bootstrap", order: 2, fulfills: ["VAL-BOOT-003"], body: "..." },
-  ],
-}
-```
-
-The batch is atomic — every feature lands or none do. `id` matches
-`/^[a-z0-9][a-z0-9_-]*$/i`; `fulfills[]` must list at least one real
-`VAL-*` from `charter.md`. Use `update_feature` to revise.
-
-### 2d. Run planner-critic (mandatory)
-
-```
-subagent({
-  agent: 'charter-planner-critic',
-  prompt: 'Critique charter <id>.',
-  metadata: { 'pi-charter.projectDir': <cwd>, 'pi-charter.charterId': '<id>' },
-})
-```
-
-Resolve every `BLOCK`. Sync (not async) — you need the result to lock.
-
-### 2e. Lock
-
-```
-charter_plan action=lock_plan
-```
-
-Runs checks (uncovered scope, orphan features, cyclic preconditions,
-unknown `VAL-*` refs, missing verifier commands). Throws with details on
-drift. On success: `planning -> active`.
-
-## Phase 3: Execute
-
-Drive every feature to evidence without stopping. Per feature:
-
-1. Pull the next ready feature from `charter_status` (`drift.readyNext[]`).
-2. Implement (delegate bounded work to `fixer`). Run local checks as you go.
-3. For each feature, dispatch the matching v2 persona (`charter-reviewer` for code review, `charter-qa` for milestone agentic QA, `charter-readiness-probe` for readiness probes)
-   (async by default) with `featureId` + `criterionId` in metadata. It
-   runs the verifier or its own equivalent checks and writes one
-   `charter_record action=evidence`.
-4. Move to the next feature. Loop until `drift.uncovered: []`.
-
-### Capture recipes
+## Capture recipes
 
 Planning QA briefs live under `qa-briefs/<surface>.md`, not `qa/`. For QA
-capture recipe selection, start with `skills/pi-charter/references/qa.md`.
-That shelf routes terminal, browser, desktop, mobile, HTTP/API, real-time,
-database, logs/processes, generated-file, visual-regression, and
-reproducibility capture surfaces.
+capture recipe selection, start with `skills/pi-charter/references/qa.md`. That
+shelf routes terminal, browser, desktop, mobile, HTTP/API, real-time,
+database, logs/processes, generated-file, visual-regression, and reproducibility
+capture surfaces. It also documents which recipes are verified and which are
+stubs.
 
-### Verifier robustness
+## Evidence and command robustness
 
-Use `scripts/charter-named-test.sh [<test-file>] <phrase>` instead of bare
-`bun test -t` to avoid silent 0-match pass. Example:
+Each v2 persona writes a typed JSON evidence file and calls
+`charter_record action=evidence evidenceFile=<path>` itself. If you record
+evidence directly for multiple criteria, use the batch shape:
 
-```
-bash scripts/charter-named-test.sh tests/v21-skill-md-update.test.ts 'SKILL.md references qa-briefs'
-```
-
-If you record evidence yourself for multiple criteria, use the batch
-shape:
-
-```
-charter_record action=evidence {
+```ts
+charter_record({
+  action: "evidence",
   entries: [
     { criterionId: "VAL-AUTH-001", featureId: "f1", outcome: "pass", summary: "...", because: "..." },
     { criterionId: "VAL-AUTH-002", featureId: "f1", outcome: "pass", summary: "...", because: "..." },
   ],
-}
+})
 ```
 
-You can also `charter_record action=verify` to run a criterion's command
-verifier inline, but prefer the v2 reviewer/qa personas for context hygiene.
+Use `scripts/charter-named-test.sh [<test-file>] <phrase>` instead of bare
+`bun test -t` to avoid silent 0-match pass. Example:
 
-## Phase 4: Complete
-
-```
-charter_manage action=complete { completionNote?: "..." }
+```bash
+bash scripts/charter-named-test.sh tests/v21-skill-md-update.test.ts 'SKILL.md references qa-briefs'
 ```
 
-Gated: every `VAL-*` must have `outcome: 'pass'` evidence. On success:
-`active -> completed`, session unbound. `force_complete` and
-`amend_charter` are escape hatches.
+Command validators should come from `charter.md ## Commands` or from the VAL's
+own verifier line. Do not invent bespoke verifier behavior in persona prose.
 
 ## Reading status
 
-`charter_status` whenever you're unsure, after recording evidence, and
-before completing. Returns:
+Read `charter_status` whenever you are unsure, after recording evidence, and
+before completing. It returns drift, ready features, completion blockers, and
+`nextActions[]`. Follow `nextActions[]`; do not guess transitions from this
+Markdown file.
 
-- `drift.uncovered[]` — criteria with no/non-pass evidence.
-- `drift.stuck[]` — features `in_progress` with no recent update.
-- `drift.stale[]` — pass evidence past the fresh-evidence window.
-- `drift.readyNext[]` — features whose preconditions are satisfied.
-- `nextActions[]` — legal next moves. **Take one of these.**
-
-If a Ralph reprompt appears, treat it as a nudge to re-read
-`charter_status` and follow legal `nextActions[]`, not as a separate
-completion signal. Only the `complete` gate finishes a charter.
+If a Ralph reprompt appears, treat it as a nudge to re-read `charter_status` and
+continue the legal runtime path. Only `charter_manage action=complete` can finish
+the charter.
 
 ## Tactical tasks vs. charter features
 
-Charter features are durable units fixed at `lock_plan`. Tactical
-trackers (e.g. `task_manage`) are per-turn scratch. A tactical task that
-spans the whole charter is a smell — promote it to a feature or split
-it. Charter sidecars are the source of truth; the task tracker is just a
-turn-to-turn surface.
+Charter features are durable units in the mission contract. Tactical trackers
+such as `task_manage` are per-turn scratch. A tactical task that spans the whole
+charter is a smell: promote it to a feature, split it, or record it as a handoff
+item with honest triage.
 
 ## Common pitfalls
 
-- **Stopping after planning** to ask "should I implement now?". No. The
-  locked plan is your authorization.
-- **Verifying inline** instead of delegating to the matching v2 persona (charter-reviewer / charter-qa / charter-readiness-probe).
-  Burns main-agent context on long charters.
-- **Writing `charter.md` / `plan/*.md` at the repo root** — they live
-  under `.pi/charters/<id>/`, and the tools own `plan/*.md`.
-- **Asking decisions the objective already implies** (commit author,
-  branch name, build flags). Pick the obvious default and proceed.
-- **Treating a Ralph reprompt as completion authority.** It is only a status-driven continuation nudge.
-- **Forgetting `pi-charter.projectDir` in subagent metadata.** Without
-  it, the child can't locate the charter dir and won't record evidence.
-- **Assuming `handoff_apply` always completes the feature.** It only
-  flips a feature to `completed` once every criterion in its `fulfills[]`
-  has pass evidence. Partial handoffs leave it `in_progress` — intentional.
+- Stopping after planning to ask whether to implement. The locked plan is the
+  authorization.
+- Treating a partial handoff as done. `partial` and `failure` return the feature
+  to pending.
+- Writing `plan/*.md` or `*-state.json` from a subagent. The orchestrator owns
+  those files.
+- Recording evidence without `because`. Weak evidence is hard to audit and can
+  fail trust ranking.
+- Hiding undone work by leaving `whatWasLeftUndone` empty. If the diff is
+  incomplete, the handoff must say so.
+- Completing before handoff triage. `untriaged-handoff-items` is a real gate.
 
 ## Quick reference
 
-| Tool                                  | Purpose                                          |
-|---------------------------------------|--------------------------------------------------|
-| `charter_manage action=create`        | Open a charter; session auto-binds.              |
-| `charter_manage action=pause/resume`  | Lifecycle escape hatch.                          |
-| `charter_manage action=complete`      | Gated finish; requires all `VAL-*` pass.         |
-| `charter_manage action=force_complete`| Manual override; subject to hook.                |
-| `charter_manage action=amend_charter` | Mutate `charter.md` mid-flight.                  |
-| `charter_plan action=view`            | Inspect coverage and uncovered criteria.         |
-| `charter_plan action=add_feature`     | Write a managed `plan/<id>.md`.                  |
-| `charter_plan action=update_feature`  | Revise an existing managed feature file.         |
-| `charter_plan action=lock_plan`       | Planner checks + transition to `active`.         |
-| `charter_record action=evidence`      | Append a pass/fail/partial evidence entry.       |
-| `charter_record action=verify`        | Run the criterion's command verifier.            |
-| `charter_record action=handoff_apply` | Apply a returned handoff envelope.               |
-| `charter_status`                      | Status + drift + `nextActions` + guidelines.     |
-
-| Persona                  | Use when                                                 |
-|--------------------------|----------------------------------------------------------|
-| `charter-planner-critic` | Before `lock_plan`. Resolve every `BLOCK`. Sync.         |
-| `charter-reviewer`       | Per-feature code review + typed evidence. Async by default. |
+| Tool | Purpose |
+| --- | --- |
+| `charter_manage action=create` | Open a charter; session auto-binds. |
+| `charter_manage action=pause/resume` | Lifecycle escape hatch. |
+| `charter_manage action=complete` | Gated finish; requires VAL pass evidence and triaged handoff items. |
+| `charter_manage action=force_complete` | Manual override; subject to hook. |
+| `charter_manage action=amend_charter` | Add/cut/rescope contract or triage cut handoff items. |
+| `charter_plan action=view` | Inspect criteria, features, drift, and ready work. |
+| `charter_plan action=add_feature` | Write a managed `plan/<id>.md`. |
+| `charter_plan action=update_feature` | Revise a managed feature file. |
+| `charter_plan action=lock_plan` | Deterministic planner-critic gates + transition to active. |
+| `charter_record action=evidence` | Append pass/fail/partial evidence. |
+| `charter_record action=verify` | Run a criterion's command verifier. |
+| `charter_record action=handoff` | Write `work/<featureId>/handoffs/<sessionId>.handoff.json`. |
+| `charter_status` | Status + drift + blockers + `nextActions[]`. |

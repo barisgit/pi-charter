@@ -3,50 +3,68 @@ import type { CharterCommands, CharterCriterion, ParsedCharterMarkdown, ParseWar
 
 const DEFAULT_VERIFIER: VerifierKind = "manual";
 
-export function renderInitialCharterMarkdown(objective: string): string {
-  // The initial template doubles as a worked example. The parser only recognizes
-  // criteria written as `### VAL-<ID>` H3 headings with `Verifier:`/`Description:`
-  // /`Fresh evidence required:` field lines beneath; bullet lists are NOT parsed.
-  // Showing one full criterion makes the convention discoverable without forcing
-  // the agent to read the skill before authoring.
+export function renderInitialCharterMarkdown(objective: string, name = "Untitled"): string {
   return [
-    "# Charter",
+    `# Charter: ${name.trim() || "Untitled"}`,
     "",
     "## Objective",
     "",
     objective.trim(),
     "",
-    "## Criteria",
+    "## Scope and constraints",
+    "",
+    "<!-- One bullet per scope or constraint, e.g. \"- Do not modify the public API.\" -->",
+    "",
+    "## Mission Boundaries (NEVER VIOLATE)",
+    "",
+    "- DO NOT delete .gitignore, .editorconfig, or other top-level dotfiles.",
+    "- DO NOT create duplicate root-level docs (e.g. SPEC.md at root AND docs/).",
+    "- Charter UUID, feature IDs, VAL IDs MAY NEVER appear hardcoded in committed scripts.",
+    "- <project-specific boundaries: port ranges, off-limits paths, never-modify dirs>",
+    "- Workers: If you cannot complete your work within these boundaries, return to orchestrator. Never violate boundaries.",
+    "",
+    "## Commands",
+    "",
+    "test: <e.g. bun test>",
+    "typecheck: <e.g. bun run check-types>",
+    "lint: <e.g. bun run lint>",
+    "",
+  ].join("\n");
+}
+
+export function renderInitialCriteriaMarkdown(name = "Untitled"): string {
+  // The initial criteria template doubles as a worked example. The parser
+  // recognizes criteria written as `## VAL-<ID>` headings in criteria.md. For
+  // migration grace, it also accepts the old charter.md `## Criteria` wrapper
+  // with `### VAL-<ID>` H3 headings when criteria.md is absent.
+  return [
+    `# Criteria for ${name.trim() || "Untitled"}`,
     "",
     "<!--",
     "Replace the example below with real VAL-* criteria for this charter.",
     "",
     "Format (strict — parsed by pi-charter):",
-    "  ### VAL-<UPPER-SNAKE-OR-NUMERIC-ID> <short title>",
-    "  Description: <one-line outcome statement>",
-    "  Verifier: <manual|command|hook|prompt|subagent|evidence-exists>",
+    "  ## VAL-<UPPER-SNAKE-OR-NUMERIC-ID> <short title>",
+    "  <behavioral statement>",
+    "  Verifier: <command|review|qa|readiness|evidence-exists>",
     "  Command: <shell command if Verifier: command>",
-    "  Agent: <persona name if Verifier: subagent>",
-    "  Task: <subagent task if Verifier: subagent>",
-    "  Kind: <review|qa|readiness|command if Verifier: evidence-exists>",
-    "  FreshSince: <ISO8601 timestamp if Verifier: evidence-exists>",
-    "  Fresh evidence required: <true|false>",
-    "  Review subagent required: <true|false>",
+    "  Because: <required for manual verifier>",
+    "  RequireFreshEvidence: <true|false>",
+    "  RequireReviewSubagent: <true|false>",
     "",
     "Notes:",
-    "  - Bullet lists (`- VAL-1: ...`) are IGNORED. Use ### VAL- H3 headings.",
+    "  - Bullet lists (`- VAL-1: ...`) are IGNORED. Use ## VAL- headings.",
     "  - Every VAL-* id you list here must be the fulfills= target of at least one",
     "    feature added via charter_plan action=add_feature.",
     "-->",
     "",
-    "### VAL-EXAMPLE Example criterion (delete me)",
-    "Description: Replace this example with the real outcome you want verified.",
-    "Verifier: manual",
-    "Fresh evidence required: false",
+    "## VAL-EXAMPLE Example criterion (delete me)",
+    "Replace this example with the real outcome you want verified.",
     "",
-    "## Scope and constraints",
-    "",
-    "<!-- One bullet per scope or constraint, e.g. \"- Do not modify the public API.\" -->",
+    "Verifier: command",
+    "Command: <e.g. bun test tests/example.test.ts>",
+    "RequireFreshEvidence: false",
+    "RequireReviewSubagent: false",
     "",
   ].join("\n");
 }
@@ -87,16 +105,23 @@ export interface ParseCharterOptions {
    * care (lock_plan) read `parseOptions.legacy` to decide whether to BLOCK.
    */
   legacy?: boolean;
+  /**
+   * Sibling criteria.md contents. When present, criteria are parsed from this
+   * file and any legacy `## Criteria` section in charter.md is ignored.
+   */
+  criteriaMarkdown?: string;
 }
 
 export function parseCharterMarkdown(markdown: string, _options: ParseCharterOptions = {}): ParsedCharterMarkdown {
   // `_options.legacy` is currently a marker for downstream consumers (lock_plan);
   // the parser itself always emits the same warning set so the caller can decide.
-  void _options;
+  void _options.legacy;
   const sections = splitH2Sections(markdown);
   const objective = cleanBlock(sections.get("objective") ?? "");
   const warnings: ParseWarning[] = [];
-  const criteria = parseCriteria(sections.get("criteria") ?? "", warnings);
+  const criteria = _options.criteriaMarkdown !== undefined
+    ? parseCriteriaMarkdown(_options.criteriaMarkdown, warnings)
+    : parseCriteria(sections.get("criteria") ?? "", warnings);
   const constraints = parseConstraints(sections.get("scope and constraints") ?? "");
   const commands = sections.has("commands") ? parseCommands(sections.get("commands") ?? "", warnings) : {};
   const qaSection = sections.has("qa") ? sections.get("qa") : undefined;
@@ -123,11 +148,26 @@ function splitH2Sections(markdown: string): Map<string, string> {
   return sections;
 }
 
+export function parseCriteriaMarkdown(markdown: string, warnings: ParseWarning[] = []): CharterCriterion[] {
+  const criteria = parseCriteriaByHeadingLevel(markdown, warnings, 2);
+  if (criteria.length > 0) return criteria;
+
+  const sections = splitH2Sections(markdown);
+  if (sections.has("criteria")) return parseCriteria(sections.get("criteria") ?? "", warnings);
+
+  return parseCriteria(markdown, warnings);
+}
+
 function parseCriteria(section: string, warnings: ParseWarning[]): CharterCriterion[] {
+  return parseCriteriaByHeadingLevel(section, warnings, 3);
+}
+
+function parseCriteriaByHeadingLevel(section: string, warnings: ParseWarning[], headingLevel: 2 | 3): CharterCriterion[] {
   const criteria: CharterCriterion[] = [];
   const lines = section.split(/\r?\n/);
   let currentHeading: string | undefined;
   let buffer: string[] = [];
+  const headingRe = headingLevel === 2 ? /^##\s+(.+?)\s*$/ : /^###\s+(.+?)\s*$/;
 
   const flush = () => {
     if (!currentHeading) return;
@@ -136,7 +176,7 @@ function parseCriteria(section: string, warnings: ParseWarning[]): CharterCriter
   };
 
   for (const line of lines) {
-    const match = /^###\s+(.+?)\s*$/.exec(line);
+    const match = headingRe.exec(line);
     if (match) {
       flush();
       currentHeading = match[1].trim();
@@ -163,23 +203,24 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
   const because = becauseRaw?.trim() ? becauseRaw.trim() : undefined;
   // Author-time rationale is required for manual verifiers; the lock_plan
   // weak-verifier check uses this warning as the BLOCK signal.
-  if (verifierRaw === "manual" && !because) {
+  if (verifierRaw?.trim().toLowerCase() === "manual" && !because) {
     warnings.push({ criterionId: headingMatch[1], reason: "missing-because" });
   }
   const verifierSpec = parseVerifier(verifierRaw, fields, commandValue, headingMatch[1]);
+  const description = fields.get("description") ?? parseBodyDescription(body);
   return {
     id: headingMatch[1],
     title: headingMatch[2]?.trim() || headingMatch[1],
-    description: fields.get("description"),
+    description,
     verifier: verifierSpec.kind,
     verifierSpec,
     command: commandValue?.trim() ? commandValue.trim() : undefined,
     requireFreshEvidence: parseBoolean(
-      fields.get("fresh evidence required") ?? fields.get("require fresh evidence"),
+      fields.get("fresh evidence required") ?? fields.get("require fresh evidence") ?? fields.get("requirefreshevidence"),
       false,
     ),
     requireReviewSubagent: parseOptionalBoolean(
-      fields.get("review subagent required") ?? fields.get("require review subagent"),
+      fields.get("review subagent required") ?? fields.get("require review subagent") ?? fields.get("requirereviewsubagent"),
     ),
     because,
   };
@@ -193,6 +234,25 @@ function parseFields(body: string): Map<string, string> {
     fields.set(normalizeHeading(match[1]), match[2]);
   }
   return fields;
+}
+
+function parseBodyDescription(body: string): string | undefined {
+  const lines: string[] = [];
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("<!--")) {
+      if (lines.length > 0) break;
+      continue;
+    }
+    if (isFieldLine(line)) break;
+    lines.push(line);
+  }
+  const description = lines.join(" ").trim();
+  return description || undefined;
+}
+
+function isFieldLine(line: string): boolean {
+  return /^([A-Za-z][A-Za-z ]+):\s*(.*?)\s*$/.test(line.trim());
 }
 
 function parseConstraints(section: string): string[] {
@@ -211,6 +271,7 @@ function parseVerifier(
   criterionId: string,
 ): Verifier {
   const kind = parseVerifierKind(value, criterionId);
+  const evidenceKind = evidenceKindAlias(value);
   let verifier: unknown;
   switch (kind) {
     case "command":
@@ -231,7 +292,7 @@ function parseVerifier(
     case "evidence-exists":
       verifier = {
         kind,
-        evidenceKind: fields.get("kind")?.trim(),
+        evidenceKind: fields.get("kind")?.trim() ?? evidenceKind,
         ...(fields.get("freshsince")?.trim() ? { freshSince: fields.get("freshsince")!.trim() } : {}),
       };
       break;
@@ -255,7 +316,14 @@ function parseVerifierKind(value: string | undefined, criterionId: string): Veri
     normalized === "subagent" ||
     normalized === "evidence-exists"
   ) return normalized;
+  if (normalized === "review" || normalized === "qa" || normalized === "readiness") return "evidence-exists";
   throw new Error(`Unknown verifier kind for ${criterionId}: ${value}`);
+}
+
+function evidenceKindAlias(value: string | undefined): "review" | "qa" | "readiness" | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "review" || normalized === "qa" || normalized === "readiness") return normalized;
+  return undefined;
 }
 
 function assertNever(value: never): never {

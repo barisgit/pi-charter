@@ -61,6 +61,7 @@ interface FeatureSeed {
   fulfills?: string[];
   preconditions?: string[];
   kind?: "impl" | "readiness" | "review" | "qa";
+  category?: "behavior" | "infrastructure";
   body?: string;
 }
 
@@ -76,6 +77,7 @@ function featureMarkdown(input: FeatureSeed): string {
     `order: ${order}`,
   ];
   if (input.kind) lines.push(`kind: ${input.kind}`);
+  if (input.category) lines.push(`category: ${input.category}`);
   lines.push(fulfills.length === 0 ? "fulfills: []" : `fulfills: [${fulfills.join(", ")}]`);
   lines.push(preconditions.length === 0 ? "preconditions: []" : `preconditions: [${preconditions.join(", ")}]`);
   lines.push("---", "", input.body ?? `# ${input.id}\n\n${input.kind && input.kind !== "impl" ? "Planner-authored non-impl gate." : VALIDATION}`);
@@ -154,7 +156,7 @@ describe("v2.2 no auto-inject", () => {
       const charterId = "cha-v22-milestone-uniform";
       const dir = await seedPlanningCharter(projectDir, charterId, [
         { id: "f-one", fulfills: ["VAL-UNIFORM-001"], order: 1 },
-        { id: "f-one-review", kind: "review", fulfills: [], preconditions: ["f-one"], order: 2 },
+        { id: "f-one-review", kind: "review", category: "infrastructure", fulfills: [], preconditions: ["f-one"], order: 2 },
       ]);
       await lockPlan(projectDir, { charterId, now: "2026-05-21T00:01:00.000Z" });
 

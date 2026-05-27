@@ -1,6 +1,7 @@
 import { parseFeatureValidation, type FeatureValidationChecks } from "./feature-validation";
 
 export type FeatureKind = "impl" | "readiness" | "review" | "qa";
+export type FeatureCategory = "behavior" | "infrastructure";
 
 export interface FeatureDefinition {
   id: string;
@@ -9,6 +10,7 @@ export interface FeatureDefinition {
   fulfills: string[];
   preconditions: string[];
   kind: FeatureKind;
+  category: FeatureCategory;
   checks: FeatureValidationChecks;
   body: string;
 }
@@ -20,13 +22,15 @@ export function parseFeatureMarkdown(markdown: string): FeatureDefinition {
   const id = stringField(fields, "id");
   const milestone = stringField(fields, "milestone");
   const body = match[2].trim();
+  const kind = kindField(fields);
   return {
     id,
     milestone,
     order: numberField(fields, "order"),
     fulfills: arrayField(fields, "fulfills"),
     preconditions: arrayField(fields, "preconditions"),
-    kind: kindField(fields),
+    kind,
+    category: categoryField(fields),
     checks: parseFeatureValidation(body, id),
     body,
   };
@@ -88,6 +92,15 @@ function kindField(fields: Map<string, string | string[]>): FeatureKind {
   const kind = cleanScalar(value);
   if (kind === "impl" || kind === "readiness" || kind === "review" || kind === "qa") return kind;
   throw new Error(`Feature frontmatter unknown feature kind "${kind}"`);
+}
+
+function categoryField(fields: Map<string, string | string[]>): FeatureCategory {
+  const value = fields.get("category");
+  if (value === undefined) return "behavior";
+  if (typeof value !== "string") throw new Error("Feature frontmatter unknown feature category");
+  const category = cleanScalar(value);
+  if (category === "behavior" || category === "infrastructure") return category;
+  throw new Error(`Feature frontmatter unknown feature category "${category}"`);
 }
 
 function arrayField(fields: Map<string, string | string[]>, key: string): string[] {

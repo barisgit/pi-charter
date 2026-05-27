@@ -1,10 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseCharterMarkdown } from "../domain/charter-md";
 import type { CharterCriterion, CharterStatus, ParseWarning } from "../domain/types";
-import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
-import { appendEvent, charterDir, loadCharterState, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
+import { parseFeatureMarkdown, type FeatureCategory, type FeatureDefinition } from "../domain/feature-md";
+import { appendEvent, charterDir, loadCharterState, loadParsedCharter, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
 import { assertNotV1NeedsReplan, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
@@ -12,12 +11,18 @@ import { inspectArchitectureGate } from "./architecture-gate";
 import { listBlockingReadinessFeatures } from "./readiness-service";
 
 const FEATURE_ID_RE = /^[a-z0-9][a-z0-9_-]*$/i;
+const VAL_COUNT_LIMIT = 8;
+const VAL_TAUTOLOGY_RE = /\b(?:feature[-_ ]?(?:m\d+(?:[-_][a-z0-9][a-z0-9_-]*)?|f\d{1,2}\b|[a-z0-9]+[-_][a-z0-9][a-z0-9_-]*)|f\d{1,2}\b|as described in|see feature)\b/i;
+const BESPOKE_VERIFIER_SCRIPT_RE = /\bscripts\/verify\/(?:VAL-[A-Z0-9-]+|m\d-\w+|[0-9a-f]{8}-)[^\s'"`)]*/i;
+const ONE_TO_ONE_VAL_FEATURE_WARNING = "Suspect 1:1 VAL↔feature ratio. Either VALs are too granular (combine them) or features were invented to match VALs. Aim for M:N where a feature can fulfill multiple VALs.";
+const NO_INFRASTRUCTURE_FEATURES_WARNING = "No category:infrastructure features. Real plans usually have scaffolding/cleanup/setup features with empty fulfills[]. Consider whether any features fit that category instead of forcing every feature into category:behavior.";
 
 export interface PlanView {
   charterId: string;
   criteria: CharterCriterion[];
   features: FeatureDefinition[];
-  warnings: ParseWarning[];
+  warnings: string[];
+  parseWarnings: ParseWarning[];
   drift: {
     uncovered: CharterCriterion[];
     orphanFeatures: FeatureDefinition[];
@@ -30,23 +35,27 @@ export async function viewPlan(projectDir: string, input: { charterId: string })
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(projectDir, input.charterId);
   assertNotV1NeedsReplan(state);
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const features = await readFeatures(join(dir, "plan"));
   const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
   const fulfilled = new Set(features.flatMap((feature) => feature.fulfills));
   const uncovered = charter.criteria.filter((criterion) => !fulfilled.has(criterion.id));
-  const orphanFeatures = features.filter((feature) => feature.kind === "impl" && feature.fulfills.length === 0);
+  // Stage C: category=behavior features MUST claim at least one VAL; category=infrastructure features are exempt.
+  // Features with no explicit category default to behavior.
+  const orphanFeatures = features.filter((feature) => feature.category === "behavior" && feature.fulfills.length === 0);
   const unknownFulfilledCriteria = features.flatMap((feature) =>
     feature.fulfills
       .filter((criterionId) => !criteriaById.has(criterionId))
       .map((criterionId) => ({ featureId: feature.id, criterionId })),
   );
+  const warnings = plannerCriticWarnings(features, charter.criteria.length);
 
   const view: PlanView = {
     charterId: input.charterId,
     criteria: charter.criteria,
     features,
-    warnings: charter.warnings,
+    warnings,
+    parseWarnings: charter.warnings,
     drift: { uncovered, orphanFeatures, unknownFulfilledCriteria },
     nextActions: nextActionsForPlan({ uncovered, orphanFeatures, unknownFulfilledCriteria }),
   };
@@ -58,6 +67,8 @@ export async function viewPlan(projectDir: string, input: { charterId: string })
       orphanFeatures: orphanFeatures.map((feature) => feature.id),
       unknownFulfilledCriteria,
     },
+    warnings,
+    parseWarnings: charter.warnings,
   });
   return view;
 }
@@ -88,11 +99,33 @@ function nextActionsForPlan(drift: PlanView["drift"]): NextAction[] {
   return actions;
 }
 
+function plannerCriticWarnings(features: FeatureDefinition[], valCount: number): string[] {
+  const warnings: string[] = [];
+  const behaviorFeatures = features.filter((feature) => feature.category === "behavior");
+  const infrastructureCount = features.filter((feature) => feature.category === "infrastructure").length;
+  if (behaviorFeatures.length > 0 && behaviorFeatures.length === valCount) {
+    const totalFulfills = behaviorFeatures.reduce((sum, feature) => sum + feature.fulfills.length, 0);
+    if (totalFulfills / behaviorFeatures.length === 1) warnings.push(ONE_TO_ONE_VAL_FEATURE_WARNING);
+  }
+  if (features.length >= 4 && infrastructureCount === 0) warnings.push(NO_INFRASTRUCTURE_FEATURES_WARNING);
+  return warnings;
+}
+
+function bespokeVerifierScriptFailures(criteria: CharterCriterion[]): Array<{ criterionId: string; path: string }> {
+  return criteria
+    .filter((criterion) => criterion.verifier === "command" && criterion.command)
+    .flatMap((criterion) => {
+      const match = BESPOKE_VERIFIER_SCRIPT_RE.exec(criterion.command ?? "");
+      return match ? [{ criterionId: criterion.id, path: match[0] }] : [];
+    });
+}
+
 export interface LockPlanResult {
   charterId: string;
   status: CharterStatus;
   planDigest: string;
   featureCount: number;
+  warnings: string[];
   message: string;
   nextActions: NextAction[];
 }
@@ -135,13 +168,42 @@ export async function lockPlan(
   let plan = await viewPlan(projectDir, { charterId: input.charterId });
   const failures: string[] = [];
   const hasCoverageDrift = plan.drift.uncovered.length > 0 || plan.drift.orphanFeatures.length > 0 || plan.drift.unknownFulfilledCriteria.length > 0;
-  if (plan.criteria.length === 0) failures.push("charter.md has no VAL-* criteria");
+  if (plan.criteria.length === 0) failures.push("criteria.md has no VAL-* criteria");
   if (plan.features.length === 0) failures.push("plan/ has no feature files");
-  if (plan.drift.uncovered.length) failures.push(`uncovered criteria: ${plan.drift.uncovered.map((c) => c.id).join(", ")}`);
-  if (plan.drift.orphanFeatures.length) failures.push(`orphan features (empty fulfills): ${plan.drift.orphanFeatures.map((f) => f.id).join(", ")}`);
+  if (plan.drift.uncovered.length) failures.push(`no feature claims this VAL: ${plan.drift.uncovered.map((c) => c.id).join(", ")}`);
+  if (plan.drift.orphanFeatures.length) failures.push(`category:behavior features with empty fulfills: ${plan.drift.orphanFeatures.map((f) => f.id).join(", ")}`);
   if (plan.drift.unknownFulfilledCriteria.length) {
     const refs = plan.drift.unknownFulfilledCriteria.map((row) => `${row.featureId}->${row.criterionId}`).join(", ");
     failures.push(`features fulfill unknown criteria: ${refs}`);
+  }
+  const tautologicalCriteria = plan.criteria.filter((criterion) => criterion.description && VAL_TAUTOLOGY_RE.test(criterion.description));
+  for (const criterion of tautologicalCriteria) {
+    failures.push(`${criterion.id} description references feature ids; describe observable behavior, not implementation features.`);
+  }
+  const bespokeVerifierScripts = bespokeVerifierScriptFailures(plan.criteria);
+  for (const failure of bespokeVerifierScripts) {
+    failures.push(`${failure.criterionId} has bespoke verifier script ${failure.path}; use project-wide bun test / bun run check-types instead.`);
+  }
+  const exceedsValCeiling = plan.criteria.length > VAL_COUNT_LIMIT && state.planning?.valCeilingOverride !== true;
+  if (exceedsValCeiling) {
+    failures.push(`Plan declares ${plan.criteria.length} VALs (limit ${VAL_COUNT_LIMIT}). Use charter_manage amend_charter to raise the ceiling with a written rationale.`);
+  }
+  // Stage C: every VAL must be claimed by AT MOST one feature. Duplicate claims are a hard fail.
+  const valToFeatures = new Map<string, string[]>();
+  for (const feature of plan.features) {
+    for (const valId of feature.fulfills) {
+      const list = valToFeatures.get(valId);
+      if (list) list.push(feature.id);
+      else valToFeatures.set(valId, [feature.id]);
+    }
+  }
+  const duplicateFulfills: Array<{ criterionId: string; featureIds: string[] }> = [];
+  for (const [valId, featureIds] of valToFeatures) {
+    if (featureIds.length > 1) duplicateFulfills.push({ criterionId: valId, featureIds });
+  }
+  if (duplicateFulfills.length) {
+    const refs = duplicateFulfills.map((row) => `${row.criterionId} claimed by ${row.featureIds.join(" & ")}`).join("; ");
+    failures.push(`duplicate VAL claims: ${refs}`);
   }
   const validationShapeFailures = implValidationShapeFailures(plan.features);
   if (validationShapeFailures.length) {
@@ -164,7 +226,7 @@ export async function lockPlan(
   //  - missing Verifier line entirely (VAL-1)
   //  - manual verifier with no criterion-level Because (VAL-6)
   if (!input.legacy) {
-    const missingVerifier = plan.warnings
+    const missingVerifier = plan.parseWarnings
       .filter((w) => w.reason === "missing-verifier")
       .map((w) => w.criterionId);
     if (missingVerifier.length) {
@@ -186,12 +248,13 @@ export async function lockPlan(
     else if (cycle) code = "lock_plan.cycle";
     else if (architectureGate.required && !architectureGate.present) code = "lock_plan.missing_architecture";
     else if (!input.legacy) {
-      const missing = plan.warnings.filter((w) => w.reason === "missing-verifier");
+      const missing = plan.parseWarnings.filter((w) => w.reason === "missing-verifier");
       const weak = plan.criteria.filter((c) => c.verifier === "manual" && !c.because);
       if (missing.length) code = "lock_plan.missing_verifier";
       else if (weak.length) code = "lock_plan.weak_verifier";
     }
     if (code === "lock_plan.drift" && validationShapeFailures.length && !hasCoverageDrift) code = "lock_plan.validation_shape";
+    if (code === "lock_plan.drift" && duplicateFulfills.length) code = "lock_plan.duplicate_fulfills";
     const nextActions: NextAction[] = [
       { tool: "charter_plan", action: "view", hint: "Re-read plan coverage to see uncovered criteria, orphan features, and unknown fulfills links." },
       { tool: "charter_plan", action: "update_feature", hint: "Patch fulfills/preconditions on existing features to resolve drift before retrying lock_plan." },
@@ -228,6 +291,7 @@ export async function lockPlan(
     status: state.status,
     planDigest,
     featureCount: plan.features.length,
+    warnings: plan.warnings,
     message: `Locked plan for ${state.charterId} with ${plan.features.length} feature(s); status -> active.`,
     nextActions: nextActionsForStatus(state.status),
   };
@@ -240,6 +304,7 @@ export interface AddFeatureInput {
   order: number;
   fulfills: string[];
   preconditions?: string[];
+  category?: FeatureCategory;
   body: string;
   now?: string;
 }
@@ -308,6 +373,7 @@ export interface FeatureEntry {
   order: number;
   fulfills: string[];
   preconditions?: string[];
+  category?: FeatureCategory;
   body: string;
 }
 
@@ -363,6 +429,7 @@ export async function addFeatureBatch(
         order: entry?.order,
         fulfills: entry?.fulfills,
         preconditions: entry?.preconditions,
+        category: entry?.category,
         body: entry?.body,
       } as AddFeatureInput);
     } catch (err) {
@@ -386,7 +453,7 @@ export async function addFeatureBatch(
     throw new CharterToolError(`add_feature batch validation failed: ${detail}`, {
       code: "add_feature.validation_failed",
       nextActions: [
-        { tool: "charter_plan", action: "add_feature", hint: "Fix the indexed entry/entries (id must match /^[a-z0-9][a-z0-9_-]*$/i, non-empty milestone, finite order, non-empty fulfills, non-empty body) and retry the batch." },
+        { tool: "charter_plan", action: "add_feature", hint: "Fix the indexed entry/entries (id must match /^[a-z0-9][a-z0-9_-]*$/i, non-empty milestone, finite order, category-aware fulfills, non-empty body) and retry the batch." },
         { tool: "charter_plan", action: "view", hint: "Inspect existing plan coverage before retrying." },
       ],
     });
@@ -446,6 +513,7 @@ export async function addFeatureBatch(
         order: entry.order,
         fulfills: entry.fulfills,
         preconditions: entry.preconditions,
+        category: entry.category,
         body: entry.body,
       });
       await writeFile(tempPath, markdown, "utf8");
@@ -517,6 +585,7 @@ export interface UpdateFeatureInput {
   order?: number;
   fulfills?: string[];
   preconditions?: string[];
+  category?: FeatureCategory;
   body?: string;
   now?: string;
 }
@@ -563,6 +632,7 @@ export async function updateFeature(projectDir: string, input: UpdateFeatureInpu
     order: input.order ?? existing.order,
     fulfills: input.fulfills ?? existing.fulfills,
     preconditions: input.preconditions ?? existing.preconditions,
+    category: input.category ?? existing.category,
     body: input.body ?? existing.body,
   };
   validateFeatureInput(merged);
@@ -613,11 +683,21 @@ function validateFeatureInput(input: AddFeatureInput): void {
       ],
     });
   }
-  if (!Array.isArray(input.fulfills) || input.fulfills.length === 0) {
-    throw new CharterToolError("feature fulfills must list at least one VAL-* criterion id", {
+  if (!Array.isArray(input.fulfills)) {
+    throw new CharterToolError("feature fulfills must be an array", {
       code: "add_feature.missing_fulfills",
       nextActions: [
-        { tool: "charter_plan", action: "add_feature", hint: "Pass `fulfills: ['VAL-...', ...]` with at least one criterion id." },
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `fulfills: ['VAL-...', ...]` (use [] only for category:infrastructure features)." },
+      ],
+    });
+  }
+  // Stage C: category:behavior features (default for unspecified or category:behavior + kind:impl) MUST claim ≥1 VAL.
+  // category:infrastructure features (e.g. review/qa/readiness gates) MAY have empty fulfills.
+  if (input.category !== "infrastructure" && input.fulfills.length === 0) {
+    throw new CharterToolError("feature fulfills must list at least one VAL-* criterion id (only category:infrastructure features may have empty fulfills)", {
+      code: "add_feature.missing_fulfills",
+      nextActions: [
+        { tool: "charter_plan", action: "add_feature", hint: "Pass `fulfills: ['VAL-...', ...]` with at least one criterion id, or set `category: 'infrastructure'` for gate-only features." },
         { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
       ],
     });
@@ -637,6 +717,7 @@ function renderFeatureMarkdown(input: AddFeatureInput): string {
   lines.push(`id: ${input.id}`);
   lines.push(`milestone: ${input.milestone}`);
   lines.push(`order: ${input.order}`);
+  lines.push(`category: ${input.category ?? "behavior"}`);
   if (input.fulfills.length === 0) {
     lines.push("fulfills: []");
   } else {
@@ -719,6 +800,7 @@ function digestFeatures(features: FeatureDefinition[]): string {
       milestone: feature.milestone,
       order: feature.order,
       kind: feature.kind,
+      category: feature.category,
       fulfills: [...feature.fulfills].sort(),
       preconditions: [...feature.preconditions].sort(),
     })),

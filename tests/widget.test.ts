@@ -96,6 +96,7 @@ function feature(input: {
     fulfills: input.fulfills ?? [],
     preconditions: input.preconditions ?? [],
     kind: "impl",
+    category: "behavior",
     checks: { happy: [], edge: [] },
     body: "",
   };
@@ -366,7 +367,7 @@ describe("planning widget", () => {
       "critique:pending",
       "lock:pending",
     ]);
-    expect(vm.planning?.nextHint).toMatch(/charter\.md/);
+    expect(vm.planning?.nextHint).toMatch(/criteria\.md/);
   });
 
   test("partial coverage: features step is partial, hint targets uncovered ids", () => {

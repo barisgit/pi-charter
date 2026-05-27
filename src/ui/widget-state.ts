@@ -445,7 +445,7 @@ function buildPlanningVM(criteria: CharterCriterion[], features: FeatureDefiniti
       id: "criteria",
       state: criteriaDone ? "done" : "pending",
       label: "Define VAL criteria",
-      detail: criteriaDone ? `${criteria.length} in charter.md` : undefined,
+       detail: criteriaDone ? `${criteria.length} in criteria.md` : undefined,
     },
     {
       id: "features",
@@ -474,7 +474,7 @@ function planningNextHint(
   uncovered: string[],
 ): string {
   if (criteria.length === 0) {
-    return "edit .pi/charters/<id>/charter.md to add VAL-* criteria";
+    return "edit .pi/charters/<id>/criteria.md to add VAL-* criteria";
   }
   if (features.length === 0) {
     return "charter_plan action=add_feature to seed features (fulfills[] → VAL ids)";

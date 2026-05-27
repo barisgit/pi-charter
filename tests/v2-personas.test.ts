@@ -5,11 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadCharterConfig, resolvePersona, type CharterConfig } from "../src/persistence/charter-config";
 
-async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+async function withTempAgentDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pi-charter-personas-test-"));
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
   try {
     return await fn(dir);
   } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prev;
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -31,8 +35,8 @@ async function readAllFiles(dir: string): Promise<Array<{ path: string; text: st
 
 describe("v2 personas", () => {
   test("resolves-default-when-no-override", async () => {
-    await withTempProject(async (projectDir) => {
-      const config = loadCharterConfig(projectDir);
+    await withTempAgentDir(async () => {
+      const config = loadCharterConfig();
 
       expect(resolvePersona("plannerCritic", config)).toBe("charter-planner-critic");
       expect(resolvePersona("reviewer", config)).toBe("charter-reviewer");
@@ -51,7 +55,6 @@ describe("v2 personas", () => {
       },
       qaDir: "docs/qa",
       policy: "interactive",
-      personasModel: {},
     };
 
     expect(resolvePersona("plannerCritic", config)).toBe("team-planner");

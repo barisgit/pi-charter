@@ -1,8 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { parseCharterMarkdown } from "../domain/charter-md";
-import { charterDir, loadCharterState } from "../infrastructure/store";
+import { charterDir, loadCharterState, loadParsedCharter } from "../infrastructure/store";
 import { computeDrift } from "./drift-service";
 import { viewPlan } from "./plan-service";
 import { loadCriterionState } from "./record-service";
@@ -37,7 +34,7 @@ export async function upsertCharterReminder(
     removeCharterReminder(pi, charterId);
     return;
   }
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const criterionState = await loadCriterionState(dir, charterId);
   const passCount = charter.criteria.filter((criterion) => criterionState.criteria[criterion.id]?.outcome === "pass").length;
   const totalCount = charter.criteria.length;
@@ -46,7 +43,7 @@ export async function upsertCharterReminder(
     ? await computePlanningNext(projectDir, charterId, charter.criteria.length)
     : computeActiveNext(state.status, await computeDrift(projectDir, { charterId }));
   const guidance = state.status === "planning"
-    ? "Author charter.md then add features in one batch call (`charter_plan action=add_feature { features: [...] }`); do not start implementation until lock_plan succeeds. Bundled charter personas are hidden from `subagent action=list` but invocable by name (`subagent({agent:'charter-planner-critic',...})`); see `skills/pi-charter/SKILL.md`."
+    ? "Author criteria.md then add features in one batch call (`charter_plan action=add_feature { features: [...] }`); do not start implementation until lock_plan succeeds. Bundled charter personas are hidden from `subagent action=list` but invocable by name (`subagent({agent:'charter-planner-critic',...})`); see `skills/pi-charter/SKILL.md`."
     : state.status === "paused"
       ? "Charter is paused; resume before recording evidence."
       : "Prefer async subagents (`subagent({async:true, ...})`) for implementation and charter-reviewer verification — main stays free for user fixes while the charter progresses itself. Use sync subagents only when the next step depends on the result. Record evidence in batches via `charter_record action=evidence { entries: [...] }`. `charterId` defaults to the bound charter — omit it. Bundled charter personas are hidden from `subagent action=list` but invocable by name; see `skills/pi-charter/SKILL.md`.";
@@ -76,7 +73,7 @@ async function computePlanningNext(
   charterId: string,
   criterionCount: number,
 ): Promise<string> {
-  if (criterionCount === 0) return "author charter.md VAL-* criteria";
+  if (criterionCount === 0) return "author criteria.md VAL-* criteria";
   // viewPlan.drift.uncovered = VAL ids with no feature fulfilling them, which is
   // the right signal during planning. computeDrift.uncovered is evidence-based
   // and is always full during planning (no evidence yet).

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { appendEvent, createCharterWorkspace, loadCharterState } from "../src/infrastructure/store";
-import { parseCharterMarkdown, renderInitialCharterMarkdown } from "../src/domain/charter-md";
+import { appendEvent, createCharterWorkspace, loadCharterState, loadParsedCharter } from "../src/infrastructure/store";
+import { parseCharterMarkdown, renderInitialCharterMarkdown, renderInitialCriteriaMarkdown } from "../src/domain/charter-md";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pi-charter-test-"));
@@ -35,6 +35,13 @@ describe("charter filesystem store", () => {
       const charterMd = await readFile(join(created.charterDir, "charter.md"), "utf8");
       expect(charterMd).toContain("## Objective");
       expect(charterMd).toContain("Implement OAuth callback handling");
+      expect(charterMd).toContain("## Mission Boundaries (NEVER VIOLATE)");
+      expect(charterMd).toContain("## Commands");
+      expect(charterMd).not.toContain("## Criteria");
+
+      const criteriaMd = await readFile(join(created.charterDir, "criteria.md"), "utf8");
+      expect(criteriaMd).toContain("# Criteria for Untitled");
+      expect(criteriaMd).toContain("## VAL-EXAMPLE");
 
       const events = await readFile(join(created.charterDir, "events.jsonl"), "utf8");
       expect(events).toContain("charter_created");
@@ -80,16 +87,86 @@ describe("appendEvent concurrency", () => {
 });
 
 describe("renderInitialCharterMarkdown", () => {
-  test("initial template parses cleanly and surfaces the example criterion", () => {
-    const md = renderInitialCharterMarkdown("Probe objective");
-    const parsed = parseCharterMarkdown(md);
+  test("initial split templates parse cleanly and surface the example criterion", () => {
+    const md = renderInitialCharterMarkdown("Probe objective", "probe-charter");
+    const criteriaMd = renderInitialCriteriaMarkdown("probe-charter");
+    const parsed = parseCharterMarkdown(md, { criteriaMarkdown: criteriaMd });
     expect(parsed.objective).toBe("Probe objective");
+    expect(parsed.commands).toEqual({
+      lint: "<e.g. bun run lint>",
+      test: "<e.g. bun test>",
+      typecheck: "<e.g. bun run check-types>",
+    });
     // The worked example must round-trip so agents can copy its shape.
     expect(parsed.criteria).toHaveLength(1);
     expect(parsed.criteria[0]).toMatchObject({
       id: "VAL-EXAMPLE",
-      verifier: "manual",
+      verifier: "command",
       requireFreshEvidence: false,
+      requireReviewSubagent: false,
+    });
+  });
+});
+
+describe("loadParsedCharter", () => {
+  test("prefers sibling criteria.md over legacy charter.md Criteria section", async () => {
+    await withTempProject(async (projectDir) => {
+      const dir = projectDir;
+      await writeFile(join(dir, "charter.md"), [
+        "# Charter",
+        "",
+        "## Objective",
+        "",
+        "Split criteria probe.",
+        "",
+        "## Criteria",
+        "",
+        "### VAL-OLD — Old inline criterion",
+        "Description: This should be ignored when criteria.md exists.",
+        "Verifier: command",
+        "Command: echo old",
+        "",
+        "## Scope and constraints",
+        "",
+        "- Keep old layout readable.",
+      ].join("\n"));
+      await writeFile(join(dir, "criteria.md"), [
+        "# Criteria for split probe",
+        "",
+        "## VAL-NEW New split criterion",
+        "Split criteria.md assertions are authoritative.",
+        "",
+        "Verifier: command",
+        "Command: echo new",
+        "RequireFreshEvidence: true",
+        "RequireReviewSubagent: false",
+      ].join("\n"));
+
+      const parsed = await loadParsedCharter(dir);
+      expect(parsed.criteria.map((criterion) => criterion.id)).toEqual(["VAL-NEW"]);
+      expect(parsed.criteria[0]).toMatchObject({
+        title: "New split criterion",
+        description: "Split criteria.md assertions are authoritative.",
+        command: "echo new",
+        requireFreshEvidence: true,
+        requireReviewSubagent: false,
+      });
+    });
+  });
+
+  test("falls back to charter.md Criteria when criteria.md is absent", async () => {
+    await withTempProject(async (projectDir) => {
+      const dir = projectDir;
+      await writeFile(join(dir, "charter.md"), `# Charter\n\n## Objective\n\nLegacy single-file probe.\n\n## Criteria\n\n### VAL-LEGACY — Legacy criterion\nDescription: Legacy criteria remain readable.\nVerifier: command\nCommand: echo legacy\n`);
+
+      const parsed = await loadParsedCharter(dir);
+      expect(parsed.criteria).toHaveLength(1);
+      expect(parsed.criteria[0]).toMatchObject({
+        id: "VAL-LEGACY",
+        title: "Legacy criterion",
+        description: "Legacy criteria remain readable.",
+        command: "echo legacy",
+      });
     });
   });
 });

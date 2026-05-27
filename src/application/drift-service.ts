@@ -1,8 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
-import { charterDir, loadCharterState } from "../infrastructure/store";
+import { charterDir, loadCharterState, loadParsedCharter } from "../infrastructure/store";
 import { loadCriterionState, type CriterionStateRecord } from "./record-service";
 import { getLatestReadinessProbe, type ReadinessProbeResult } from "./readiness-service";
 
@@ -43,13 +42,12 @@ export async function computeDrift(
   input: { charterId: string; now?: number; freshnessWindowMs?: number },
 ): Promise<DriftViews> {
   const dir = charterDir(projectDir, input.charterId);
-  let charterText: string;
+  let charter: Awaited<ReturnType<typeof loadParsedCharter>>;
   try {
-    charterText = await readFile(join(dir, "charter.md"), "utf8");
+    charter = await loadParsedCharter(dir);
   } catch {
     return { uncovered: [], stuck: [], stale: [], readyNext: [] };
   }
-  const charter = parseCharterMarkdown(charterText);
   const features = await readFeatures(join(dir, "plan"));
   const criterionState = await loadCriterionState(dir, input.charterId);
   const featureState = await loadFeatureStateSafely(dir);

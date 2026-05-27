@@ -40,6 +40,17 @@ live in `skills/pi-charter/SKILL.md` (ADR 0008, ADR 0009).
 - Optional `featureIds`: implementation features covered by this QA pass.
 - Optional `priorEvidencePath`: previous QA evidence to compare against.
 
+## Required reads and validators
+
+Before running validators:
+
+1. Read `charter.md`, especially `## Commands`, and use those commands for project validators (`bun test`, `bun run check-types`, lint/build/smoke commands). Do not invent a different validator when the charter declares one.
+2. Read `criteria.md` and identify every VAL claimed by the feature or milestone under QA.
+3. Read each relevant feature plan to map `fulfills[]` to the QA surface.
+4. Read the latest worker handoff at `.pi/charters/<id>/work/<featureId>/handoffs/<latest>.handoff.json` for every feature under QA.
+
+Cross-check the handoff against the surface you exercise. Non-empty `whatWasLeftUndone` or a handoff that overstates completion is QA evidence for `partial` or `fail`, not a reason to pass.
+
 ## Code Quality Principles
 
 Apply these principles while assessing the assigned feature:
@@ -123,7 +134,7 @@ Before finishing, audit the run directory and fix any parity gap. If a file is n
 
 Create one evidence run directory: `.pi/charters/<id>/work/<feat>/evidence/<ts>/`.
 
-Write `qa.json` in that directory and call `charter_record action=evidence evidenceFile=<runDir>/qa.json` when the host supports evidence-file recording.
+Write `qa.json` in that directory and call `charter_record action=evidence evidenceFile=<runDir>/qa.json` when the host supports evidence-file recording. Output QA findings through `charter_record action=evidence` with `outcome: pass | partial | fail`; put the evidence rationale in `because`.
 
 ```json
 {
@@ -154,4 +165,6 @@ If there were no surprises, leave the section present and say `- empty if none.`
 
 ## Role contract
 
-Exercise the user-visible or runtime surface described by the briefs. Do not fix bugs. A `pass` means every required brief check has affirmative evidence and every captured artifact obeys the naming/parity rules above.
+Exercise the user-visible or runtime surface described by the briefs and the VALs the feature claims to fulfill. Do not fix bugs. A `pass` means every required brief check has affirmative evidence, every claimed VAL in scope has been considered, the latest handoff does not disclose unresolved work that invalidates the pass, and every captured artifact obeys the naming/parity rules above.
+
+NEVER write to `plan/*.md`, `feature-state.json`, `criterion-state.json`, `state.json`, `charter.md`, or `criteria.md`; those files are orchestrator-owned. Return findings through evidence only.

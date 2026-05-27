@@ -23,15 +23,14 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { parseCharterMarkdown } from "../domain/charter-md";
 import {
   computeBlockingForComplete,
   loadBlockingContext,
 } from "../application/service";
 import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "../application/plan-tree";
 import { loadCriterionState, type CriterionStateFile } from "../application/record-service";
-import { charterDir, chartersRoot, loadCharterState } from "../infrastructure/store";
-import type { CharterStatus } from "../domain/types";
+import { charterDir, chartersRoot, loadCharterState, loadParsedCharter } from "../infrastructure/store";
+import type { CharterStatus, ParsedCharterMarkdown } from "../domain/types";
 
 export interface PickerSnapshot {
   charterId: string;
@@ -102,7 +101,7 @@ const TERMINAL_CAP = 10;
  * prefers a deliberate empty so it can format id + title without dup.
  */
 export function extractTitleFromH3(headingLine: string): string {
-  const match = /^###\s+(VAL-[A-Z0-9-]+)(?:\s+(.*))?$/.exec(headingLine);
+  const match = /^#{2,3}\s+(VAL-[A-Z0-9-]+)(?:\s+(.*))?$/.exec(headingLine);
   if (!match) return "";
   return (match[2] ?? "").trim();
 }
@@ -119,9 +118,12 @@ export async function buildPickerSnapshot(
     return null;
   }
 
-  const charterMd = await safeReadFile(join(dir, "charter.md"));
-  const parsed = charterMd ? safeParseCharter(charterMd) : null;
-  const titleByCriterionId = charterMd ? buildTitleMap(charterMd) : new Map<string, string>();
+  const [parsed, charterMd, criteriaMd] = await Promise.all([
+    safeLoadParsedCharter(dir),
+    safeReadFile(join(dir, "charter.md")),
+    safeReadFile(join(dir, "criteria.md")),
+  ]);
+  const titleByCriterionId = buildTitleMap(effectiveCriteriaTitleSource(charterMd, criteriaMd));
 
   const criterionState = await safeLoadCriterionState(dir, charterId);
   const featureState = await safeLoadFeatureState(dir);
@@ -207,8 +209,7 @@ async function loadListRow(
   } catch {
     return null;
   }
-  const charterMd = await safeReadFile(join(dir, "charter.md"));
-  const parsed = charterMd ? safeParseCharter(charterMd) : null;
+  const parsed = await safeLoadParsedCharter(dir);
   const criterionState = await safeLoadCriterionState(dir, charterId);
   const passCount = Object.values(criterionState.criteria).filter(
     (record) => record?.outcome === "pass",
@@ -236,9 +237,9 @@ function compareDesc(a: string, b: string): number {
   return a < b ? 1 : -1;
 }
 
-function safeParseCharter(markdown: string): ReturnType<typeof parseCharterMarkdown> | null {
+async function safeLoadParsedCharter(dir: string): Promise<ParsedCharterMarkdown | null> {
   try {
-    return parseCharterMarkdown(markdown);
+    return await loadParsedCharter(dir);
   } catch {
     return null;
   }
@@ -250,6 +251,23 @@ async function safeReadFile(path: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function effectiveCriteriaTitleSource(charterMd: string | null, criteriaMd: string | null): string {
+  if (criteriaMd && !(isDefaultCriteriaScaffold(criteriaMd) && charterHasInlineCriteria(charterMd ?? ""))) {
+    return criteriaMd;
+  }
+  return charterMd ?? criteriaMd ?? "";
+}
+
+function isDefaultCriteriaScaffold(markdown: string): boolean {
+  const valHeadings = markdown.match(/^#{2,3}\s+VAL-[A-Z0-9-]+\b/gm) ?? [];
+  return valHeadings.length === 1 && /^##\s+VAL-EXAMPLE\b/m.test(markdown);
+}
+
+function charterHasInlineCriteria(markdown: string): boolean {
+  const criteriaSection = /(?:^|\n)##\s+Criteria\s*(?:\n|$)([\s\S]*?)(?=\n##\s+|$)/i.exec(markdown)?.[1] ?? "";
+  return /(?:^|\n)###\s+VAL-[A-Z0-9-]+\b/i.test(criteriaSection);
 }
 
 async function safeLoadCriterionState(dir: string, charterId: string): Promise<CriterionStateFile> {
@@ -284,7 +302,7 @@ async function safeLoadFeatureState(dir: string): Promise<FeatureStateMap> {
 function buildTitleMap(markdown: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const line of markdown.split(/\r?\n/)) {
-    const match = /^###\s+(VAL-[A-Z0-9-]+)/.exec(line);
+    const match = /^#{2,3}\s+(VAL-[A-Z0-9-]+)/.exec(line);
     if (!match) continue;
     map.set(match[1], extractTitleFromH3(line));
   }
@@ -332,14 +350,12 @@ function normalizeOutcome(value: string | undefined): "pass" | "fail" | "partial
 
 async function safeComputeBlocking(dir: string, charterId: string): Promise<string[]> {
   try {
-    const charterMd = await safeReadFile(join(dir, "charter.md"));
-    if (!charterMd) return [];
-    const parsed = safeParseCharter(charterMd);
+    const parsed = await safeLoadParsedCharter(dir);
     if (!parsed) return [];
     const criterionState = await safeLoadCriterionState(dir, charterId);
     const context = await loadBlockingContext(dir, charterId);
     return computeBlockingForComplete(parsed.criteria, criterionState, context)
-      .map((entry) => `${entry.criterionId}: ${entry.reason}`);
+      .map((entry) => `${entry.criterionId ?? entry.handoffPath ?? entry.featureId ?? "handoff item"}: ${entry.reason}`);
   } catch {
     return [];
   }

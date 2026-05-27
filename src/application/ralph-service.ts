@@ -117,7 +117,8 @@ export function renderStatusSummary(status: CharterStatusResult): string {
   if (Array.isArray(blocking) && blocking.length > 0) {
     lines.push("completionBlockers:");
     for (const b of blocking.slice(0, 5)) {
-      lines.push(`  - ${b.criterionId}: ${b.reason ?? "needs evidence"}`);
+      const id = b.criterionId ?? b.handoffPath ?? b.featureId ?? "handoff item";
+      lines.push(`  - ${id}: ${b.reason ?? "needs evidence"}`);
     }
   } else {
     lines.push("completionBlockers: (none)");

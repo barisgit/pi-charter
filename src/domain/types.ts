@@ -40,6 +40,16 @@ export interface Budget {
 
 export type CharterCommands = Record<string, string>;
 
+export type TriageDecision = "addFeature" | "updateFeature" | "cut";
+
+export interface CharterTriageEntry {
+  handoffPath: string;
+  itemId: string;
+  decision: TriageDecision;
+  reason: string;
+  decidedAt: string;
+}
+
 export interface CharterState {
   charterId: string;
   schemaVersion?: CharterSchemaVersion;
@@ -63,6 +73,12 @@ export interface CharterState {
   completedAt?: string;
   terminatedAt?: string;
   completionReason?: string;
+  triage: CharterTriageEntry[];
+  planning?: CharterPlanningState;
+}
+
+export interface CharterPlanningState {
+  valCeilingOverride?: boolean;
 }
 
 export interface CharterCriterion {

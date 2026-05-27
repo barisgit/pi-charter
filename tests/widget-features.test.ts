@@ -35,6 +35,7 @@ function feature(input: {
     fulfills: input.fulfills ?? [],
     preconditions: input.preconditions ?? [],
     kind: "impl",
+    category: "behavior",
     checks: { happy: [], edge: [] },
     body: "",
   };

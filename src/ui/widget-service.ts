@@ -15,9 +15,9 @@
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseCharterMarkdown } from "../domain/charter-md";
+import type { CharterCriterion } from "../domain/types";
 import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
-import { charterDir, loadCharterState } from "../infrastructure/store";
+import { charterDir, loadCharterState, loadParsedCharter } from "../infrastructure/store";
 import { readdir } from "node:fs/promises";
 import { buildViewModel, type CharterWidgetVM, type ReducerInput, type RunningSubagent } from "./widget-state";
 
@@ -52,10 +52,9 @@ export async function loadCharterSnapshot(input: SnapshotInput): Promise<Charter
   return buildViewModel(reducerInput);
 }
 
-async function readCharter(dir: string): Promise<{ criteria: ReturnType<typeof parseCharterMarkdown>["criteria"] }> {
+async function readCharter(dir: string): Promise<{ criteria: CharterCriterion[] }> {
   try {
-    const md = await readFile(join(dir, "charter.md"), "utf8");
-    return { criteria: parseCharterMarkdown(md).criteria };
+    return { criteria: (await loadParsedCharter(dir)).criteria };
   } catch {
     return { criteria: [] };
   }

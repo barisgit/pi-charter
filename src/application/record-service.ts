@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { access, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { parseCharterMarkdown } from "../domain/charter-md";
 import { parseFeatureMarkdown } from "../domain/feature-md";
 import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type EvidenceKind, type ReadinessEvidence } from "../domain/evidence-schemas";
 import type { CharterCriterion, ParsedCharterMarkdown, RecordedBy, SubagentVerifier } from "../domain/types";
@@ -17,18 +16,25 @@ import {
   appendEvent,
   charterDir,
   loadCharterState,
+  loadParsedCharter,
   withCharterLock,
   writeJsonAtomic,
   writeTextAtomic,
 } from "../infrastructure/store";
 import { loadFeatureState, writeFeatureState } from "../persistence/feature-state";
+import { validateHandoffRecord, type HandoffRecord, type HandoffRecordInput } from "../persistence/handoff-store";
 export type { FeatureCheckState, FeatureCheckStatus, FeatureStateFile, FeatureStateRecord } from "../persistence/feature-state";
 export { loadFeatureState } from "../persistence/feature-state";
 import { assertNotV1NeedsReplan, loadFeatureEvidence, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 import { PI_CHARTER_METADATA_KEYS } from "../infrastructure/subagent-bridge";
 import { getSubagentApi } from "./subagent-api";
-import { loadCharterConfig, resolvePersonaModelByAgent } from "../persistence/charter-config";
+import {
+  detectSubagentForbiddenWrites,
+  snapshotSubagentWriteAudit,
+  SUBAGENT_WRITE_RESTRICTION_MESSAGE,
+} from "./subagent-write-audit";
+
 
 export type EvidenceOutcome = "pass" | "fail" | "partial";
 
@@ -315,7 +321,7 @@ async function recordEvidenceLocked(
     });
   }
 
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const criterion = charter.criteria.find((entry) => entry.id === input.criterionId);
   if (!criterion) {
     const known = charter.criteria.map((c) => c.id);
@@ -446,7 +452,7 @@ async function recordEvidenceBatchLocked(
     });
   }
 
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const criteriaById = new Map(charter.criteria.map((entry) => [entry.id, entry]));
 
   // ---- Phase 1: validate every entry up front (no I/O after this fails). ----
@@ -958,7 +964,7 @@ export async function verifyCriterion(
       ],
     });
   }
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const criterion = charter.criteria.find((entry) => entry.id === input.criterionId);
   if (!criterion) {
     const known = charter.criteria.map((c) => c.id);
@@ -986,10 +992,10 @@ export async function verifyCriterion(
     });
   }
   if (!criterion.command?.trim()) {
-    throw new CharterToolError(`Criterion ${criterion.id} has verifier=command but no Command: field set in charter.md.`, {
+    throw new CharterToolError(`Criterion ${criterion.id} has verifier=command but no Command: field set in criteria.md.`, {
       code: "verify.missing_command",
       nextActions: [
-        { tool: "charter_plan", action: "view", hint: `Edit charter.md to add a 'Command:' line under ${criterion.id} (e.g. 'Command: bun test tests/foo.test.ts').` },
+        { tool: "charter_plan", action: "view", hint: `Edit criteria.md to add a 'Command:' line under ${criterion.id} (e.g. 'Command: bun test tests/foo.test.ts').` },
         { tool: "charter_record", action: "evidence", hint: `Record manual evidence for ${criterion.id} until the Command: line is set.` },
       ],
     });
@@ -1070,8 +1076,8 @@ async function verifySubagentCriterion(
     evidenceDir,
     commands: charter.commands,
   });
+  const writeAudit = await snapshotSubagentWriteAudit(dir);
   const started = Date.now();
-  const modelOverride = resolvePersonaModelByAgent(verifier.agent, loadCharterConfig(projectDir));
   const response = await api.spawnRaw({
     systemPrompt: `You are ${verifier.agent}. Run the requested pi-charter verifier persona and write typed evidence before finishing.`,
     prompt,
@@ -1079,7 +1085,6 @@ async function verifySubagentCriterion(
     cwd: input.cwd ?? projectDir,
     inheritProjectContext: true,
     inheritSkills: false,
-    ...(modelOverride ? { model: modelOverride } : {}),
     metadata: {
       [PI_CHARTER_METADATA_KEYS.projectDir]: projectDir,
       [PI_CHARTER_METADATA_KEYS.charterId]: input.charterId,
@@ -1088,6 +1093,25 @@ async function verifySubagentCriterion(
     },
   });
   const durationMs = Date.now() - started;
+  const forbiddenWrites = await detectSubagentForbiddenWrites(writeAudit);
+  if (forbiddenWrites.length > 0) {
+    const paths = forbiddenWrites.map((write) => write.relativePath).join(", ");
+    logger.error("Subagent modified orchestrator-managed charter files", undefined, {
+      component: "subagent-write-audit",
+      charterId: input.charterId,
+      criterionId: criterion.id,
+      featureId: input.featureId,
+      paths: forbiddenWrites.map((write) => write.relativePath),
+    });
+    throw new CharterToolError(`${SUBAGENT_WRITE_RESTRICTION_MESSAGE} Changed paths: ${paths}`, {
+      code: "verify.subagent_forbidden_write",
+      nextActions: [
+        { tool: "charter_record", action: "handoff", hint: "Have the subagent report results through a handoff instead of editing plan or charter state files." },
+        { tool: "charter_record", action: "evidence", hint: "Have the subagent write typed evidence under work/<feature>/evidence/<ts>/ and import it with charter_record action=evidence." },
+        { tool: "charter_status", hint: "Inspect charter status after resolving the rejected subagent write." },
+      ],
+    });
+  }
   const responseText = response.content.map((part) => part.text).join("\n");
   const expectedKind = expectedEvidenceKindForSubagent(verifier);
   const typedEvidence = await newestTypedEvidenceAfterDispatch(dir, projectDir, {
@@ -1323,6 +1347,193 @@ export interface HandoffCompletedCriterion {
   details?: Record<string, unknown>;
 }
 
+export interface HandoffInput extends Partial<HandoffRecordInput> {
+  charterId: string;
+  handoffFile?: string;
+  now?: string;
+}
+
+export interface HandoffResult {
+  charterId: string;
+  featureId: string;
+  sessionId: string;
+  handoffPath: string;
+  nextActions: NextAction[];
+}
+
+export async function handoff(projectDir: string, input: HandoffInput): Promise<HandoffResult> {
+  const dir = charterDir(projectDir, input.charterId);
+  return await withCharterLock(dir, () => handoffLocked(projectDir, input));
+}
+
+export async function readLatestHandoff(projectDir: string, charterId: string, featureId: string): Promise<HandoffRecord | undefined> {
+  const dir = charterDir(projectDir, charterId);
+  const handoffsDir = join(dir, "work", featureId, "handoffs");
+  let entries: string[];
+  try {
+    entries = await readdir(handoffsDir);
+  } catch {
+    return undefined;
+  }
+
+  const records: HandoffRecord[] = [];
+  for (const entry of entries) {
+    if (!entry.endsWith(".handoff.json")) continue;
+    try {
+      const parsed = JSON.parse(await readFile(join(handoffsDir, entry), "utf8"));
+      const validation = validateHandoffRecord(parsed);
+      if (validation.ok) records.push(validation.value);
+    } catch {
+      // Ignore malformed or unreadable handoff files; callers need the latest
+      // valid handoff context, not a hard failure caused by stale scratch data.
+    }
+  }
+  records.sort((a, b) => b.completedAt.localeCompare(a.completedAt));
+  return records[0];
+}
+
+async function handoffLocked(projectDir: string, input: HandoffInput): Promise<HandoffResult> {
+  const dir = charterDir(projectDir, input.charterId);
+  const state = await loadCharterState(dir);
+  assertNotV1NeedsReplan(state);
+  if (state.status !== "active" && state.status !== "review") {
+    throw new CharterToolError(`Cannot record handoff in status ${state.status}; charter must be active or in review.`, {
+      code: "handoff.bad_status",
+      nextActions: [
+        { tool: "charter_status", hint: "Inspect current status; handoff recording is only legal in `active` or `review`." },
+        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so handoffs can be recorded." },
+        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before recording a handoff." },
+      ],
+    });
+  }
+
+  const hasHandoffFile = Boolean(input.handoffFile?.trim());
+  const hasInline = hasInlineHandoffFields(input);
+  if (hasHandoffFile && hasInline) {
+    throw new CharterToolError("charter_record action=handoff: provide either handoffFile or inline handoff fields, not both.", {
+      code: "handoff.mixed_inputs",
+      nextActions: [
+        { tool: "charter_record", action: "handoff", hint: "Use `handoffFile: '<path>'` by itself, or omit handoffFile and pass the inline HandoffRecord fields." },
+      ],
+    });
+  }
+
+  const json = hasHandoffFile
+    ? await loadHandoffJsonFile(dir, input.handoffFile!)
+    : inlineHandoffJson(input);
+  const validation = validateHandoffRecord(json);
+  if (!validation.ok) {
+    throw new CharterToolError(`Handoff record does not match the schema: ${validation.error}`, {
+      code: "handoff.schema_violation",
+      nextActions: [
+        { tool: "charter_record", action: "handoff", hint: "Fix the JSON fields to match the HandoffRecord schema, then retry `handoffFile` or inline fields." },
+      ],
+    });
+  }
+
+  const record = validation.value;
+  assertSafeHandoffPathSegment("featureId", record.featureId);
+  assertSafeHandoffPathSegment("sessionId", record.sessionId);
+  const handoffRelative = join("work", record.featureId, "handoffs", `${record.sessionId}.handoff.json`);
+  const handoffAbsolute = join(dir, handoffRelative);
+  await writeTextAtomic(handoffAbsolute, `${JSON.stringify(record, null, 2)}\n`);
+
+  const featureState = await loadFeatureState(dir, input.charterId);
+  const existing = featureState.features[record.featureId] ?? { checks: {} };
+  if (record.successState === "partial" || record.successState === "failure") {
+    const pendingFeature = {
+      ...existing,
+      status: "pending",
+      lastWorkerSessionId: record.sessionId,
+      lastHandoffPath: handoffRelative,
+    };
+    delete pendingFeature.completedAt;
+    featureState.features[record.featureId] = pendingFeature;
+  } else {
+    featureState.features[record.featureId] = {
+      ...existing,
+      lastWorkerSessionId: record.sessionId,
+      lastHandoffPath: handoffRelative,
+    };
+  }
+  await writeFeatureState(dir, featureState);
+
+  return {
+    charterId: input.charterId,
+    featureId: record.featureId,
+    sessionId: record.sessionId,
+    handoffPath: handoffRelative,
+    nextActions: [
+      { tool: "charter_status", hint: "Inspect drift after handoff." },
+      ...nextActionsForStatus(state.status),
+    ],
+  };
+}
+
+function hasInlineHandoffFields(input: HandoffInput): boolean {
+  return input.sessionId !== undefined
+    || input.featureId !== undefined
+    || input.agent !== undefined
+    || input.startedAt !== undefined
+    || input.completedAt !== undefined
+    || input.successState !== undefined
+    || input.validatorsPassed !== undefined
+    || input.commitId !== undefined
+    || input.repoPath !== undefined
+    || input.fulfills !== undefined
+    || input.whatWasImplemented !== undefined
+    || input.whatWasLeftUndone !== undefined
+    || input.verification !== undefined
+    || input.discoveredIssues !== undefined
+    || input.skillFeedback !== undefined;
+}
+
+function inlineHandoffJson(input: HandoffInput): unknown {
+  const { charterId: _charterId, handoffFile: _handoffFile, now: _now, ...record } = input;
+  return record;
+}
+
+async function loadHandoffJsonFile(dir: string, handoffFile: string): Promise<unknown> {
+  const path = handoffFilePath(dir, handoffFile);
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (error) {
+    throw new CharterToolError(`Unable to read handoffFile ${handoffFile}: ${error instanceof Error ? error.message : String(error)}`, {
+      code: "handoff.file_read_error",
+      nextActions: [
+        { tool: "charter_record", action: "handoff", hint: `Pass an existing JSON handoff file path (received '${handoffFile}').` },
+      ],
+    });
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new CharterToolError(`Unable to parse handoffFile ${handoffFile} as JSON: ${error instanceof Error ? error.message : String(error)}`, {
+      code: "handoff.file_read_error",
+      nextActions: [
+        { tool: "charter_record", action: "handoff", hint: `Fix JSON syntax in '${handoffFile}', then retry.` },
+      ],
+    });
+  }
+}
+
+function handoffFilePath(dir: string, handoffFile: string): string {
+  if (isAbsolute(handoffFile)) return handoffFile;
+  return join(dir, handoffFile);
+}
+
+function assertSafeHandoffPathSegment(field: "featureId" | "sessionId", value: string): void {
+  if (!value.trim() || value.includes("/") || value.includes("\\") || value === "." || value === "..") {
+    throw new CharterToolError(`Invalid handoff ${field} '${value}': value must be a single path segment.`, {
+      code: `handoff.invalid_${field}`,
+      nextActions: [
+        { tool: "charter_record", action: "handoff", hint: `Pass ${field} as a non-empty id without path separators.` },
+      ],
+    });
+  }
+}
+
 export interface ApplyHandoffInput {
   charterId: string;
   featureId: string;
@@ -1366,7 +1577,7 @@ async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput):
       ],
     });
   }
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
   for (const completed of input.completedCriteria) {
     if (!criteriaById.has(completed.criterionId)) {
@@ -1521,27 +1732,51 @@ async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput):
   };
 }
 
-async function handoffCompletesFeature(dir: string, featureId: string, charterId: string): Promise<boolean> {
-  let fulfills: string[];
+async function loadFeatureFulfills(dir: string, featureId: string): Promise<string[] | undefined> {
   try {
     const feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${featureId}.md`), "utf8"));
-    fulfills = feature.fulfills;
+    return feature.fulfills;
   } catch {
-    return false;
+    return undefined;
   }
-  if (fulfills.length === 0) return false;
+}
+
+async function handoffCompletesFeature(dir: string, featureId: string, charterId: string): Promise<boolean> {
+  const fulfills = await loadFeatureFulfills(dir, featureId);
+  if (!fulfills || fulfills.length === 0) return false;
   const criterionState = await loadCriterionState(dir, charterId);
   return fulfills.every((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass");
 }
 
+function isFeatureRevertingOutcome(outcome: EvidenceOutcome | undefined): boolean {
+  return outcome === "partial" || outcome === "fail";
+}
+
 /**
- * After an evidence record is written, flip `feature-state.<featureId>.status`
- * to `completed` if every fulfilled criterion for that feature now has pass\n+ * evidence. Mirrors the projection in `applyHandoff` so agents that record\n+ * evidence directly (no handoff envelope) still see the feature close.\n+ */
+ * After an evidence record is written, project fulfilled criterion outcomes
+ * onto feature-state. Any partial/fail evidence for a fulfilled criterion
+ * reverts the feature to pending; all-pass evidence completes it.
+ */
 async function projectFeatureCompletionFromEvidence(dir: string, featureId: string, charterId: string, now: string): Promise<void> {
-  const completed = await handoffCompletesFeature(dir, featureId, charterId);
-  if (!completed) return;
+  const fulfills = await loadFeatureFulfills(dir, featureId);
+  if (!fulfills || fulfills.length === 0) return;
+  const criterionState = await loadCriterionState(dir, charterId);
+  const shouldRevert = fulfills.some((criterionId) => isFeatureRevertingOutcome(criterionState.criteria[criterionId]?.outcome));
+  const completed = fulfills.every((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass");
+  if (!shouldRevert && !completed) return;
   const featureState = await loadFeatureState(dir, charterId);
   const existing = featureState.features[featureId] ?? { checks: {} };
+  if (shouldRevert) {
+    if (existing.status === "pending" && existing.completedAt === undefined) return;
+    const pendingFeature = {
+      ...existing,
+      status: "pending",
+    };
+    delete pendingFeature.completedAt;
+    featureState.features[featureId] = pendingFeature;
+    await writeFeatureState(dir, featureState);
+    return;
+  }
   if (existing.status === "completed") return;
   featureState.features[featureId] = {
     ...existing,

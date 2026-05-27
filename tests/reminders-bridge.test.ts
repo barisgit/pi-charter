@@ -99,6 +99,10 @@ async function writeCharter(projectDir: string, charterId: string, body: string)
   await writeFile(join(projectDir, ".pi/charters", charterId, "charter.md"), body, "utf8");
 }
 
+async function writeCriteria(projectDir: string, charterId: string, body: string) {
+  await writeFile(join(projectDir, ".pi/charters", charterId, "criteria.md"), body, "utf8");
+}
+
 async function writeFeature(projectDir: string, charterId: string, body: string) {
   const planDir = join(projectDir, ".pi/charters", charterId, "plan");
   await mkdir(planDir, { recursive: true });
@@ -116,7 +120,7 @@ async function writeReadyPlan(projectDir: string, charterId: string, criteria = 
       "## Criteria",
       ...criteria.flatMap((criterionId) => [
         `### ${criterionId} Covered criterion`,
-        "Description: Covered by f1.",
+        "Description: Reminder state updates after lifecycle changes.",
         "Verifier: manual",
         "Because: reminder bridge probe verified by hand",
         "Fresh evidence required: false",
@@ -352,19 +356,19 @@ describe("charter reminders bridge", () => {
       const { events, tools, pi } = makePiHarness();
       const charterId = await createCharterWithTool(projectDir, tools, events, "planning-stages");
 
-      // 1. Empty charter.md (no VAL criteria yet).
+      // 1. Empty criteria.md (no VAL criteria yet).
       await writeCharter(projectDir, charterId, [
         "# Charter",
         "## Objective",
         "Reach planning surface stages",
-        "## Criteria",
         "## Scope and constraints",
         "- none",
         "",
       ].join("\n"));
+      await writeCriteria(projectDir, charterId, "# Criteria for planning-stages\n");
       events.length = 0;
       await upsertCharterReminder(pi, projectDir, charterId);
-      expect(events.at(-1)?.payload.text).toContain("author charter.md VAL-* criteria");
+      expect(events.at(-1)?.payload.text).toContain("author criteria.md VAL-* criteria");
       expect(events.at(-1)?.payload.text).toContain("do not start implementation");
 
       // 2. VAL criteria present but no features yet.
@@ -372,7 +376,13 @@ describe("charter reminders bridge", () => {
         "# Charter",
         "## Objective",
         "Reach planning surface stages",
-        "## Criteria",
+        "## Scope and constraints",
+        "- none",
+        "",
+      ].join("\n"));
+      await writeCriteria(projectDir, charterId, [
+        "# Criteria for planning-stages",
+        "",
         "### VAL-PLAN-001 first stage",
         "Description: first stage covered.",
         "Verifier: manual",
@@ -381,8 +391,6 @@ describe("charter reminders bridge", () => {
         "Description: second stage covered.",
         "Verifier: manual",
         "Because: manual planning probe sign-off",
-        "## Scope and constraints",
-        "- none",
         "",
       ].join("\n"));
       events.length = 0;

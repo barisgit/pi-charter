@@ -17,6 +17,19 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
+async function withTempAgentDir<T>(fn: () => Promise<T>): Promise<T> {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-charter-ask-state-agent-"));
+  const prev = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prev;
+    await rm(agentDir, { recursive: true, force: true });
+  }
+}
+
 const VALIDATION_MD = [
   "## Validation",
   "",
@@ -75,10 +88,11 @@ async function makeActiveCharter(projectDir: string, charterId = "ask-state-acti
   await lockPlan(projectDir, { charterId, now: "2026-05-21T01:01:00.000Z" });
 }
 
-async function writeAutonomousConfig(projectDir: string): Promise<void> {
-  const dir = join(projectDir, ".pi", "charter");
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, "charter-config.json"), JSON.stringify({ policy: "autonomous" }), "utf8");
+async function writeAutonomousConfig(): Promise<void> {
+  const agentDir = process.env.PI_CODING_AGENT_DIR;
+  if (!agentDir) throw new Error("writeAutonomousConfig requires PI_CODING_AGENT_DIR to be set (use withTempAgentDir)");
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, "charter-config.json"), JSON.stringify({ policy: "autonomous" }), "utf8");
 }
 
 describe("v2 ask state", () => {
@@ -136,19 +150,21 @@ describe("v2 ask state", () => {
   });
 
   test("rejected when autonomous", async () => {
-    await withTempProject(async (projectDir) => {
-      const created = await createPlanningCharter(projectDir);
-      await writeAutonomousConfig(projectDir);
+    await withTempAgentDir(async () => {
+      await withTempProject(async (projectDir) => {
+        const created = await createPlanningCharter(projectDir);
+        await writeAutonomousConfig();
 
-      let caught: unknown;
-      try {
-        await askCharter(projectDir, { charterId: created.charterId });
-      } catch (err) {
-        caught = err;
-      }
+        let caught: unknown;
+        try {
+          await askCharter(projectDir, { charterId: created.charterId });
+        } catch (err) {
+          caught = err;
+        }
 
-      expect(caught).toBeInstanceOf(CharterToolError);
-      expect((caught as CharterToolError).code).toBe("ask.policy_autonomous");
+        expect(caught).toBeInstanceOf(CharterToolError);
+        expect((caught as CharterToolError).code).toBe("ask.policy_autonomous");
+      });
     });
   });
 

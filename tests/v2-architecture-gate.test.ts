@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CharterToolError } from "../src/application/errors";
@@ -76,6 +76,11 @@ async function seedPlanningCharter(projectDir: string, charterId: string, featur
   await mkdir(join(dir, "plan"), { recursive: true });
   for (let index = 0; index < featureCount; index += 1) {
     await writeFile(join(dir, "plan", `f${index + 1}.md`), featureMarkdown(index), "utf8");
+  }
+  if (featureCount > 8) {
+    const state = JSON.parse(await readFile(join(dir, "state.json"), "utf8"));
+    state.planning = { ...(state.planning ?? {}), valCeilingOverride: true };
+    await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
   }
   return dir;
 }

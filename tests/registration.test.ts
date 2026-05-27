@@ -200,6 +200,49 @@ describe("charter ralph loop idle gate", () => {
     });
   });
 
+  test("reschedules itself when min-interval blocks a fire so no all-idle dropout can stall ralph", async () => {
+    // Repro of the dedupe blackhole: ralph fires once, then a second all-idle
+    // arrives inside the min-interval window. Without self-heal that second
+    // call would just `return` and rely on a future external all-idle to
+    // escape — which may never come (idle host + idle subagents = no events).
+    // The reschedule must guarantee ralph fires again once the window clears.
+    await withTempProject(async ({ projectDir, homeDir }) => {
+      const sessionId = "session-ralph-selfheal";
+      await createBoundActiveCharter({ projectDir, homeDir, sessionId });
+      const pi = makeFakePi();
+      const ctx = ctxFor(projectDir, sessionId);
+
+      let clock = 1_000;
+      const now = () => clock;
+      // 0ms debounce so the test runs fast; 50ms min-interval gives us a real
+      // window to verify the self-heal path schedules a retry.
+      registerCharterRalphLoop(pi as never, { homeDir, debounceMs: 0, minIntervalMs: 50, now });
+      await fireLifecycle(pi, "session_start", ctx);
+
+      // First fire — records lastSentAt = 1000.
+      pi.events.emit(SUBAGENT_ALL_IDLE_EVENT, {});
+      await waitForSentMessages(pi, 1);
+      expect(pi.sentMessages).toHaveLength(1);
+
+      // Second all-idle 10ms later — inside min-interval, must NOT send but
+      // MUST self-reschedule. Advance the simulated clock to mid-window.
+      clock = 1_010;
+      pi.events.emit(SUBAGENT_ALL_IDLE_EVENT, {});
+      // Give the synchronous setTimeout chain a brief tick to install the
+      // rescheduled timer, but stay inside the 50ms window so it can't yet
+      // refire on its own.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(pi.sentMessages).toHaveLength(1);
+
+      // Advance the clock past the min-interval and wait for the rescheduled
+      // retry. No further all-idle events fire here — if the loop weren't
+      // self-healing, this assertion would time out.
+      clock = 1_100;
+      await waitForSentMessages(pi, 2);
+      expect(pi.sentMessages).toHaveLength(2);
+    });
+  });
+
   test("stays silent while an async child is busy", async () => {
     await withTempProject(async ({ projectDir, homeDir }) => {
       const sessionId = "session-ralph-async-busy";

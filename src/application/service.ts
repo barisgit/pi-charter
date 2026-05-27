@@ -1,20 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, writeCharterState } from "../infrastructure/store";
+import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, loadParsedCharter, writeCharterState } from "../infrastructure/store";
 import { loadCriterionState, loadFeatureState, type CriterionStateFile, type CriterionStateRecord, type FeatureStateFile } from "./record-service";
 import { parseFeatureMarkdown } from "../domain/feature-md";
 import { computeDrift } from "./drift-service";
 import { dispatchHook } from "./hooks";
-import { parseCharterMarkdown } from "../domain/charter-md";
 import { trustRank } from "../domain/trust-rank";
-import { TERMINAL_STATUSES, type Budget, type CharterCommands, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction } from "../domain/types";
+import { TERMINAL_STATUSES, type Budget, type CharterCommands, type CharterCriterion, type CharterState, type CharterStatus, type CharterTriageEntry, type EvidenceSource, type NextAction } from "../domain/types";
 import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
 import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
 import { logger } from "../infrastructure/logger";
 import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "./plan-tree";
+import { listUntriagedHandoffItems, type HandoffTriageItem } from "./handoff-query";
 
 export type { NextAction };
 
@@ -27,20 +27,26 @@ export interface CharterServiceResult<T = unknown> {
 }
 
 export interface BlockingForCompleteEntry {
-  criterionId: string;
+  criterionId?: string;
   /** Short human-readable reason consumed by `formatCharterStatusText`. */
   reason: string;
   featureId?: string;
+  outcome?: string;
+  lastEvidencePath?: string;
   probeResult?: ReadinessProbeResult;
+  handoffPath?: string;
+  itemId?: string;
+  description?: string;
+  severity?: string;
+  kind?: string;
 }
 
 export interface CharterStatusDetails {
   /**
-   * Per-criterion view of pass evidence the completion gate considers too
-   * low-trust to accept. A criterion only appears here when it HAS pass
-   * evidence but that evidence fails the trust rule (manual+because from
-   * a non-charter-reviewer writer). Missing-evidence gaps are still surfaced
-   * by completeCharter's existing "no pass evidence yet" error and by drift.
+   * Per-criterion view of evidence the completion gate considers blocking:
+   * latest evidence that is not pass, or pass evidence that is too low-trust
+   * to accept. Missing-evidence gaps are still surfaced by completeCharter's
+   * existing "no pass evidence yet" error and by drift.
    */
   blockingForComplete: BlockingForCompleteEntry[];
 }
@@ -106,6 +112,39 @@ export async function createCharter(
   };
 }
 
+export interface AmendCharterTriageEntry {
+  handoffPath: string;
+  itemId: string;
+  decision: "cut";
+  reason: string;
+}
+
+function normalizeAmendCharterTriage(entries: AmendCharterTriageEntry[] | undefined, now: string): CharterTriageEntry[] {
+  if (!entries) return [];
+  if (!Array.isArray(entries)) {
+    throw new CharterToolError("amend_charter triage must be an array.", {
+      code: "amend.bad_triage",
+      nextActions: [
+        { tool: "charter_manage", action: "amend_charter", hint: "Pass triage:[{handoffPath,itemId,decision:'cut',reason:'...'}] or omit triage." },
+      ],
+    });
+  }
+  return entries.map((entry) => {
+    const handoffPath = entry.handoffPath?.trim();
+    const itemId = entry.itemId?.trim();
+    const reason = entry.reason?.trim();
+    if (!handoffPath || !itemId || entry.decision !== "cut" || !reason) {
+      throw new CharterToolError("amend_charter triage entries require non-empty handoffPath, itemId, decision:'cut', and reason.", {
+        code: "amend.bad_triage",
+        nextActions: [
+          { tool: "charter_manage", action: "amend_charter", hint: "Retry with triage:[{handoffPath:'work/<feature>/handoffs/<session>.handoff.json', itemId:'...', decision:'cut', reason:'why it is out of scope'}]." },
+        ],
+      });
+    }
+    return { handoffPath, itemId, decision: "cut", reason, decidedAt: now };
+  });
+}
+
 export async function getCharterStatus(
   projectDir: string,
   input: { charterId?: string } = {},
@@ -149,7 +188,7 @@ const LEGACY_QA_BRIEFS_DIR = "qa";
 
 async function loadCharterCommands(dir: string): Promise<CharterCommands> {
   try {
-    return parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8")).commands;
+    return (await loadParsedCharter(dir)).commands;
   } catch {
     return {};
   }
@@ -538,9 +577,10 @@ async function computeMilestoneQANextActions(dir: string): Promise<NextAction[]>
 
 async function computeBlockingForCompleteSafely(dir: string, charterId: string): Promise<BlockingForCompleteEntry[]> {
   try {
-    const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+    const charter = await loadParsedCharter(dir);
     const criterionState = await loadCriterionState(dir, charterId);
-    const context = await loadBlockingContext(dir, charterId);
+    const state = await loadCharterState(dir);
+    const context = await loadBlockingContext(dir, charterId, state);
     const readinessBlocking = await listBlockingReadinessFeatures(dir);
     return [
       ...computeBlockingForComplete(charter.criteria, criterionState, context),
@@ -592,7 +632,7 @@ export async function askCharter(
   projectDir: string,
   input: { charterId?: string; now?: string; note?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  if (loadCharterConfig(projectDir).policy === "autonomous") {
+  if (loadCharterConfig().policy === "autonomous") {
     throw new CharterToolError("Cannot ask for clarification when charter policy is autonomous.", {
       code: "ask.policy_autonomous",
       nextActions: [
@@ -649,9 +689,9 @@ export async function completeCharter(
       ],
     });
   }
-  const charter = parseCharterMarkdown(await readFile(join(dir, "charter.md"), "utf8"));
+  const charter = await loadParsedCharter(dir);
   const criterionState = await loadCriterionState(dir, charterId);
-  const context = await loadBlockingContext(dir, charterId);
+  const context = await loadBlockingContext(dir, charterId, state);
   const failures = checkCompletionGate(charter.criteria, criterionState, state, context);
   const readinessBlocking = await listBlockingReadinessFeatures(dir);
   const blocking: BlockingForCompleteEntry[] = [
@@ -664,7 +704,8 @@ export async function completeCharter(
     })),
   ];
   const readinessBlocks = blocking.filter((entry) => entry.reason === "readiness-blocking");
-  const trustBlocks = blocking.filter((entry) => entry.reason !== "readiness-blocking");
+  const triageBlocks = blocking.filter((entry) => entry.reason === "untriaged-handoff-items");
+  const trustBlocks = blocking.filter((entry) => entry.reason !== "readiness-blocking" && entry.reason !== "val-not-pass" && entry.reason !== "untriaged-handoff-items");
   if (blocking.length > 0) {
     // Render `<id>(<reason>)` per VAL so identity-disjoint and
     // requires-charter-reviewer rejections are distinguishable from generic
@@ -678,6 +719,9 @@ export async function completeCharter(
     if (readinessBlocks.length > 0) {
       const idsWithReasons = readinessBlocks.map((entry) => `${entry.featureId ?? entry.criterionId}(${entry.reason})`).join(", ");
       failures.push(`readiness blocking feature(s): ${idsWithReasons}`);
+    }
+    if (triageBlocks.length > 0) {
+      failures.push(formatUntriagedHandoffFailure(triageBlocks));
     }
   }
   if (failures.length > 0) {
@@ -696,7 +740,7 @@ export async function completeCharter(
       const m = f.match(/^(VAL-[A-Za-z0-9_-]+):/);
       if (m) failingIds.add(m[1]!);
     }
-    for (const b of blocking) if (b.reason !== "readiness-blocking") failingIds.add(b.criterionId);
+    for (const b of blocking) if (b.reason !== "readiness-blocking" && b.reason !== "untriaged-handoff-items" && b.criterionId) failingIds.add(b.criterionId);
     const idList = Array.from(failingIds);
     const nextActions: NextAction[] = [];
     for (const id of idList.slice(0, 5)) {
@@ -711,11 +755,28 @@ export async function completeCharter(
         hint: `Record charter-reviewer-attributed pass evidence for ${id} (set recordedBy='subagent:charter-reviewer:<sessionId>').`,
       });
     }
-    const reviewerBlocking = blocking.filter((entry) => entry.reason !== "readiness-blocking");
+    const reviewerBlocking = blocking.filter((entry) => entry.reason !== "readiness-blocking" && entry.reason !== "val-not-pass" && entry.reason !== "untriaged-handoff-items");
     if (reviewerBlocking.length > 0) {
       nextActions.push({
         tool: "subagent",
-        hint: `Delegate to charter-reviewer subagent for: ${reviewerBlocking.map((b) => b.criterionId).join(", ")}.`,
+        hint: `Delegate to charter-reviewer subagent for: ${reviewerBlocking.map((b) => b.criterionId).filter(Boolean).join(", ")}.`,
+      });
+    }
+    if (triageBlocks.length > 0) {
+      nextActions.push({
+        tool: "charter_plan",
+        action: "add_feature",
+        hint: "Add a follow-up feature whose body references the handoff filename or sessionId for each untriaged handoff item.",
+      });
+      nextActions.push({
+        tool: "charter_plan",
+        action: "update_feature",
+        hint: "Update the affected feature description to mention the handoff sessionId when the item is already absorbed by existing scope.",
+      });
+      nextActions.push({
+        tool: "charter_manage",
+        action: "amend_charter",
+        hint: "If the handoff item is intentionally cut, pass target:'planning' and triage:[{handoffPath,itemId,decision:'cut',reason:'...'}].",
       });
     }
     nextActions.push({ tool: "charter_status", hint: "Re-read drift and the blockingForComplete view after recording new evidence." });
@@ -757,6 +818,16 @@ export async function completeCharter(
     data: state,
     nextActions: nextActionsForStatus(state.status),
   };
+}
+
+function formatUntriagedHandoffFailure(entries: BlockingForCompleteEntry[]): string {
+  const details = entries.map((entry) => {
+    const path = entry.handoffPath ?? "unknown handoff";
+    const item = entry.itemId ? `#${entry.itemId}` : "";
+    const description = entry.description?.trim() || "handoff item needs triage";
+    return `${path}${item}: ${description}`;
+  }).join("; ");
+  return `untriaged-handoff-items: ${details}`;
 }
 
 export async function forceCompleteCharter(
@@ -822,7 +893,7 @@ export async function forceCompleteCharter(
 
 export async function amendCharter(
   projectDir: string,
-  input: { charterId?: string; reason: string; target?: "planning" | "review"; now?: string },
+  input: { charterId?: string; reason: string; target?: "planning" | "review"; now?: string; triage?: AmendCharterTriageEntry[] },
 ): Promise<CharterServiceResult<CharterState>> {
   const reason = input.reason?.trim();
   if (!reason) {
@@ -884,8 +955,18 @@ export async function amendCharter(
     state.completionReason = undefined;
   }
   if (state.schemaVersion === "v1-needs-replan") state.schemaVersion = "v2";
+  const triageEntries = normalizeAmendCharterTriage(input.triage, now);
+  if (triageEntries.length > 0) {
+    const existing = state.triage ?? [];
+    const next = [...existing];
+    for (const entry of triageEntries) {
+      if (next.some((current) => current.handoffPath === entry.handoffPath && current.itemId === entry.itemId && current.decision === entry.decision)) continue;
+      next.push(entry);
+    }
+    state.triage = next;
+  }
   await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_amended", ts: now, charterId, from, to: target, reason });
+  await appendEvent(dir, { type: "charter_amended", ts: now, charterId, from, to: target, reason, triageCount: triageEntries.length });
   return {
     charterId,
     status: state.status,
@@ -909,6 +990,8 @@ export interface BlockingContext {
   implementerSessionByCriterion: Map<string, string>;
   /** Map criterionId -> every pass evidence record's recordedBy on disk. */
   passRecordedByCriterion: Map<string, string[]>;
+  /** Handoff output items that still need an explicit keep/cut/follow-up decision. */
+  untriagedHandoffItems: HandoffTriageItem[];
 }
 
 /**
@@ -942,8 +1025,9 @@ export function effectiveRequireReviewSubagent(
  *     shares its session id with the implementing feature
  *     (`implementer-only-reviewer`).
  *
- * Criteria with no pass evidence are surfaced separately by
- * `checkCompletionGate`.
+ * Criteria with missing evidence are surfaced separately by
+ * `checkCompletionGate`; criteria whose latest evidence is partial/fail are
+ * also surfaced here as `val-not-pass` so status views can name the blocker.
  */
 export function computeBlockingForComplete(
   criteria: CharterCriterion[],
@@ -954,7 +1038,17 @@ export function computeBlockingForComplete(
   const milestoneIds = context?.milestoneCriterionIds ?? new Set<string>();
   for (const criterion of criteria) {
     const record = criterionState.criteria[criterion.id];
-    if (!record || record.outcome !== "pass") continue;
+    if (!record) continue;
+    if (record.outcome !== "pass") {
+      blocking.push({
+        criterionId: criterion.id,
+        reason: "val-not-pass",
+        featureId: record.lastFeatureId,
+        outcome: record.outcome,
+        lastEvidencePath: record.lastEvidencePath,
+      });
+      continue;
+    }
     const trustReason = blockingReason(record);
     const effectiveReview = effectiveRequireReviewSubagent(criterion, milestoneIds);
     if (effectiveReview && context) {
@@ -980,6 +1074,17 @@ export function computeBlockingForComplete(
       continue;
     }
     if (trustReason) blocking.push({ criterionId: criterion.id, reason: trustReason });
+  }
+  for (const item of context?.untriagedHandoffItems ?? []) {
+    blocking.push({
+      reason: "untriaged-handoff-items",
+      featureId: item.featureId,
+      handoffPath: item.handoffPath,
+      itemId: item.itemId,
+      description: item.description,
+      severity: item.severity,
+      kind: item.kind,
+    });
   }
   return blocking;
 }
@@ -1025,8 +1130,12 @@ function checkCompletionGate(
   const milestoneIds = context?.milestoneCriterionIds ?? new Set<string>();
   for (const criterion of criteria) {
     const record = criterionState.criteria[criterion.id];
-    if (!record || record.outcome !== "pass") {
+    if (!record) {
       failures.push(`${criterion.id}: no pass evidence yet`);
+      continue;
+    }
+    if (record.outcome !== "pass") {
+      failures.push(`${criterion.id}: val-not-pass (latest outcome=${record.outcome}; record pass evidence before completing)`);
       continue;
     }
     if (criterion.requireFreshEvidence) {
@@ -1058,7 +1167,7 @@ function checkCompletionGate(
  * predicate (VAL-13). Returns empty maps on missing/unreadable inputs so
  * callers can safely fall back to the trust-gate-only behaviour.
  */
-export async function loadBlockingContext(dir: string, charterId: string): Promise<BlockingContext> {
+export async function loadBlockingContext(dir: string, charterId: string, state?: CharterState): Promise<BlockingContext> {
   const milestoneCriterionIds = await loadMilestoneReadyCriterionIds(dir);
   const featureForCriterion = await loadFeatureForCriterion(dir);
   const featureState = await loadFeatureStateSafe(dir, charterId);
@@ -1068,7 +1177,9 @@ export async function loadBlockingContext(dir: string, charterId: string): Promi
     if (sessionId) implementerSessionByCriterion.set(criterionId, sessionId);
   }
   const passRecordedByCriterion = await loadPassRecordedByCriterion(dir);
-  return { milestoneCriterionIds, implementerSessionByCriterion, passRecordedByCriterion };
+  const charterState = state ?? await loadCharterState(dir);
+  const untriagedHandoffItems = await listUntriagedHandoffItems(dir, charterState.triage);
+  return { milestoneCriterionIds, implementerSessionByCriterion, passRecordedByCriterion, untriagedHandoffItems };
 }
 
 async function loadMilestoneReadyCriterionIds(dir: string): Promise<Set<string>> {
@@ -1254,7 +1365,7 @@ function phaseForStatus(status: CharterStatus): CharterStatusResult["phase"] {
 
 function guidelinesForStatus(status: CharterStatus): string[] {
   if (status === "planning") return [
-    "Edit charter.md inside .pi/charters/<id>/ to add VAL-* criteria; the initial template includes a worked example. Format is `### VAL-<ID> <title>` H3 headings with `Verifier:`/`Description:` field lines beneath — bullet lists are ignored. Do NOT create a repo-root charter.md.",
+    "Edit criteria.md inside .pi/charters/<id>/ to add VAL-* criteria; the initial template includes a worked example. Format is `## VAL-<ID> <title>` headings with `Verifier:`/`Command:` field lines beneath — bullet lists are ignored. Do NOT create a repo-root charter.md.",
     "Use charter_plan action=add_feature for each feature; do NOT write plan/<featureId>.md at the repo root — the tool writes to .pi/charters/<id>/plan/.",
     "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns. After lock_plan you implement end-to-end.",
     "Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in subagent({action:'list'}) — invoke them by name directly; the call works. Full workflow in skill: skills/pi-charter/SKILL.md.",
@@ -1334,13 +1445,12 @@ async function loadCharterListEntry(
 ): Promise<CharterListEntry | null> {
   try {
     const dir = charterDir(projectDir, charterId);
-    const [state, criterionState, charterMd] = await Promise.all([
+    const [state, criterionState, parsed] = await Promise.all([
       loadCharterState(dir),
       loadCriterionState(dir, charterId),
-      readFile(join(dir, "charter.md"), "utf8"),
+      loadParsedCharter(dir),
     ]);
     if (!NON_TERMINAL_STATUSES.has(state.status)) return null;
-    const parsed = parseCharterMarkdown(charterMd);
     const passCount = Object.values(criterionState.criteria).filter(
       (record) => record?.outcome === "pass",
     ).length;

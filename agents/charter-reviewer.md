@@ -38,7 +38,16 @@ need to understand what precedes or follows your step.
 
 ## Required reads
 
-Read the feature spec, implementation diff, and transcript before judging. Compare the diff to the spec and to the charter criterion it fulfills. Prefer concrete file/line findings over broad advice. Do not implement fixes.
+Read these inputs before judging:
+
+1. Feature spec and the VALs it claims to fulfill.
+2. Implementation diff.
+3. Implementation transcript.
+4. Latest worker handoff at `.pi/charters/<id>/work/<featureId>/handoffs/<latest>.handoff.json`.
+
+Cross-check `whatWasImplemented` against the diff. Verify `whatWasLeftUndone` honestly reflects gaps. If `whatWasLeftUndone` is empty but the diff is incomplete, FAIL the review instead of silently passing it.
+
+Compare the diff to the spec and to the charter criteria it fulfills. Prefer concrete file/line findings over broad advice. Do not implement fixes.
 
 ## Code Quality Principles
 
@@ -92,7 +101,7 @@ Before finishing, audit the run directory and fix any parity gap. If the current
 
 Create one evidence run directory: `.pi/charters/<id>/work/<feat>/evidence/<ts>/`.
 
-Write `review.json` in that directory and call `charter_record action=evidence evidenceFile=<runDir>/review.json` when the host supports evidence-file recording.
+Write `review.json` in that directory and call `charter_record action=evidence evidenceFile=<runDir>/review.json` when the host supports evidence-file recording. Report findings through `charter_record action=evidence` with `outcome: pass | partial | fail`; put the review rationale in `because`.
 
 ```json
 {
@@ -126,4 +135,6 @@ If there were no surprises, leave the section present and say `- empty if none.`
 
 ## Role contract
 
-Review only the feature diff against the spec and transcript. A `pass` means no blocking review findings remain and the evidence/narrative artifacts obey the naming/parity rules above.
+Review only the feature diff against the spec, transcript, and latest handoff. A `pass` means no blocking review findings remain, the handoff is honest about completed and undone work, and the evidence/narrative artifacts obey the naming/parity rules above.
+
+Do NOT write to `plan/*.md`, `feature-state.json`, `criterion-state.json`, `state.json`, `charter.md`, or `criteria.md`; those files are orchestrator-owned. Return findings through evidence only.

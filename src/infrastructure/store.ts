@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { renderInitialCharterMarkdown } from "../domain/charter-md";
-import type { Budget, CharterEvent, CharterState } from "../domain/types";
+import { parseCharterMarkdown, renderInitialCharterMarkdown, renderInitialCriteriaMarkdown } from "../domain/charter-md";
+import type { Budget, CharterEvent, CharterState, ParsedCharterMarkdown } from "../domain/types";
 
 export interface CreateCharterWorkspaceInput {
   charterId: string;
@@ -11,6 +11,37 @@ export interface CreateCharterWorkspaceInput {
   now: string;
   budget?: Budget;
   sessionId?: string;
+}
+
+export async function loadParsedCharter(dirOrProject: string, charterId?: string): Promise<ParsedCharterMarkdown> {
+  const dir = charterId ? charterDir(dirOrProject, charterId) : dirOrProject;
+  const charterMarkdown = await readFile(join(dir, "charter.md"), "utf8");
+  const criteriaMarkdown = await readOptionalText(join(dir, "criteria.md"));
+  if (criteriaMarkdown !== undefined && isDefaultCriteriaScaffold(criteriaMarkdown)) {
+    return parseCharterMarkdown(charterMarkdown);
+  }
+  return parseCharterMarkdown(
+    charterMarkdown,
+    criteriaMarkdown === undefined ? undefined : { criteriaMarkdown },
+  );
+}
+
+function isDefaultCriteriaScaffold(markdown: string): boolean {
+  const valHeadings = markdown.match(/^#{2,3}\s+VAL-[A-Z0-9-]+\b/gm) ?? [];
+  return valHeadings.length === 1 && /^##\s+VAL-EXAMPLE\b/m.test(markdown);
+}
+
+function charterHasInlineCriteria(markdown: string): boolean {
+  const criteriaSection = /(?:^|\n)##\s+Criteria\s*(?:\n|$)([\s\S]*?)(?=\n##\s+|$)/i.exec(markdown)?.[1] ?? "";
+  return /(?:^|\n)###\s+VAL-[A-Z0-9-]+\b/i.test(criteriaSection);
+}
+
+async function readOptionalText(path: string): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 const charterQueues = new Map<string, Promise<unknown>>();
@@ -68,11 +99,13 @@ export async function createCharterWorkspace(
     updatedAt: input.now,
     budget: input.budget,
     sessionId: input.sessionId,
+    triage: [],
   };
 
   await mkdir(join(dir, "plan"), { recursive: true });
   await mkdir(join(dir, "qa-briefs"), { recursive: true });
-  await writeTextAtomic(join(dir, "charter.md"), renderInitialCharterMarkdown(state.objective));
+  await writeTextAtomic(join(dir, "charter.md"), renderInitialCharterMarkdown(state.objective, state.name));
+  await writeTextAtomic(join(dir, "criteria.md"), renderInitialCriteriaMarkdown(state.name));
   await writeJsonAtomic(join(dir, "state.json"), state);
   await writeJsonAtomic(join(dir, "plan.json"), { charterId: input.charterId, milestones: [], features: [] });
   await writeJsonAtomic(join(dir, "feature-state.json"), { charterId: input.charterId, features: {} });
@@ -243,7 +276,42 @@ function normalizeCharterState(value: unknown): CharterState {
     completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
     completionReason: typeof raw.completionReason === "string" ? raw.completionReason : undefined,
+    triage: normalizeTriage(raw.triage),
+    planning: normalizePlanningState(raw.planning),
   };
+}
+
+function normalizeTriage(value: unknown): CharterState["triage"] {
+  if (!Array.isArray(value)) return [];
+  const entries: CharterState["triage"] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.handoffPath !== "string" || !raw.handoffPath.trim()) continue;
+    if (typeof raw.itemId !== "string" || !raw.itemId.trim()) continue;
+    if (!isTriageDecision(raw.decision)) continue;
+    if (typeof raw.reason !== "string" || !raw.reason.trim()) continue;
+    if (typeof raw.decidedAt !== "string" || !raw.decidedAt.trim()) continue;
+    entries.push({
+      handoffPath: raw.handoffPath.trim(),
+      itemId: raw.itemId.trim(),
+      decision: raw.decision,
+      reason: raw.reason.trim(),
+      decidedAt: raw.decidedAt.trim(),
+    });
+  }
+  return entries;
+}
+
+function isTriageDecision(value: unknown): value is CharterState["triage"][number]["decision"] {
+  return value === "addFeature" || value === "updateFeature" || value === "cut";
+}
+
+function normalizePlanningState(value: unknown): CharterState["planning"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.valCeilingOverride !== "boolean") return undefined;
+  return { valCeilingOverride: raw.valCeilingOverride };
 }
 
 function isStatus(value: unknown): value is CharterState["status"] {

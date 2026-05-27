@@ -19,6 +19,7 @@ function feature(input: { id: string; order: number; preconditions?: string[] })
     fulfills: [],
     preconditions: input.preconditions ?? [],
     kind: "impl",
+    category: "behavior",
     checks: { happy: [], edge: [] },
     body: "",
   };
