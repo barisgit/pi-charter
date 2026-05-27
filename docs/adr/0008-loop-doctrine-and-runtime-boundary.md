@@ -1,6 +1,6 @@
 # Loop doctrine and runtime boundary
 
-Status: accepted
+Status: superseded by ADR-0012
 
 ## Decision
 
