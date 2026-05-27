@@ -156,32 +156,28 @@ const FeatureEntryParams = Type.Object({
   body: Type.String(),
 }, { additionalProperties: false });
 
-const CharterPlanParams = Type.Union([
-  Type.Object({
-    action: Type.Literal("view"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal("lock_plan"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal("add_feature"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-    features: Type.Array(FeatureEntryParams, { description: "Batch shape for action=add_feature. Atomic: all entries land or none. Response preserves request order." }),
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal("update_feature"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-    id: Type.Optional(Type.String({ description: "Feature id slug, e.g. m1-bootstrap. Required for update_feature." })),
-    milestone: Type.Optional(Type.String({ description: "Milestone id this feature belongs to, e.g. m1-bootstrap." })),
-    order: Type.Optional(Type.Number({ description: "Sort order within the milestone (lower runs first)." })),
-    fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill." })),
-    preconditions: Type.Optional(Type.Array(Type.String(), { description: "Other feature ids that should land before this one. Advisory only." })),
-    category: Type.Optional(StringEnum(["behavior", "infrastructure"] as const, { description: "Feature category: 'behavior' (default; must fulfill at least one VAL) or 'infrastructure'." })),
-    body: Type.Optional(Type.String({ description: "Feature markdown body (prose under the YAML frontmatter)." })),
-  }, { additionalProperties: false }),
-]);
+// Flat single-object schema for OpenAI strict-mode compatibility. The previous
+// root-level `Type.Union` produced `type: null` which codex/gpt-5.5 strict mode
+// rejects (`Invalid schema ... got 'type: "None"'`). All action-specific fields
+// are Optional here; per-action required-field validation is enforced at runtime
+// in the execute handler below (see `params.features.length === 0` and
+// `!params.id?.trim()` guards).
+const CharterPlanParams = Type.Object({
+  action: StringEnum(["view", "lock_plan", "add_feature", "update_feature"] as const, {
+    description: "What to do: 'view' (inspect coverage), 'lock_plan' (transition planning -> active), 'add_feature' (batch-write managed plan/<featureId>.md files), 'update_feature' (mutate one feature by id).",
+  }),
+  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
+  // action=add_feature
+  features: Type.Optional(Type.Array(FeatureEntryParams, { description: "Batch shape for action=add_feature. Atomic: all entries land or none. Response preserves request order." })),
+  // action=update_feature
+  id: Type.Optional(Type.String({ description: "Feature id slug, e.g. m1-bootstrap. Required for action=update_feature." })),
+  milestone: Type.Optional(Type.String({ description: "Milestone id this feature belongs to, e.g. m1-bootstrap." })),
+  order: Type.Optional(Type.Number({ description: "Sort order within the milestone (lower runs first)." })),
+  fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill." })),
+  preconditions: Type.Optional(Type.Array(Type.String(), { description: "Other feature ids that should land before this one. Advisory only." })),
+  category: Type.Optional(StringEnum(["behavior", "infrastructure"] as const, { description: "Feature category: 'behavior' (default; must fulfill at least one VAL) or 'infrastructure'." })),
+  body: Type.Optional(Type.String({ description: "Feature markdown body (prose under the YAML frontmatter)." })),
+}, { additionalProperties: false });
 
 // Flat single-object schema for OpenAI strict-mode compatibility (codex/gpt-5.5
 // reject root-level `Type.Union` because the resulting schema has `type: null`
@@ -357,7 +353,9 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         return toolResult(result.message, result);
       }
       if (params.action === "add_feature") {
-        if (params.features.length === 0) throw new Error("features array must be non-empty for charter_plan action=add_feature");
+        if (!Array.isArray(params.features) || params.features.length === 0) {
+          throw new Error("features array must be non-empty for charter_plan action=add_feature; legacy single-entry shape (id/milestone/order/fulfills/body at top level) is rejected — wrap in features:[{...}]");
+        }
         const result = await addFeatureBatch(ctx.cwd, {
           charterId: status.charterId,
           features: params.features,

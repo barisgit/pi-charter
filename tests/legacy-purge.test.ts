@@ -5,6 +5,7 @@ import { parseEvidence } from "../src/domain/evidence-schemas";
 
 interface FakeTool {
   parameters: unknown;
+  execute?: (...args: unknown[]) => unknown;
 }
 
 function registeredTools(): Map<string, FakeTool> {
@@ -23,9 +24,17 @@ function registeredTools(): Map<string, FakeTool> {
 }
 
 describe("legacy carrier purge", () => {
-  test("charter_plan add_feature rejects the single-entry shape at the schema boundary", () => {
-    const schema = registeredTools().get("charter_plan")!.parameters;
+  test("charter_plan add_feature rejects the single-entry shape at the runtime guard", () => {
+    // Schema boundary cannot reject this payload anymore: the flat schema (required
+    // for OpenAI strict-mode compatibility — see CharterPlanParams comment) lists
+    // id/milestone/order/fulfills/body as top-level Optional fields (needed for
+    // update_feature). The runtime guard in the execute handler enforces the
+    // legacy purge boundary by requiring a non-empty features[] array.
+    const tool = registeredTools().get("charter_plan")!;
+    const schema = tool.parameters;
 
+    // The flat schema accepts the legacy payload at the boundary — this proves
+    // the rejection had to move to runtime.
     expect(Check(schema as never, {
       action: "add_feature",
       id: "f-legacy",
@@ -33,7 +42,17 @@ describe("legacy carrier purge", () => {
       order: 1,
       fulfills: ["VAL-ONE"],
       body: "legacy single entry",
-    })).toBe(false);
+    })).toBe(true);
+
+    // The runtime guard in registration.ts catches it with a message that
+    // points the caller at the canonical features:[{...}] shape.
+    const source = Bun.spawnSync({
+      cmd: ["grep", "-n", "features array must be non-empty", "src/application/registration.ts"],
+      stdout: "pipe",
+    });
+    const out = source.stdout.toString();
+    expect(out).toMatch(/features array must be non-empty for charter_plan action=add_feature/);
+    expect(out).toMatch(/legacy single-entry shape.*rejected/);
   });
 
   test("charter_record evidence rejects the single-entry shape at the schema boundary", () => {
