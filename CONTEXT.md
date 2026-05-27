@@ -9,8 +9,16 @@ This context defines the domain language. It intentionally describes the product
 ### Core identity
 
 **Charter**:
-A binding document that authorizes and constrains an agent run through three sections: Objective, Criteria, and Scope and constraints.
+A binding document that authorizes and constrains an agent run, authored as two files: `charter.md` (Objective, Scope and constraints, Mission Boundaries, Commands) and `criteria.md` (the VAL-* register).
 _Avoid_: Goal, mission, contract, quest
+
+**charter.md**:
+The authored narrative file containing Objective, Scope and constraints, Mission Boundaries, and Commands. Does not contain Criteria.
+_Avoid_: Charter, contract.md
+
+**criteria.md**:
+The authored assertion register containing every Criterion as a `VAL-*`-prefixed heading with pass criteria, failure modes, and trust-gate flags. Indexed by stable `VAL-*` id; safe to reorder.
+_Avoid_: Contract.md, assertions.md, validation.md
 
 **Objective**:
 The concise outcome the user or orchestrator wants the agent to achieve.
@@ -240,7 +248,7 @@ _Avoid_: Binding, bridge field
 ## Recommended defaults while user is away
 
 - Keep the root context as a single `CONTEXT.md`; this repo has one domain context.
-- Use `charter.md` as the only authored charter file.
+- Use `charter.md` for narrative (objective, scope, boundaries, commands) and `criteria.md` for the VAL-* register; sidecar JSON files hold mutable runtime state.
 - Use four LLM tools, not one giant discriminated union and not twelve narrow tools.
 - Make every tool return `nextActions[]`.
 - Prefer filesystem state over session-entry-only state; use session entries as audit/complement only.
