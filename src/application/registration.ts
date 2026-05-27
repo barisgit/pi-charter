@@ -204,10 +204,31 @@ const EvidenceEntryParams = Type.Object({
   source: Type.Optional(StringEnum(["manual", "verifier", "subagent"] as const)),
 }, { additionalProperties: false });
 
-const HandoffApplyParams = Type.Object({
-  action: Type.Literal("handoff_apply"),
+// Flat single-object schema for OpenAI strict-mode + Anthropic anyOf-confusion
+// compatibility. The previous root-level `Type.Union` produced `type: null`
+// which codex/gpt-5.5 strict mode rejects (`Invalid schema ... got 'type:
+// "None"'`) and which Sonnet sometimes calls with empty `{}` args because
+// `anyOf` confuses the planner. All action-specific fields are Optional here;
+// per-action required-field validation is enforced at runtime in the execute
+// handler below (see `params.action === "evidence" | "verify" | "handoff" |
+// "handoff_apply"`).
+const CharterRecordParams = Type.Object({
+  action: StringEnum(["evidence", "verify", "handoff", "handoff_apply"] as const, {
+    description: "What to record: 'evidence' (manual/typed file), 'verify' (run a command verifier), 'handoff' (write a subagent HandoffRecord), 'handoff_apply' (apply a handoff to criteria).",
+  }),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-  featureId: Type.Optional(Type.String({ description: "Feature id this handoff belongs to." })),
+  // action=evidence (XOR: evidenceFile or entries)
+  evidenceFile: Type.Optional(Type.String({ description: "Path to typed evidence JSON (kind=command|review|qa|readiness) to import for action=evidence. Mutually exclusive with `entries`." })),
+  entries: Type.Optional(Type.Array(EvidenceEntryParams, { description: "Batch evidence entries for action=evidence; the batch is atomic within the call (one criterion-state.json write covering all entries). Mutually exclusive with `evidenceFile`." })),
+  // action=verify
+  criterionId: Type.Optional(Type.String({ description: "VAL-* criterion id. Required for action=verify." })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for action=verify (default 120000)." })),
+  // shared: handoff_apply requires featureId, handoff inline records use it too
+  featureId: Type.Optional(Type.String({ description: "Feature id this record belongs to (required for action=verify when the criterion is feature-scoped, and for action=handoff_apply)." })),
+  // action=handoff (inline HandoffRecord fields OR handoffFile path)
+  handoffFile: Type.Optional(Type.String({ description: "Absolute or charter-relative path to a pre-written HandoffRecord JSON file for action=handoff. Mutually exclusive with inline HandoffRecord fields (sessionId/agent/...)." })),
+  ...(HandoffInputOptionalProperties as Record<string, ReturnType<typeof Type.Optional>>),
+  // action=handoff_apply
   subagentSessionId: Type.Optional(Type.String({ description: "Subagent session id for action=handoff_apply." })),
   handoffNote: Type.Optional(Type.String({ description: "Free-text handoff note for action=handoff_apply." })),
   completedCriteria: Type.Optional(Type.Array(Type.Object({
@@ -216,37 +237,8 @@ const HandoffApplyParams = Type.Object({
     summary: Type.String(),
     artifacts: Type.Optional(Type.Array(Type.String())),
     details: Type.Optional(Type.Object({}, { additionalProperties: true })),
-  }, { additionalProperties: false }))),
+  }, { additionalProperties: false }), { description: "Completed criteria for action=handoff_apply (each entry: {criterionId, outcome, summary[, artifacts, details]})." })),
 }, { additionalProperties: false });
-
-const HandoffParams = Type.Object({
-  action: Type.Literal("handoff"),
-  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-  handoffFile: Type.Optional(Type.String({ description: "Absolute or charter-relative path to a pre-written HandoffRecord JSON file. Mutually exclusive with inline HandoffRecord fields (sessionId/featureId/agent/...)." })),
-  ...(HandoffInputOptionalProperties as Record<string, ReturnType<typeof Type.Optional>>),
-});
-
-const CharterRecordParams = Type.Union([
-  Type.Object({
-    action: Type.Literal("evidence"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-    evidenceFile: Type.String({ description: "Path to typed evidence JSON (kind=command|review|qa|readiness) to import for action=evidence." }),
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal("evidence"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-    entries: Type.Array(EvidenceEntryParams, { description: "Batch evidence entries; the batch is atomic within the call (one criterion-state.json write covering all entries)." }),
-  }, { additionalProperties: false }),
-  Type.Object({
-    action: Type.Literal("verify"),
-    charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-    criterionId: Type.Optional(Type.String({ description: "VAL-* criterion id. Required for verify." })),
-    featureId: Type.Optional(Type.String({ description: "Feature id this verification belongs to." })),
-    timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for verify (default 120000)." })),
-  }, { additionalProperties: false }),
-  HandoffParams,
-  HandoffApplyParams,
-]);
 
 interface RegisterCharterToolsOptions {
   /** Test seam: keep production bound to the normal home directory. */
