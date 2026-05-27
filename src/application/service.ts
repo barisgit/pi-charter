@@ -12,6 +12,7 @@ import { loadCharterConfig } from "../persistence/charter-config";
 import { CharterToolError } from "./errors";
 import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
 import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
+import { logger } from "../infrastructure/logger";
 import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "./plan-tree";
 import { listUntriagedHandoffItems, type HandoffTriageItem } from "./handoff-query";
 
@@ -23,6 +24,16 @@ export interface CharterServiceResult<T = unknown> {
   message: string;
   data?: T;
   nextActions: NextAction[];
+}
+
+export function logCharterStatusTransition(input: { charterId: string; from: CharterStatus; to: CharterStatus; reason?: string }): void {
+  logger.info("charter status transition", {
+    component: "service",
+    charterId: input.charterId,
+    from: input.from,
+    to: input.to,
+    reason: input.reason,
+  });
 }
 
 export interface BlockingForCompleteEntry {
@@ -598,9 +609,11 @@ export async function pauseCharter(
     });
   }
   if (state.status !== "paused") {
-    state.previousStatus = state.status;
+    const from = state.status;
+    state.previousStatus = from;
     state.status = "paused";
     state.updatedAt = input.now ?? new Date().toISOString();
+    logCharterStatusTransition({ charterId: state.charterId, from, to: state.status, reason: input.reason });
     await writeCharterState(dir, state);
     await appendEvent(dir, { type: "charter_paused", ts: state.updatedAt, charterId: state.charterId, reason: input.reason });
   }
@@ -710,6 +723,35 @@ export async function completeCharter(
     }
   }
   if (failures.length > 0) {
+    const valNotPass = Array.from(new Set([
+      ...failures
+        .map((failure) => failure.match(/^(VAL-[A-Za-z0-9_-]+)/)?.[1])
+        .filter((criterionId): criterionId is string => Boolean(criterionId)),
+      ...blocking
+        .filter((entry) => entry.reason === "val-not-pass")
+        .map((entry) => entry.criterionId)
+        .filter((criterionId): criterionId is string => Boolean(criterionId)),
+    ]));
+    const blockingReasons = Array.from(new Set([
+      ...failures.map((failure) => {
+        const separator = failure.indexOf(":");
+        return separator === -1 ? failure : failure.slice(separator + 1).trim();
+      }),
+      ...blocking.map((entry) => entry.reason),
+    ]));
+    logger.info("completion blocked", {
+      component: "service",
+      charterId,
+      blockingReasons,
+      valNotPass,
+      untriagedHandoffItems: triageBlocks.map((entry) => ({
+        featureId: entry.featureId,
+        handoffPath: entry.handoffPath,
+        itemId: entry.itemId,
+        severity: entry.severity,
+        kind: entry.kind,
+      })),
+    });
     const message = [
       `Cannot complete charter:`,
       ` - ${failures.join("\n - ")}`,
@@ -778,11 +820,14 @@ export async function completeCharter(
     criteriaCount: charter.criteria.length,
     completionNote: input.completionNote?.trim() || undefined,
   });
+  const featureCount = (await readPlanFeatures(dir)).length;
+  const from = state.status;
   state.status = "completed";
   state.previousStatus = undefined;
   state.completedAt = now;
   state.updatedAt = now;
   state.completionReason = input.completionNote?.trim() || undefined;
+  logCharterStatusTransition({ charterId, from, to: state.status, reason: state.completionReason });
   // Note: we intentionally keep state.sessionId + reverse pointer here so the
   // widget can render its single-line terminal strip for the rest of the
   // current session. The binding is released on the NEXT session_start
@@ -795,6 +840,12 @@ export async function completeCharter(
     charterId,
     completionNote: state.completionReason,
     criteriaCount: charter.criteria.length,
+  });
+  logger.info("charter completed", {
+    component: "service",
+    charterId,
+    featureCount,
+    valCount: charter.criteria.length,
   });
   return {
     charterId,
@@ -858,12 +909,14 @@ export async function forceCompleteCharter(
     target,
     reason,
   });
-  state.previousStatus = state.status;
+  const from = state.status;
+  state.previousStatus = from;
   state.status = target;
   state.updatedAt = now;
   state.completionReason = reason;
   if (target === "completed") state.completedAt = now;
   else state.terminatedAt = now;
+  logCharterStatusTransition({ charterId, from, to: state.status, reason });
   // Binding release deferred to next session_start (see completeCharter).
   await writeCharterState(dir, state);
   await appendEvent(dir, { type: "charter_force_completed", ts: now, charterId, target, reason });
@@ -1271,6 +1324,7 @@ export async function resumeCharter(
       ],
     });
   }
+  const from = state.status;
   state.status = resumeTo;
   state.previousStatus = undefined;
   if (input.acknowledgeClarification) {
@@ -1278,6 +1332,7 @@ export async function resumeCharter(
     state.unansweredClarification = false;
   }
   state.updatedAt = input.now ?? new Date().toISOString();
+  logCharterStatusTransition({ charterId: state.charterId, from, to: state.status });
   await writeCharterState(dir, state);
   await appendEvent(dir, {
     type: "charter_resumed",

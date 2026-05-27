@@ -26,7 +26,7 @@ export type { FeatureCheckState, FeatureCheckStatus, FeatureStateFile, FeatureSt
 export { loadFeatureState } from "../persistence/feature-state";
 import { assertNotV1NeedsReplan, loadFeatureEvidence, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
-import { PI_CHARTER_METADATA_KEYS } from "../infrastructure/subagent-bridge";
+import { PI_CHARTER_METADATA_KEYS, type SpawnRawInput } from "../infrastructure/subagent-bridge";
 import { getSubagentApi } from "./subagent-api";
 import {
   detectSubagentForbiddenWrites,
@@ -1044,8 +1044,7 @@ async function verifySubagentCriterion(
     commands: charter.commands,
   });
   const writeAudit = await snapshotSubagentWriteAudit(dir);
-  const started = Date.now();
-  const response = await api.spawnRaw({
+  const spawnInput: SpawnRawInput = {
     systemPrompt: `You are ${verifier.agent}. Run the requested pi-charter verifier persona and write typed evidence before finishing.`,
     prompt,
     async: false,
@@ -1058,8 +1057,28 @@ async function verifySubagentCriterion(
       [PI_CHARTER_METADATA_KEYS.criterionId]: criterion.id,
       ...(input.featureId ? { [PI_CHARTER_METADATA_KEYS.featureId]: input.featureId } : {}),
     },
+  };
+  const resolvedModel = spawnInput.model ?? "frontmatter-default";
+  const resolvedThinking = spawnInput.thinking ?? "frontmatter-default";
+  logger.info("verifier dispatch", {
+    component: "subagent-dispatch",
+    charterId: input.charterId,
+    criterionId: criterion.id,
+    persona: verifier.agent,
+    resolvedModel,
+    resolvedThinking,
   });
+  const started = Date.now();
+  const response = await api.spawnRaw(spawnInput);
   const durationMs = Date.now() - started;
+  logger.info("verifier dispatch completed", {
+    component: "subagent-dispatch",
+    charterId: input.charterId,
+    criterionId: criterion.id,
+    persona: verifier.agent,
+    exitCode: response.isError === true ? 1 : 0,
+    durationMs,
+  });
   const forbiddenWrites = await detectSubagentForbiddenWrites(writeAudit);
   if (forbiddenWrites.length > 0) {
     const paths = forbiddenWrites.map((write) => write.relativePath).join(", ");
@@ -1425,6 +1444,26 @@ async function handoffLocked(projectDir: string, input: HandoffInput): Promise<H
   }
   await writeFeatureState(dir, featureState);
 
+  if (record.successState === "partial" || record.successState === "failure") {
+    logger.info("feature reverted to pending", {
+      component: "record-service",
+      charterId: input.charterId,
+      featureId: record.featureId,
+      source: "handoff",
+      successState: record.successState,
+    });
+  }
+  logger.info("handoff recorded", {
+    component: "record-service",
+    charterId: input.charterId,
+    featureId: record.featureId,
+    sessionId: record.sessionId,
+    successState: record.successState,
+    undoneCount: record.whatWasLeftUndone.trim() ? 1 : 0,
+    discoveredIssuesCount: record.discoveredIssues.length,
+    blockingIssues: record.discoveredIssues.filter((issue) => issue.severity === "blocking").length,
+  });
+
   return {
     charterId: input.charterId,
     featureId: record.featureId,
@@ -1728,7 +1767,10 @@ async function projectFeatureCompletionFromEvidence(dir: string, featureId: stri
   const fulfills = await loadFeatureFulfills(dir, featureId);
   if (!fulfills || fulfills.length === 0) return;
   const criterionState = await loadCriterionState(dir, charterId);
-  const shouldRevert = fulfills.some((criterionId) => isFeatureRevertingOutcome(criterionState.criteria[criterionId]?.outcome));
+  const revertingCriterion = fulfills
+    .map((criterionId) => ({ criterionId, outcome: criterionState.criteria[criterionId]?.outcome }))
+    .find((entry) => isFeatureRevertingOutcome(entry.outcome));
+  const shouldRevert = Boolean(revertingCriterion);
   const completed = fulfills.every((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass");
   if (!shouldRevert && !completed) return;
   const featureState = await loadFeatureState(dir, charterId);
@@ -1742,6 +1784,14 @@ async function projectFeatureCompletionFromEvidence(dir: string, featureId: stri
     delete pendingFeature.completedAt;
     featureState.features[featureId] = pendingFeature;
     await writeFeatureState(dir, featureState);
+    logger.info("feature reverted to pending", {
+      component: "record-service",
+      charterId,
+      featureId,
+      source: "evidence",
+      criterionId: revertingCriterion?.criterionId,
+      outcome: revertingCriterion?.outcome,
+    });
     return;
   }
   if (existing.status === "completed") return;

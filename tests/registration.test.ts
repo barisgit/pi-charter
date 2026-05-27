@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { bindCharterToSession } from "../src/application/binding-service";
 import { lockPlan } from "../src/application/plan-service";
 import { registerCharterRalphLoop } from "../src/application/registration";
 import { amendCharter, createCharter, forceCompleteCharter } from "../src/application/service";
+import { logger } from "../src/infrastructure/logger";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
 
 type PiHandler = (event: unknown, ctx: FakeTurnContext) => unknown | Promise<unknown>;
@@ -173,6 +174,33 @@ async function waitForSentMessages(pi: FakePi, count: number): Promise<void> {
   }
 }
 
+interface DebugSpy {
+  calls: Array<{ message: string; context?: Record<string, unknown> }>;
+  restore: () => void;
+}
+
+let activeDebugSpy: DebugSpy | undefined;
+afterEach(() => {
+  activeDebugSpy?.restore();
+  activeDebugSpy = undefined;
+  logger.setLevel("info");
+});
+
+function spyOnDebug(): DebugSpy {
+  const calls: DebugSpy["calls"] = [];
+  const spy = spyOn(logger, "debug").mockImplementation((message, context) => {
+    calls.push({ message, context });
+  });
+  return { calls, restore: () => spy.mockRestore() };
+}
+
+async function waitForDebugMessage(spy: DebugSpy, message: string): Promise<void> {
+  for (let i = 0; i < 20; i += 1) {
+    if (spy.calls.some((call) => call.message === message)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 
 describe("charter ralph loop idle gate", () => {
   test.each([
@@ -240,6 +268,56 @@ describe("charter ralph loop idle gate", () => {
       clock = 1_100;
       await waitForSentMessages(pi, 2);
       expect(pi.sentMessages).toHaveLength(2);
+    });
+  });
+
+  test("emits an ordered debug trace for debounce, min-interval suppression, reschedule, and send", async () => {
+    logger.setLevel("debug");
+    const debugSpy = spyOnDebug();
+    activeDebugSpy = debugSpy;
+
+    await withTempProject(async ({ projectDir, homeDir }) => {
+      const sessionId = "session-ralph-debug-trace";
+      await createBoundActiveCharter({ projectDir, homeDir, sessionId });
+      const pi = makeFakePi();
+      const ctx = ctxFor(projectDir, sessionId);
+
+      let clock = 1_000;
+      const now = () => clock;
+      registerCharterRalphLoop(pi as never, { homeDir, debounceMs: 5, minIntervalMs: 50, now });
+      await fireLifecycle(pi, "session_start", ctx);
+
+      pi.events.emit(SUBAGENT_ALL_IDLE_EVENT, {});
+      await waitForSentMessages(pi, 1);
+
+      clock = 1_010;
+      pi.events.emit(SUBAGENT_ALL_IDLE_EVENT, {});
+      await waitForDebugMessage(debugSpy, "ralph: min-interval suppressed; rescheduling");
+      expect(pi.sentMessages).toHaveLength(1);
+
+      clock = 1_100;
+      await waitForSentMessages(pi, 2);
+
+      expect(debugSpy.calls.map((call) => call.message)).toEqual([
+        "ralph: all-idle event received",
+        "ralph: debounce scheduled",
+        "ralph: debounce fired",
+        "ralph: message sent",
+        "ralph: all-idle event received",
+        "ralph: debounce scheduled",
+        "ralph: debounce fired",
+        "ralph: min-interval suppressed; rescheduling",
+        "ralph: reschedule timer fired",
+        "ralph: message sent",
+      ]);
+      expect(debugSpy.calls[0]!.context).toEqual({ component: "ralph-loop" });
+      expect(debugSpy.calls[1]!.context).toEqual({ component: "ralph-loop", debounceMs: 5 });
+      expect(debugSpy.calls[2]!.context).toEqual({ component: "ralph-loop" });
+      expect(debugSpy.calls[7]!.context).toEqual({ component: "ralph-loop", remainingMs: 40, minIntervalMs: 50 });
+      expect(debugSpy.calls[8]!.context).toEqual({ component: "ralph-loop" });
+      expect(debugSpy.calls[9]!.context).toMatchObject({ component: "ralph-loop", payloadKind: "charter-ralph-continue" });
+      expect(typeof debugSpy.calls[9]!.context?.payloadLength).toBe("number");
+      expect(debugSpy.calls[9]!.context?.payloadLength).toBeGreaterThan(0);
     });
   });
 

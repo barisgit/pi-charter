@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { CharterCriterion, CharterStatus, ParseWarning } from "../domain/types";
 import { parseFeatureMarkdown, type FeatureCategory, type FeatureDefinition } from "../domain/feature-md";
 import { appendEvent, charterDir, loadCharterState, loadParsedCharter, writeCharterState, writeJsonAtomic } from "../infrastructure/store";
-import { assertNotV1NeedsReplan, nextActionsForStatus, type NextAction } from "./service";
+import { logger } from "../infrastructure/logger";
+import { assertNotV1NeedsReplan, logCharterStatusTransition, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
 import { inspectArchitectureGate } from "./architecture-gate";
@@ -255,6 +256,11 @@ export async function lockPlan<T extends LockPlanInput>(
       { tool: "charter_plan", action: "add_feature", hint: "Add a missing feature to cover an uncovered VAL-* criterion." },
       { tool: "charter_status", hint: "Inspect the full charter; lock_plan only transitions from planning." },
     ];
+    logger.info("lock_plan rejected", {
+      component: "plan-service",
+      charterId: input.charterId,
+      failures,
+    });
     throw new CharterToolError(`Cannot lock plan because of drift:\n - ${failures.join("\n - ")}`, {
       code,
       nextActions,
@@ -269,9 +275,11 @@ export async function lockPlan<T extends LockPlanInput>(
     planDigest,
     featureCount: plan.features.length,
   });
+  const from = state.status;
   state.status = "active";
   state.planDigest = planDigest;
   state.updatedAt = now;
+  logCharterStatusTransition({ charterId: state.charterId, from, to: state.status });
   await writeCharterState(dir, state);
   await appendEvent(dir, {
     type: "plan_locked",
@@ -279,6 +287,14 @@ export async function lockPlan<T extends LockPlanInput>(
     charterId: state.charterId,
     planDigest,
     featureCount: plan.features.length,
+  });
+  logger.info("lock_plan succeeded", {
+    component: "plan-service",
+    charterId: state.charterId,
+    featureCount: plan.features.length,
+    valCount: plan.criteria.length,
+    warnings: plan.warnings,
+    planDigest,
   });
   return {
     charterId: state.charterId,

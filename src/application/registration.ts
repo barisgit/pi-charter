@@ -1198,6 +1198,7 @@ const RALPH_DEBOUNCE_MS = 10_000;
  * loop self-healing: the floor only delays, never silently drops a reprompt.
  */
 const RALPH_MIN_INTERVAL_MS = 30_000;
+const RALPH_LOG_COMPONENT = "ralph-loop";
 
 export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
   const runningSubagents = new Set<string>();
@@ -1223,7 +1224,10 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     const payload = raw as SubagentAsyncCompletePayload | undefined;
     if (payload?.runId) runningSubagents.delete(payload.runId);
   });
-  pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => scheduleRalph());
+  pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
+    logger.debug("ralph: all-idle event received", { component: RALPH_LOG_COMPONENT });
+    scheduleRalph();
+  });
 
   function scheduleRalph(): void {
     if (timer) clearTimeout(timer);
@@ -1233,11 +1237,13 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     }
     timer = setTimeout(() => {
       timer = undefined;
-      void maybeSendRalph();
+      void maybeSendRalph({ fromDebounce: true });
     }, debounceMs);
+    logger.debug("ralph: debounce scheduled", { component: RALPH_LOG_COMPONENT, debounceMs });
   }
 
-  async function maybeSendRalph(): Promise<void> {
+  async function maybeSendRalph(input: { fromDebounce?: boolean } = {}): Promise<void> {
+    if (input.fromDebounce) logger.debug("ralph: debounce fired", { component: RALPH_LOG_COMPONENT });
     if (sending || runningSubagents.size > 0) return;
     const ctx = lastCtx;
     if (!ctx) return;
@@ -1255,12 +1261,14 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         // Self-heal: schedule a retry for the remaining window so we never
         // depend on another all-idle event arriving to escape the floor.
         // Ralph must never silently stop — it's a fail-loop, not a debounce.
-        const remaining = minIntervalMs - (at - lastSentAt);
+        const remainingMs = minIntervalMs - (at - lastSentAt);
         if (timer) clearTimeout(timer);
+        logger.debug("ralph: min-interval suppressed; rescheduling", { component: RALPH_LOG_COMPONENT, remainingMs, minIntervalMs });
         timer = setTimeout(() => {
           timer = undefined;
+          logger.debug("ralph: reschedule timer fired", { component: RALPH_LOG_COMPONENT });
           void maybeSendRalph();
-        }, remaining);
+        }, remainingMs);
         return;
       }
       const sessionId = ctx.sessionManager.getSessionId?.();
@@ -1275,9 +1283,11 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       });
       if (!prompt) return;
       lastSentAt = at;
+      const payloadKind = RALPH_CUSTOM_TYPE;
+      const payloadLength = prompt.content.length;
       pi.sendMessage(
         {
-          customType: RALPH_CUSTOM_TYPE,
+          customType: payloadKind,
           content: prompt.content,
           display: true,
           details: {
@@ -1287,13 +1297,14 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         },
         { deliverAs: "steer", triggerTurn: true },
       );
+      logger.debug("ralph: message sent", { component: RALPH_LOG_COMPONENT, payloadKind, payloadLength });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("stale after session replacement")) {
         // Drop the captured ctx; the next session_start/turn_end refreshes it.
         lastCtx = undefined;
       }
-      logger.warn("ralph loop skipped", { error: message });
+      logger.debug("ralph loop skipped", { component: RALPH_LOG_COMPONENT, error: message });
     } finally {
       sending = false;
     }
