@@ -1,5 +1,5 @@
+import { join } from "node:path";
 import { readFile } from "node:fs/promises";
-import { architectureMarkdownPath } from "./architecture-gate";
 import { CharterToolError } from "./errors";
 import { assertNotV1NeedsReplan, nextActionsForStatus } from "./service";
 import { charterDir, loadCharterState, withCharterLock, writeTextAtomic } from "../infrastructure/store";
@@ -15,13 +15,21 @@ export async function writeAtPlanning(first: string, second: string, third?: str
   await withCharterLock(dir, async () => {
     const state = await loadCharterState(dir);
     assertNotV1NeedsReplan(state);
-    if (state.status !== "planning") {
-      throw new CharterToolError(`Cannot write architecture.md in status ${state.status}; writeAtPlanning is only legal in planning.`, {
-        code: "architecture.write_not_planning",
+    if (state.status !== "active") {
+      throw new CharterToolError(`Cannot write architecture.md in status ${state.status}; writeAtPlanning is only legal in active.`, {
+        code: "architecture.write_not_active",
         nextActions: nextActionsForStatus(state.status),
       });
     }
-    await writeTextAtomic(architectureMarkdownPath(projectDir, charterId), body);
+    const path = join(projectDir, ".pi", "charters", charterId, "architecture.md");
+    const existing = await readOptionalText(path);
+    if (existing?.trim()) {
+      throw new CharterToolError(`Cannot rewrite architecture.md during active; use appendDiscovered to add notes.`, {
+        code: "architecture.write_frozen_during_active",
+        nextActions: nextActionsForStatus(state.status),
+      });
+    }
+    await writeTextAtomic(path, body);
   });
 }
 
@@ -39,7 +47,7 @@ export async function appendDiscovered(first: string, second: string, third?: st
         nextActions: nextActionsForStatus(state.status),
       });
     }
-    const path = architectureMarkdownPath(projectDir, charterId);
+    const path = join(projectDir, ".pi", "charters", charterId, "architecture.md");
     const existing = await readOptionalText(path);
     await writeTextAtomic(path, appendToDiscovered(existing, text));
   });
@@ -53,16 +61,16 @@ export async function overwriteAtAmend(first: string, second: string, third?: st
   await withCharterLock(dir, async () => {
     const state = await loadCharterState(dir);
     assertNotV1NeedsReplan(state);
-    if (state.status !== "planning" || (state.previousStatus !== "active" && state.previousStatus !== "review")) {
+    if (state.status !== "active") {
       throw new CharterToolError(
-        `Cannot overwrite architecture.md outside an amend-to-planning transition; current status is ${state.status}.`,
+        `Cannot overwrite architecture.md outside active; current status is ${state.status}.`,
         {
-          code: "architecture.overwrite_not_amend",
+          code: "architecture.overwrite_not_active",
           nextActions: nextActionsForStatus(state.status),
         },
       );
     }
-    await writeTextAtomic(architectureMarkdownPath(projectDir, charterId), body);
+    await writeTextAtomic(join(projectDir, ".pi", "charters", charterId, "architecture.md"), body);
   });
 }
 

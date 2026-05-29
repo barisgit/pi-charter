@@ -24,13 +24,13 @@ describe("charter filesystem store", () => {
       });
 
       expect(created.charterId).toBe("00000000-0000-4000-8000-000000000001");
-      expect(created.state.status).toBe("planning");
+      expect(created.state.status).toBe("active");
       expect(created.state.objective).toBe("Implement OAuth callback handling");
       expect(created.charterDir).toBe(join(projectDir, ".pi", "charters", created.charterId));
 
       const reloaded = await loadCharterState(created.charterDir);
       expect(reloaded.objective).toBe("Implement OAuth callback handling");
-      expect(reloaded.status).toBe("planning");
+      expect(reloaded.status).toBe("active");
 
       const charterMd = await readFile(join(created.charterDir, "charter.md"), "utf8");
       expect(charterMd).toContain("## Objective");
@@ -41,7 +41,15 @@ describe("charter filesystem store", () => {
 
       const criteriaMd = await readFile(join(created.charterDir, "criteria.md"), "utf8");
       expect(criteriaMd).toContain("# Criteria for Untitled");
-      expect(criteriaMd).toContain("## VAL-EXAMPLE");
+      expect(criteriaMd).toContain("## m0-example");
+      expect(criteriaMd).toContain("### VAL-EXAMPLE");
+
+      const { existsSync } = await import("node:fs");
+      expect(existsSync(join(created.charterDir, "work"))).toBe(true);
+      expect(existsSync(join(created.charterDir, "plan"))).toBe(false);
+      expect(existsSync(join(created.charterDir, "plan.json"))).toBe(false);
+      expect(existsSync(join(created.charterDir, "feature-state.json"))).toBe(false);
+      expect(existsSync(join(created.charterDir, "qa-briefs"))).toBe(false);
 
       const events = await readFile(join(created.charterDir, "events.jsonl"), "utf8");
       expect(events).toContain("charter_created");
@@ -99,6 +107,8 @@ describe("renderInitialCharterMarkdown", () => {
     });
     // The worked example must round-trip so agents can copy its shape.
     expect(parsed.criteria).toHaveLength(1);
+    expect(parsed.milestones).toHaveLength(1);
+    expect(parsed.milestones[0]?.id).toBe("m0-example");
     expect(parsed.criteria[0]).toMatchObject({
       id: "VAL-EXAMPLE",
       verifier: "command",

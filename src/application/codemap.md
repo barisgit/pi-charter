@@ -70,7 +70,7 @@ Ralph idle events
 | `listActiveCharters` | `(projectDir) => CharterListEntry[]` | — |
 | `listUnreviewedMilestones` | `(dir) => UnreviewedMilestone[]` | — |
 | `computeBlockingForComplete` | `(criteria, criterionState, context?) => BlockingForCompleteEntry[]` | pure |
-| `effectiveRequireReviewSubagent` | `(criterion, milestoneIds) => boolean` | pure (VAL-12 rule) |
+| `effectiveRequireReviewSubagent` | `(criterion, milestoneIds) => boolean` | pure explicit review-gate rule |
 | `loadBlockingContext` | `(dir, charterId) => BlockingContext` | pure helper |
 
 **Status state machine**
@@ -101,9 +101,9 @@ A criterion is "blocking for complete" (surfaced by `getCharterStatus.details.bl
 - `effectiveRequireReviewSubagent === true` AND no pass evidence has `recordedBy` starting with `subagent:charter-reviewer:`; OR
 - `effectiveRequireReviewSubagent === true` AND every charter-reviewer reviewer shares the implementer's session id (`implementer-only-reviewer`).
 
-**VAL-12 auto-default**: `effectiveRequireReviewSubagent` returns `true` when the criterion id appears in any `milestone_ready_for_review` event's `criterionIds` and the criterion does not explicitly declare the field.
+**Review gate rule**: `effectiveRequireReviewSubagent` returns `true` only when the criterion explicitly declares `RequireReviewSubagent: true`.
 
-**VAL-13 identity-disjoint predicate**: Implemented by `loadBlockingContext` — walks `work/<featureId>/evidence/` files, extracts `lastWorkerSessionId` from `feature-state.json`, and matches against `recordedBy` session segments.
+**Identity-disjoint predicate**: Implemented by `loadBlockingContext` — walks `work/<featureId>/evidence/` files and matches reviewer `recordedBy` session segments against implementer session ids.
 
 **Design patterns**
 - **State transition function**: each `*Charter` export is a pure-ish function that loads state, validates preconditions, mutates the state object, writes atomically, and returns a result.
@@ -238,21 +238,21 @@ Each write creates:
 - Writes a handoff envelope (`handoffs/<stamp>__<featureId>__<sessionId>.json`).
 - Calls `recordEvidence` for each completed criterion with `source: "subagent"` and `recordedBy: subagent:<persona>:<sessionId>`.
 - Updates `feature-state.json`: flips to `completed` if all fulfilled criteria are pass, otherwise preserves `in_progress`.
-- Detects review handoffs (session id contains `charter-reviewer`) and preserves the implementer's `lastWorkerSessionId` (VAL-13 disjunction).
+- Detects review handoffs (session id contains `charter-reviewer`) and preserves the implementer's `lastWorkerSessionId` for the identity-disjoint review check.
 - Projects `milestone_ready_for_review`.
 
 **Milestone projection (`projectMilestoneReadyForReview`)**
 - Triggered after any evidence write or handoff that affects a feature.
 - Reads all features in the same milestone.
 - If ALL features are `status: "completed"` (none `failed`) → appends a single idempotent `milestone_ready_for_review` event per `(milestoneId, planDigest)`.
-- Event contains `milestoneId`, `planDigest`, and sorted `criterionIds` for VAL-11 review tracking.
+- Event contains `milestoneId`, `planDigest`, and sorted `criterionIds` for milestone review tracking.
 
 **Design patterns**
 - **Append-only evidence**: evidence files are never modified, only appended. `criterion-state.json` is the mutable latest-pointer.
 - **Single atomic state write**: batch evidence uses one `writeJsonAtomic` call regardless of entry count.
 - **Staged writes with rollback**: evidence files written before `criterion-state.json`; failures unlink the former before re-throw.
 - **Idempotent projections**: `milestone_ready_for_review` deduplicates by `(milestoneId, planDigest)`.
-- **Subagent identity encoding**: `recordedBy: "subagent:<persona>:<sessionId>"` enables VAL-11 and VAL-13 checks.
+- **Subagent identity encoding**: `recordedBy: "subagent:<persona>:<sessionId>"` enables review-gate and identity-disjoint checks.
 
 **Data/control flow**
 
@@ -458,7 +458,7 @@ trustRank(source, recordedBy, hasBecause) → number
 ```
 recordedBy ::= "agent:root"           # default root agent
             |  "subagent:<persona>:<sessionId>"
-            |  "subagent:charter-reviewer:<sessionId>"  # VAL-11/13 trusted reviewer
+            |  "subagent:charter-reviewer:<sessionId>"  # trusted reviewer
 ```
 
 ### File layout per charter

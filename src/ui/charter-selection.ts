@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
  * Tri-value selection state shared by the `/charters` slash command verbs
  * (`select <id>`, `select none`, picker confirm).
  *
- * Why a module-level singleton: the spec (charter.md / VAL-8) keeps selection
+ * Why a module-level singleton: the picker spec keeps selection
  * "in an extension closure variable; persists across turns within the
  * session; cleared on session end". Both `registerCharterCommands` and
  * `registerCharterWidget` need read+write access; a tiny module-scoped store

@@ -1,6 +1,6 @@
 # pi-charter v3 — handoff brief
 
-Status: lock-list complete, doctrine committed (96f0248 + the v3 ADR pair), ready for implementation.
+Status: lock-list complete, doctrine committed (0fa7431 ADR-0010, ba27cff ADR-0011 + ADR-0012 + CONTEXT.md rewrite), ready for implementation.
 
 ## What v3 is
 
@@ -10,7 +10,7 @@ Read these first, in order:
 
 1. `CONTEXT.md` (post v3 commit) — canonical glossary
 2. `docs/adr/0010-split-charter-md-and-criteria-md.md`
-3. `docs/adr/0011-three-tool-llm-surface.md` (supersedes ADR-0003)
+3. `docs/adr/0011-three-tool-surface-v3.md` (supersedes ADR-0003)
 4. `docs/adr/0012-v3-runtime-boundary.md` (supersedes ADR-0008)
 5. `docs/adr/0005-agent-is-the-loop-driver.md` (still in force; v3 narrows but does not contradict it)
 

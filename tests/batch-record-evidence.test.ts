@@ -1,12 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCharter } from "../src/application/service";
-import { lockPlan } from "../src/application/plan-service";
 import { recordEvidence, recordEvidenceBatch } from "../src/application/record-service";
-import { charterDir } from "../src/infrastructure/store";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pi-charter-batch-evidence-"));
@@ -17,80 +15,35 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-const VALIDATION_MD = `## Validation
-
-### Happy
-- check: smoke-happy
-  command: true
-
-### Edge
-- check: smoke-edge
-  command: true
-`;
-
-async function makeActiveCharter(projectDir: string, charterId: string): Promise<string> {
-  await createCharter(projectDir, {
-    objective: "Batch evidence probe",
-    charterId,
-    now: "2026-05-15T02:00:00.000Z",
-  });
-  const dir = charterDir(projectDir, charterId);
-  await writeFile(
-    join(dir, "charter.md"),
-    [
-      "# Charter",
-      "",
-      "## Objective",
-      "",
-      "Batch evidence probe.",
-      "",
-      "## Criteria",
-      "",
-      "### VAL-A — A",
-      "Description: First criterion.",
-      "Verifier: manual",
-      "Because: test fixture rationale",
-      "",
-      "### VAL-B — B",
-      "Description: Second criterion.",
-      "Verifier: manual",
-      "Because: test fixture rationale",
-      "",
-      "### VAL-C — C",
-      "Description: Third criterion.",
-      "Verifier: manual",
-      "Because: test fixture rationale",
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await writeFile(
-    join(dir, "plan", "fa.md"),
-    `---\nid: fa\nmilestone: m1\norder: 1\nfulfills:\n  - VAL-A\n  - VAL-B\n  - VAL-C\npreconditions: []\n---\n\n# FA\n\n${VALIDATION_MD}`,
-    "utf8",
-  );
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T02:30:00.000Z" });
-  return dir;
-}
-
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
+const BATCH_CHARTER_CRITERIA = [
+  { id: "VAL-A", title: "A", body: "First criterion." },
+  { id: "VAL-B", title: "B", body: "Second criterion." },
+  { id: "VAL-C", title: "C", body: "Third criterion." },
+];
+
+describe("recordEvidenceBatch — within-call atomicity", () => {
   test("happy path: 3 entries write 3 evidence files, populate criterion-state, preserve request order", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-0000000000a1";
-      const dir = await makeActiveCharter(projectDir, charterId);
+      const dir = await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Batch evidence probe",
+        now: "2026-05-15T02:00:00.000Z",
+        criteria: BATCH_CHARTER_CRITERIA,
+      });
 
       const response = await recordEvidenceBatch(projectDir, {
         charterId,
         now: "2026-05-15T03:00:00.000Z",
         entries: [
-          { criterionId: "VAL-A", featureId: "fa", outcome: "pass", summary: "A done", because: "reviewed A" },
-          { criterionId: "VAL-B", featureId: "fa", outcome: "pass", summary: "B done", because: "reviewed B" },
-          { criterionId: "VAL-C", featureId: "fa", outcome: "partial", summary: "C partial", because: "still wip" },
+          { criterionId: "VAL-A", outcome: "pass", summary: "A done", because: "reviewed A" },
+          { criterionId: "VAL-B", outcome: "pass", summary: "B done", because: "reviewed B" },
+          { criterionId: "VAL-C", outcome: "partial", summary: "C partial", because: "still wip" },
         ],
       });
 
@@ -101,10 +54,9 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
         "VAL-C",
       ]);
 
-      const evidenceDir = join(dir, "work", "fa", "evidence");
+      const evidenceDir = join(dir, "work", "_charter", "evidence");
       const files = await readdir(evidenceDir);
       expect(files.length).toBe(3);
-      // Each response.path must exist on disk.
       for (const entry of response.entries) {
         const stored = JSON.parse(await readFile(join(dir, entry.path), "utf8"));
         expect(stored.criterionId).toBe(entry.criterionId);
@@ -122,16 +74,21 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
   test("all-or-nothing on validation failure: bad entry at slot 1 writes no files and leaves criterion-state unchanged", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-0000000000a2";
-      const dir = await makeActiveCharter(projectDir, charterId);
+      const dir = await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Batch evidence probe",
+        now: "2026-05-15T02:00:00.000Z",
+        criteria: BATCH_CHARTER_CRITERIA,
+      });
 
       const stateBefore = await readFile(join(dir, "criterion-state.json"), "utf8");
       const hashBefore = sha256(stateBefore);
 
       const entries = [
-        { criterionId: "VAL-A", featureId: "fa", outcome: "pass" as const, summary: "A done", because: "reviewed" },
-        // Slot 1 — missing summary.
-        { criterionId: "VAL-B", featureId: "fa", outcome: "pass" as const, summary: "   ", because: "reviewed" },
-        { criterionId: "VAL-C", featureId: "fa", outcome: "pass" as const, summary: "C done", because: "reviewed" },
+        { criterionId: "VAL-A", outcome: "pass" as const, summary: "A done", because: "reviewed" },
+        { criterionId: "VAL-B", outcome: "pass" as const, summary: "   ", because: "reviewed" },
+        { criterionId: "VAL-C", outcome: "pass" as const, summary: "C done", because: "reviewed" },
       ];
 
       await expect(
@@ -142,12 +99,10 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
         }),
       ).rejects.toThrow(/entry 1/);
 
-      // criterion-state.json unchanged.
       const stateAfter = await readFile(join(dir, "criterion-state.json"), "utf8");
       expect(sha256(stateAfter)).toBe(hashBefore);
 
-      // No evidence files written for any of the three criteria.
-      const evidenceDir = join(dir, "work", "fa", "evidence");
+      const evidenceDir = join(dir, "work", "_charter", "evidence");
       const files = await readdir(evidenceDir).catch(() => [] as string[]);
       expect(files.length).toBe(0);
     });
@@ -156,12 +111,17 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
   test("backwards compat: single-entry recordEvidence still works and returns the same shape", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-0000000000a3";
-      const dir = await makeActiveCharter(projectDir, charterId);
+      const dir = await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Batch evidence probe",
+        now: "2026-05-15T02:00:00.000Z",
+        criteria: [{ id: "VAL-A", title: "A" }],
+      });
 
       const result = await recordEvidence(projectDir, {
         charterId,
         criterionId: "VAL-A",
-        featureId: "fa",
         outcome: "pass",
         summary: "single entry path",
         because: "stable rationale",
@@ -171,7 +131,7 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
       expect(result.charterId).toBe(charterId);
       expect(result.criterionId).toBe("VAL-A");
       expect(result.outcome).toBe("pass");
-      expect(result.path).toBe(join("work", "fa", "evidence", "2026-05-15T03-00-00-000Z", "evidence.json"));
+      expect(result.path).toBe(join("work", "_charter", "evidence", "2026-05-15T03-00-00-000Z", "evidence.json"));
       expect(result.ts).toBe("2026-05-15T03:00:00.000Z");
       const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
       expect(stored.summary).toBe("single entry path");
@@ -180,11 +140,15 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
   });
 
   test("mutual exclusion: evidenceFile and entries rejects with the documented message", async () => {
-    // Exercised through the registration handler surface. Reach into the
-    // execute function directly via the registered tool descriptor.
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-0000000000a4";
-      await makeActiveCharter(projectDir, charterId);
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Batch evidence probe",
+        now: "2026-05-15T02:00:00.000Z",
+        criteria: [{ id: "VAL-B", title: "B" }],
+      });
 
       const { registerCharterTools } = await import("../src/application/registration");
       const tools: Array<{ name: string; execute: Function }> = [];
@@ -223,23 +187,28 @@ describe("recordEvidenceBatch — VAL-6 within-call atomicity", () => {
   test("same-now stamp collision: 3 entries with identical now produce 3 distinct filenames", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "00000000-0000-4000-8000-0000000000a5";
-      const dir = await makeActiveCharter(projectDir, charterId);
+      const dir = await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Batch evidence probe",
+        now: "2026-05-15T02:00:00.000Z",
+        criteria: BATCH_CHARTER_CRITERIA,
+      });
 
       const response = await recordEvidenceBatch(projectDir, {
         charterId,
         now: "2026-05-15T03:00:00.000Z",
         entries: [
-          { criterionId: "VAL-A", featureId: "fa", outcome: "pass", summary: "A", because: "ra" },
-          { criterionId: "VAL-B", featureId: "fa", outcome: "pass", summary: "B", because: "rb" },
-          { criterionId: "VAL-C", featureId: "fa", outcome: "pass", summary: "C", because: "rc" },
+          { criterionId: "VAL-A", outcome: "pass", summary: "A", because: "ra" },
+          { criterionId: "VAL-B", outcome: "pass", summary: "B", because: "rb" },
+          { criterionId: "VAL-C", outcome: "pass", summary: "C", because: "rc" },
         ],
       });
 
       const paths = response.entries.map((entry) => entry.path);
-      const unique = new Set(paths);
-      expect(unique.size).toBe(3);
+      expect(new Set(paths).size).toBe(3);
 
-      const files = await readdir(join(dir, "work", "fa", "evidence"));
+      const files = await readdir(join(dir, "work", "_charter", "evidence"));
       expect(new Set(files).size).toBe(3);
     });
   });

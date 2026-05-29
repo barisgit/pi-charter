@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCharterWidget } from "../src/application/registration";
 import { bindCharterToSession } from "../src/application/binding-service";
-import { lockPlan } from "../src/application/plan-service";
-import { createCharter } from "../src/application/service";
 import { resetCharterSelection } from "../src/ui/charter-selection";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 type SetWidgetCall = {
   key: string;
@@ -20,17 +19,6 @@ type FakePi = {
   events: { on: (event: string, handler: (raw: unknown) => void) => () => void };
   handlers: Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>;
 };
-
-const VALIDATION_MD = `## Validation
-
-### Happy
-- check: smoke-happy
-  command: true
-
-### Edge
-- check: smoke-edge
-  command: true
-`;
 
 interface FakeCtx {
   cwd: string;
@@ -87,31 +75,22 @@ async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): 
   }
 }
 
-async function seedLockedCharter(projectDir: string, charterId: string): Promise<string> {
-  const created = await createCharter(projectDir, {
+async function seedActiveCharter(projectDir: string, charterId: string): Promise<string> {
+  await makeActiveCharter({
+    projectDir,
     charterId,
     objective: "glance widget fixture",
     now: "2026-05-15T00:00:00.000Z",
+    criteria: [{ id: "VAL-GLANCE-002", title: "bound charter renders", because: "test fixture rationale" }],
   });
-  const dir = join(projectDir, ".pi/charters", created.charterId);
-  await writeFile(
-    join(dir, "charter.md"),
-    "# Charter\n## Objective\nglance widget fixture\n## Criteria\n### VAL-GLANCE-002 bound charter renders\nVerifier: manual\nBecause: test fixture rationale\n## Scope and constraints\n- none\n",
-  );
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await writeFile(
-    join(dir, "plan/f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-GLANCE-002]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
-  );
-  await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T00:01:00.000Z" });
-  return created.charterId;
+  return charterId;
 }
 
 beforeEach(() => resetCharterSelection());
 afterEach(() => resetCharterSelection());
 
 describe("glance widget cleanup", () => {
-  test("VAL-GLANCE-001: multi-charter widget file and identifiers are absent", async () => {
+  test("multi-charter widget file and identifiers are absent", async () => {
     await access("src/ui/multi-charter-widget.ts").then(
       () => expect.unreachable("src/ui/multi-charter-widget.ts should not exist"),
       (error: NodeJS.ErrnoException) => expect(error.code).toBe("ENOENT"),
@@ -129,10 +108,10 @@ describe("glance widget cleanup", () => {
     }
   });
 
-  test("VAL-GLANCE-002: session-bound charter renders the detail widget", async () => {
+  test("session-bound charter renders the detail widget", async () => {
     await withTempDir("pi-charter-glance-project-", async (projectDir) => {
       await withTempDir("pi-charter-glance-home-", async (homeDir) => {
-        const charterId = await seedLockedCharter(projectDir, `glance-${randomUUID()}`);
+        const charterId = await seedActiveCharter(projectDir, `glance-${randomUUID()}`);
         const sessionId = `session-${randomUUID()}`;
         await bindCharterToSession(projectDir, { charterId, sessionId, homeDir });
 
@@ -153,7 +132,7 @@ describe("glance widget cleanup", () => {
     });
   });
 
-  test("VAL-GLANCE-003: no session binding clears only the detail widget", async () => {
+  test("no session binding clears only the detail widget", async () => {
     await withTempDir("pi-charter-glance-project-", async (projectDir) => {
       await withTempDir("pi-charter-glance-home-", async (homeDir) => {
         const pi = makeFakePi();

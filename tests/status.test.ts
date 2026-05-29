@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCharter, getCharterStatus } from "../src/application/service";
-import { lockPlan } from "../src/application/plan-service";
+import { getCharterStatus } from "../src/application/service";
 import { recordEvidence } from "../src/application/record-service";
 import { formatCharterStatusText } from "../src/application/registration";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promise<T> {
   const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-status-"));
@@ -16,89 +16,38 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
-const VALIDATION_MD = [
-  "## Validation",
-  "",
-  "### Happy",
-  "- check: smoke-happy",
-  "  command: true",
-  "",
-  "### Edge",
-  "- check: smoke-edge",
-  "  command: true",
-  "",
-].join("\n");
-
-async function makeActiveCharter(projectDir: string, charterId = "cha-status-1") {
-  const charterMd = [
-    "# Charter cha-status-1",
-    "",
-    "## Objective",
-    "Ship the status surface.",
-    "",
-    "## Criteria",
-    "",
-    "### VAL-S-001 — First criterion",
-    "Verifier: manual",
-    "Because: author rationale 1",
-    "",
-    "### VAL-S-002 — Second criterion",
-    "Verifier: manual",
-    "Because: author rationale 2",
-    "",
-    "## Scope and constraints",
-    "",
-    "- Stay within status module.",
-    "",
-  ].join("\n");
-  const featureMd = (id: string, fulfills: string[]) =>
-    [
-      "---",
-      `id: ${id}`,
-      "milestone: m1-status",
-      "order: 1",
-      `fulfills: [${fulfills.join(", ")}]`,
-      "preconditions: []",
-      "---",
-      "",
-      `# Feature ${id}`,
-      "",
-      VALIDATION_MD,
-    ].join("\n");
-  await createCharter(projectDir, { objective: "Ship status surface", charterId, now: "2026-05-15T00:00:00.000Z" });
-  const dir = join(projectDir, ".pi", "charters", charterId);
-  await writeFile(join(dir, "charter.md"), charterMd, "utf8");
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await writeFile(join(dir, "plan", "f1.md"), featureMd("f1", ["VAL-S-001"]), "utf8");
-  await writeFile(join(dir, "plan", "f2.md"), featureMd("f2", ["VAL-S-002"]), "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
-}
-
 describe("getCharterStatus.details.blockingForComplete", () => {
   test("includes every VAL with low-trust evidence; renders single line", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
-      // Both criteria pass-evidenced by agent:root manual + because → low trust.
+      const charterId = "cha-status-1";
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Ship status surface",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: [
+          { id: "VAL-S-001", title: "First criterion", because: "author rationale 1" },
+          { id: "VAL-S-002", title: "Second criterion", because: "author rationale 2" },
+        ],
+      });
       await recordEvidence(projectDir, {
-        charterId: "cha-status-1",
+        charterId,
         criterionId: "VAL-S-001",
-        featureId: "f1",
         outcome: "pass",
         summary: "did it",
         because: "low-trust manual record",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
-        charterId: "cha-status-1",
+        charterId,
         criterionId: "VAL-S-002",
-        featureId: "f2",
         outcome: "pass",
         summary: "did it too",
         because: "another low-trust manual record",
         now: "2026-05-15T02:01:00.000Z",
       });
 
-      const status = await getCharterStatus(projectDir, { charterId: "cha-status-1" });
+      const status = await getCharterStatus(projectDir, { charterId });
       expect(status.details).toBeDefined();
       expect(Array.isArray(status.details?.blockingForComplete)).toBe(true);
       expect(status.details!.blockingForComplete).toHaveLength(2);
@@ -121,14 +70,113 @@ describe("getCharterStatus.details.blockingForComplete", () => {
 
   test("omits blocking-for-complete line entirely when array is empty", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
-      // No evidence yet → array empty (criteria without ANY pass evidence are
-      // not "blocking-for-complete" in the trust sense — they're plain
-      // "no pass evidence" gaps surfaced by the original complete gate).
-      const status = await getCharterStatus(projectDir, { charterId: "cha-status-1" });
+      const charterId = "cha-status-1";
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Ship status surface",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: [
+          { id: "VAL-S-001", title: "First criterion" },
+          { id: "VAL-S-002", title: "Second criterion" },
+        ],
+      });
+      const status = await getCharterStatus(projectDir, { charterId });
       expect(status.details?.blockingForComplete ?? []).toEqual([]);
       const text = formatCharterStatusText(status);
       expect(text).not.toContain("blocking-for-complete:");
+    });
+  });
+});
+
+describe("getCharterStatus empty-register signal", () => {
+  test("an active charter with zero parsed criteria reports registerEmpty and renders a loud line", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = "cha-empty-1";
+      // criteria: [] => criteria.md has the header but no VAL leaves => 0 parsed.
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Charter whose criteria never got authored",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: [],
+      });
+
+      const status = await getCharterStatus(projectDir, { charterId });
+      expect(status.valTotal).toBe(0);
+      expect(status.valPass).toBe(0);
+      expect(status.registerEmpty).toBe(true);
+
+      const text = formatCharterStatusText(status);
+      expect(text).toContain("REGISTER EMPTY");
+      // The healthy VAL totals line must NOT appear when the register is empty.
+      expect(text).not.toContain("VAL totals:");
+    });
+  });
+
+  test("a charter with parsed criteria reports totals and is not flagged empty", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = "cha-empty-2";
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Charter with real criteria",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: [
+          { id: "VAL-E-001", title: "One", because: "r1" },
+          { id: "VAL-E-002", title: "Two", because: "r2" },
+        ],
+      });
+
+      const status = await getCharterStatus(projectDir, { charterId });
+      expect(status.valTotal).toBe(2);
+      expect(status.valPass).toBe(0);
+      expect(status.registerEmpty).toBe(false);
+
+      const text = formatCharterStatusText(status);
+      expect(text).toContain("VAL totals: 0/2 pass");
+      expect(text).not.toContain("REGISTER EMPTY");
+    });
+  });
+
+  test("counts ungrouped flat criteria mixed with milestone-grouped criteria", async () => {
+    await withTempProject(async (projectDir) => {
+      const charterId = "cha-mixed-1";
+      // makeActiveCharter renders milestones XOR flat; to exercise the mixed
+      // register (a flat `## VAL-*` alongside a `## M1` group) we author
+      // criteria.md directly. Old code summed only milestone buckets and would
+      // report valTotal=1 here; the true parsed count is 2.
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Charter with a mixed flat + milestone register",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: [],
+      });
+      const criteriaMd = [
+        "# Criteria",
+        "",
+        "## VAL-FLAT-001 A flat ungrouped criterion",
+        "Body.",
+        "Verifier: manual",
+        "Because: rationale",
+        "",
+        "## M1 First milestone",
+        "",
+        "### VAL-M1-001 Grouped criterion",
+        "Body.",
+        "Verifier: manual",
+        "Because: rationale",
+        "",
+      ].join("\n");
+      await writeFile(join(projectDir, ".pi", "charters", charterId, "criteria.md"), criteriaMd, "utf8");
+
+      const status = await getCharterStatus(projectDir, { charterId });
+      expect(status.valTotal).toBe(2);
+      expect(status.valPass).toBe(0);
+      expect(status.registerEmpty).toBe(false);
+      const text = formatCharterStatusText(status);
+      expect(text).toContain("VAL totals: 0/2 pass");
     });
   });
 });

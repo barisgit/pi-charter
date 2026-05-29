@@ -61,43 +61,23 @@ async function expectNoCharterBound(promise: Promise<unknown>): Promise<void> {
     message: expect.stringContaining("no charter bound"),
     hint: expect.any(String),
   });
-  // Programmatic discriminator so callers can pattern-match without parsing.
   expect((caught as { code?: unknown }).code).toBe("NO_CHARTER_BOUND");
 }
 
-describe("VAL-2 typed structured error when no charter is bound", () => {
+describe("structured error when no charter is bound", () => {
   test("charter_status throws NoCharterBoundError when neither argument nor binding is present", async () => {
     await withTempProject(async ({ projectDir, homeDir }) => {
       const { tools } = makeHarness(homeDir);
       await expectNoCharterBound(
         tools.get("charter_status")!.execute("c", {}, new AbortController().signal, () => undefined, ctx(projectDir, "sess-none")),
       );
-      // Also when the session id itself is absent.
       await expectNoCharterBound(
         tools.get("charter_status")!.execute("c", {}, new AbortController().signal, () => undefined, ctx(projectDir, undefined)),
       );
     });
   });
 
-  test.each(["view", "add_feature", "update_feature", "lock_plan"] as const)(
-    "charter_plan action=%s throws NoCharterBoundError",
-    async (action) => {
-      await withTempProject(async ({ projectDir, homeDir }) => {
-        const { tools } = makeHarness(homeDir);
-        await expectNoCharterBound(
-          tools.get("charter_plan")!.execute(
-            "c",
-            { action, id: "f1", milestone: "m1", order: 1, fulfills: ["VAL-X"], body: "body" },
-            new AbortController().signal,
-            () => undefined,
-            ctx(projectDir, "sess-none"),
-          ),
-        );
-      });
-    },
-  );
-
-  test.each(["evidence", "verify", "handoff_apply"] as const)(
+  test.each(["evidence", "verify"] as const)(
     "charter_record action=%s throws NoCharterBoundError",
     async (action) => {
       await withTempProject(async ({ projectDir, homeDir }) => {
@@ -112,9 +92,6 @@ describe("VAL-2 typed structured error when no charter is bound", () => {
               outcome: "pass",
               summary: "summary",
               because: "manual probe",
-              subagentSessionId: "sub-1",
-              handoffNote: "note",
-              completedCriteria: [{ criterionId: "VAL-X", outcome: "pass", summary: "ok" }],
             },
             new AbortController().signal,
             () => undefined,
@@ -125,15 +102,15 @@ describe("VAL-2 typed structured error when no charter is bound", () => {
     },
   );
 
-  test.each(["pause", "resume", "complete", "force_complete", "amend_charter"] as const)(
-    "charter_manage action=%s throws NoCharterBoundError",
+  test.each(["pause", "resume", "complete", "abandon"] as const)(
+    "charter action=%s throws NoCharterBoundError",
     async (action) => {
       await withTempProject(async ({ projectDir, homeDir }) => {
         const { tools } = makeHarness(homeDir);
         await expectNoCharterBound(
-          tools.get("charter_manage")!.execute(
+          tools.get("charter")!.execute(
             "c",
-            { action, reason: "x", completionNote: "y", target: "abandoned" },
+            { action, reason: "x", completionNote: "y" },
             new AbortController().signal,
             () => undefined,
             ctx(projectDir, "sess-none"),
@@ -143,11 +120,10 @@ describe("VAL-2 typed structured error when no charter is bound", () => {
     },
   );
 
-  test("charter_manage action=create is the documented exception (no NoCharterBoundError)", async () => {
-    // create MINTS a charter; it must not require an existing binding.
+  test("charter action=create is the documented exception (no NoCharterBoundError)", async () => {
     await withTempProject(async ({ projectDir, homeDir }) => {
       const { tools } = makeHarness(homeDir);
-      const result = await tools.get("charter_manage")!.execute(
+      const result = await tools.get("charter")!.execute(
         "c",
         { action: "create", objective: "ship defaults-error coverage" },
         new AbortController().signal,

@@ -1,16 +1,23 @@
 import { spawn } from "node:child_process";
 import { access, readFile, readdir, stat, unlink } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { parseFeatureMarkdown } from "../domain/feature-md";
-import { validateEvidenceFile, type CommandEvidence, type EvidenceFile, type EvidenceKind, type ReadinessEvidence } from "../domain/evidence-schemas";
+import { validateEvidenceFile, type EvidenceFile } from "../domain/evidence-schemas";
 import type { CharterCriterion, ParsedCharterMarkdown, RecordedBy, SubagentVerifier } from "../domain/types";
 import { logger } from "../infrastructure/logger";
 
 /** Default identity for evidence written by the root agent. Callers (handoff,
  * delegated tooling) override this when they have a more specific identity. */
 const DEFAULT_RECORDED_BY: RecordedBy = "agent:root";
-/** Persona prefix used when applyHandoff derives recordedBy from subagentSessionId. */
-const DEFAULT_HANDOFF_PERSONA = "charter-reviewer";
+
+function subagentRecordedBy(agent: string, sessionId: string): RecordedBy {
+  const trimmedAgent = agent.trim() || "subagent";
+  const trimmedSession = sessionId.trim();
+  return `subagent:${trimmedAgent}:${trimmedSession}` as RecordedBy;
+}
+
+function handoffIsReviewRole(role: "review" | "implement" | undefined): boolean {
+  return role !== "implement";
+}
 import {
   appendEvent,
   charterDir,
@@ -20,10 +27,6 @@ import {
   writeJsonAtomic,
   writeTextAtomic,
 } from "../infrastructure/store";
-import { loadFeatureState, writeFeatureState } from "../persistence/feature-state";
-import { validateHandoffRecord, type HandoffRecord, type HandoffRecordInput } from "../persistence/handoff-store";
-export type { FeatureCheckState, FeatureCheckStatus, FeatureStateFile, FeatureStateRecord } from "../persistence/feature-state";
-export { loadFeatureState } from "../persistence/feature-state";
 import { assertNotV1NeedsReplan, loadFeatureEvidence, nextActionsForStatus, type NextAction } from "./service";
 import { CharterToolError } from "./errors";
 import { PI_CHARTER_METADATA_KEYS, type SpawnRawInput } from "../infrastructure/subagent-bridge";
@@ -88,8 +91,8 @@ export interface RecordEvidenceBatchResult {
 
 export interface RecordEvidenceFromFileResult extends RecordEvidenceBatchResult {
   evidenceFile: string;
-  kind: EvidenceFile["kind"];
-  featureId: string;
+  criterionId: string;
+  featureId?: string;
 }
 
 export interface RecordEvidenceFromFileInput {
@@ -122,6 +125,12 @@ export interface CriterionStateRecord {
 export interface CriterionStateFile {
   charterId: string;
   criteria: Record<string, CriterionStateRecord>;
+  lastToolWriteAt?: string;
+}
+
+async function writeCriterionState(dir: string, stateFile: CriterionStateFile, toolWriteAt?: string): Promise<void> {
+  stateFile.lastToolWriteAt = toolWriteAt ?? new Date().toISOString();
+  await writeJsonAtomic(join(dir, "criterion-state.json"), stateFile);
 }
 
 export async function recordEvidence(
@@ -148,10 +157,10 @@ async function recordEvidenceFromFileLocked(
   const loaded = await loadTypedEvidenceFile(projectDir, dir, input.evidenceFile);
   const validation = validateEvidenceFile(loaded.json);
   if (!validation.ok) {
-    throw new CharterToolError(`Evidence file ${input.evidenceFile} does not match the typed evidence schema: ${validation.error}`, {
+    throw new CharterToolError(`Evidence file ${input.evidenceFile} does not match the flat evidence schema: ${validation.error}`, {
       code: "evidence.schema_violation",
       nextActions: [
-        { tool: "charter_record", action: "evidence", hint: "Fix the JSON fields to match the command|review|qa|readiness evidence schema, then retry `evidenceFile`." },
+        { tool: "charter_record", action: "evidence", hint: "Fix the JSON fields to match the flat evidence row shape (criterionId, outcome, summary, ts, ...), then retry `evidenceFile`." },
       ],
     });
   }
@@ -159,15 +168,16 @@ async function recordEvidenceFromFileLocked(
   const evidence = detectedNarrative
     ? { ...validation.value, narrativePath: detectedNarrative.narrativePath } as EvidenceFile
     : validation.value;
-  const feature = await loadEvidenceFeature(dir, evidence.featureId, input.charterId);
-  const outcome = outcomeFromEvidenceFile(evidence);
-  const runDirRelative = preferredRunDirRelative(dir, loaded.absolutePath, evidence.featureId);
+  const outcome = evidence.outcome;
+  const criterionId = evidence.criterionId;
+  const featureId = evidence.featureId ?? evidence.criterionId;
+  const runDirRelative = preferredRunDirRelative(dir, loaded.absolutePath, featureId);
   const result = await recordEvidenceBatchLocked(projectDir, {
     charterId: input.charterId,
     now: input.now,
-    entries: feature.fulfills.map((criterionId) => ({
+    entries: [{
       criterionId,
-      featureId: evidence.featureId,
+      featureId,
       outcome,
       summary: evidence.summary,
       because: evidence.because,
@@ -176,17 +186,13 @@ async function recordEvidenceFromFileLocked(
       runDirRelative,
       details: {
         evidenceFile: input.evidenceFile,
-        kind: evidence.kind,
-        typedEvidence: evidence,
+        importedEvidence: evidence,
       },
       source: sourceFromEvidenceFile(evidence),
       recordedBy: recordedByFromEvidenceFile(evidence),
-    })),
+    }],
   });
 
-  if (evidence.kind === "command") {
-    await projectCommandCheckResults(dir, input.charterId, evidence, result.entries[0]?.ts ?? input.now ?? new Date().toISOString());
-  }
 
   if (detectedNarrative) {
     await writeNarrativeCompanions(dir, detectedNarrative, result.entries.map((entry) => entry.path));
@@ -195,8 +201,8 @@ async function recordEvidenceFromFileLocked(
   return {
     ...result,
     evidenceFile: input.evidenceFile,
-    kind: evidence.kind,
-    featureId: evidence.featureId,
+    criterionId,
+    featureId,
   };
 }
 
@@ -212,7 +218,7 @@ async function verifyEvidenceExistsCriterion(
     throw new CharterToolError(`Criterion ${criterion.id} has verifier=evidence-exists but no evidence-exists verifier spec.`, {
       code: "verify.missing_evidence_exists_spec",
       nextActions: [
-        { tool: "charter_plan", action: "view", hint: `Inspect ${criterion.id}; evidence-exists verifiers require a Kind: review|qa|readiness|command field.` },
+        { tool: "charter_status", hint: `Inspect ${criterion.id}; evidence-exists verifiers require a Kind: review|qa|readiness|command field.` },
       ],
     });
   }
@@ -222,7 +228,7 @@ async function verifyEvidenceExistsCriterion(
       code: "verify.missing_featureId",
       nextActions: [
         { tool: "charter_record", action: "verify", hint: `Pass featureId for the feature whose evidence should satisfy ${criterion.id}.` },
-        { tool: "charter_plan", action: "view", hint: "List features and their fulfilled criteria before retrying." },
+        { tool: "charter_status", hint: "List features and their fulfilled criteria before retrying." },
       ],
     });
   }
@@ -277,19 +283,34 @@ async function verifyEvidenceExistsCriterion(
   };
 }
 
-function evidenceKindFromRecord(record: Record<string, unknown>): EvidenceFile["kind"] | undefined {
-  if (isEvidenceKind(record.kind)) return record.kind;
+type LegacyEvidenceKind = "command" | "review" | "qa" | "readiness";
+
+function evidenceKindFromRecord(record: Record<string, unknown>): LegacyEvidenceKind | undefined {
+  if (isLegacyEvidenceKind(record.kind)) return record.kind;
+  const source = record.source;
+  if (source === "verifier") return "command";
+  if (source === "subagent") {
+    const details = record.details;
+    if (details && typeof details === "object" && !Array.isArray(details)) {
+      const evidenceKind = (details as Record<string, unknown>).evidenceKind;
+      if (isLegacyEvidenceKind(evidenceKind)) return evidenceKind;
+    }
+    return "review";
+  }
   const details = record.details;
-  if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
-  const detailRecord = details as Record<string, unknown>;
-  if (isEvidenceKind(detailRecord.kind)) return detailRecord.kind;
-  const typedEvidence = detailRecord.typedEvidence;
-  if (!typedEvidence || typeof typedEvidence !== "object" || Array.isArray(typedEvidence)) return undefined;
-  const kind = (typedEvidence as Record<string, unknown>).kind;
-  return isEvidenceKind(kind) ? kind : undefined;
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    const detailRecord = details as Record<string, unknown>;
+    if (isLegacyEvidenceKind(detailRecord.kind)) return detailRecord.kind;
+    const typedEvidence = detailRecord.typedEvidence;
+    if (typedEvidence && typeof typedEvidence === "object" && !Array.isArray(typedEvidence)) {
+      const kind = (typedEvidence as Record<string, unknown>).kind;
+      if (isLegacyEvidenceKind(kind)) return kind;
+    }
+  }
+  return undefined;
 }
 
-function isEvidenceKind(kind: unknown): kind is EvidenceFile["kind"] {
+function isLegacyEvidenceKind(kind: unknown): kind is LegacyEvidenceKind {
   return kind === "review" || kind === "qa" || kind === "readiness" || kind === "command";
 }
 
@@ -308,13 +329,13 @@ async function recordEvidenceLocked(
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   assertNotV1NeedsReplan(state);
-  if (state.status !== "active" && state.status !== "review") {
+  if (state.status !== "active") {
     throw new CharterToolError(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`, {
       code: "evidence.bad_status",
       nextActions: [
         { tool: "charter_status", hint: "Inspect current status; record evidence is only legal in `active` or `review`." },
-        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so evidence can be recorded." },
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before recording evidence." },
+        { tool: "charter_status", hint: "Lock the plan to transition from `planning` to `active` so evidence can be recorded." },
+        { tool: "charter", action: "resume", hint: "Resume the paused charter before recording evidence." },
       ],
     });
   }
@@ -327,7 +348,7 @@ async function recordEvidenceLocked(
       code: "evidence.unknown_criterion",
       nextActions: [
         { tool: "charter_record", action: "evidence", hint: `Pass a known criterionId. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
-        { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+        { tool: "charter_status", hint: "List declared VAL-* criteria before retrying." },
       ],
     });
   }
@@ -379,7 +400,7 @@ async function recordEvidenceLocked(
     recordedBy,
     ...(because ? { because } : {}),
   };
-  await writeJsonAtomic(join(dir, "criterion-state.json"), stateFile);
+  await writeCriterionState(dir, stateFile, now);
 
   await appendEvent(dir, {
     type: "evidence_recorded",
@@ -391,10 +412,6 @@ async function recordEvidenceLocked(
     source: record.source,
   });
 
-  if (input.featureId) {
-    await projectFeatureCompletionFromEvidence(dir, input.featureId, input.charterId, now);
-    await projectMilestoneReadyForReview(dir, input.charterId, input.featureId, now);
-  }
 
   return {
     charterId: input.charterId,
@@ -439,13 +456,13 @@ async function recordEvidenceBatchLocked(
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   assertNotV1NeedsReplan(state);
-  if (state.status !== "active" && state.status !== "review") {
+  if (state.status !== "active") {
     throw new CharterToolError(`Cannot record evidence in status ${state.status}; charter must be active or in review (not planning).`, {
       code: "evidence.bad_status",
       nextActions: [
         { tool: "charter_status", hint: "Inspect current status; record evidence is only legal in `active` or `review`." },
-        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so evidence can be recorded." },
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before recording evidence." },
+        { tool: "charter_status", hint: "Lock the plan to transition from `planning` to `active` so evidence can be recorded." },
+        { tool: "charter", action: "resume", hint: "Resume the paused charter before recording evidence." },
       ],
     });
   }
@@ -487,7 +504,7 @@ async function recordEvidenceBatchLocked(
         code: "evidence.missing_criterionId",
         nextActions: [
           { tool: "charter_record", action: "evidence", hint: `Pass entries[${index}].criterionId as a declared VAL-* id.` },
-          { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+          { tool: "charter_status", hint: "List declared VAL-* criteria before retrying." },
         ],
       });
     }
@@ -506,7 +523,7 @@ async function recordEvidenceBatchLocked(
         code: "evidence.unknown_criterion",
         nextActions: [
           { tool: "charter_record", action: "evidence", hint: `entries[${index}].criterionId must be a declared VAL-* id. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
-          { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+          { tool: "charter_status", hint: "List declared VAL-* criteria before retrying." },
         ],
       });
     }
@@ -585,7 +602,7 @@ async function recordEvidenceBatchLocked(
       ...(item.because ? { because: item.because } : {}),
     };
   }
-  await writeJsonAtomic(join(dir, "criterion-state.json"), stateFile);
+  await writeCriterionState(dir, stateFile, now);
 
   // ---- Phase 4: per-entry events (preserves existing evidence_recorded semantics). ----
   for (const item of prepared) {
@@ -598,25 +615,6 @@ async function recordEvidenceBatchLocked(
       outcome: item.entry.outcome,
       source: item.source,
     });
-  }
-
-  // ---- Phase 5: project feature completion once per touched featureId. ----
-  const touchedFeatureIds: string[] = [];
-  const seenFeatures = new Set<string>();
-  for (const item of prepared) {
-    const fid = item.entry.featureId;
-    if (fid && !seenFeatures.has(fid)) {
-      seenFeatures.add(fid);
-      touchedFeatureIds.push(fid);
-    }
-  }
-  for (const featureId of touchedFeatureIds) {
-    await projectFeatureCompletionFromEvidence(dir, featureId, input.charterId, now);
-  }
-  // projectMilestoneReadyForReview dedupes internally per (milestoneId, planDigest);
-  // calling once is sufficient — it sweeps the whole milestone of the triggering feature.
-  if (touchedFeatureIds.length > 0) {
-    await projectMilestoneReadyForReview(dir, input.charterId, touchedFeatureIds[0]!, now);
   }
 
   // ---- Response: preserve request order. ----
@@ -724,9 +722,9 @@ async function loadNarrativeCompanion(
   const runDir = dirname(evidenceAbsolutePath);
   const requestedIsMarkdown = extname(requestedPath) === ".md";
   const narrativePath = evidence.narrativePath
-    ?? (requestedIsMarkdown ? basename(requestedPath) : await siblingNarrativePath(runDir, evidence.kind));
+    ?? (requestedIsMarkdown ? basename(requestedPath) : await siblingNarrativePath(runDir));
   if (!narrativePath) return undefined;
-  const absolutePath = validateNarrativeCompanionPath(dir, runDir, evidence.kind, narrativePath);
+  const absolutePath = validateNarrativeCompanionPath(dir, runDir, narrativePath);
   if (!(await pathExists(absolutePath))) {
     throw new CharterToolError(`Evidence narrativePath ${narrativePath} does not exist in the evidence run directory.`, {
       code: "evidence.narrative_path_invalid",
@@ -738,14 +736,16 @@ async function loadNarrativeCompanion(
   return { narrativePath, absolutePath };
 }
 
-async function siblingNarrativePath(runDir: string, kind: EvidenceFile["kind"]): Promise<string | undefined> {
-  const narrativePath = `${kind}.md`;
-  return await pathExists(join(runDir, narrativePath)) ? narrativePath : undefined;
+async function siblingNarrativePath(runDir: string): Promise<string | undefined> {
+  for (const name of ["narrative.md", "review.md", "qa.md"]) {
+    if (await pathExists(join(runDir, name))) return name;
+  }
+  return undefined;
 }
 
-function validateNarrativeCompanionPath(dir: string, runDir: string, kind: EvidenceFile["kind"], narrativePath: string): string {
+function validateNarrativeCompanionPath(dir: string, runDir: string, narrativePath: string): string {
   if (isAbsolute(narrativePath) || extname(narrativePath) !== ".md") {
-    throw new CharterToolError(`Invalid ${kind} narrativePath ${narrativePath}: path must be relative and end in .md.`, {
+    throw new CharterToolError(`Invalid narrativePath ${narrativePath}: path must be relative and end in .md.`, {
       code: "evidence.narrative_path_invalid",
       nextActions: [
         { tool: "charter_record", action: "evidence", hint: "Use a relative markdown path such as 'qa.md' or 'review.md'." },
@@ -755,7 +755,7 @@ function validateNarrativeCompanionPath(dir: string, runDir: string, kind: Evide
   const absolutePath = resolve(runDir, narrativePath);
   const relativeToRun = relative(runDir, absolutePath);
   if (relativeToRun.startsWith("..") || isAbsolute(relativeToRun)) {
-    throw new CharterToolError(`Invalid ${kind} narrativePath ${narrativePath}: path must stay inside the evidence run directory.`, {
+    throw new CharterToolError(`Invalid narrativePath ${narrativePath}: path must stay inside the evidence run directory.`, {
       code: "evidence.narrative_path_invalid",
       nextActions: [
         { tool: "charter_record", action: "evidence", hint: "Move the markdown companion into the same evidence run directory as the typed evidence JSON." },
@@ -764,7 +764,7 @@ function validateNarrativeCompanionPath(dir: string, runDir: string, kind: Evide
   }
   const relativeToCharter = relative(dir, absolutePath);
   if (relativeToCharter.startsWith("..") || isAbsolute(relativeToCharter)) {
-    throw new CharterToolError(`Invalid ${kind} narrativePath ${narrativePath}: path must stay inside the charter directory.`, {
+    throw new CharterToolError(`Invalid narrativePath ${narrativePath}: path must stay inside the charter directory.`, {
       code: "evidence.narrative_path_invalid",
       nextActions: [
         { tool: "charter_record", action: "evidence", hint: "Use markdown companions under the charter work/<feature>/evidence run directory." },
@@ -801,84 +801,22 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function loadEvidenceFeature(dir: string, featureId: string, charterId: string): Promise<{ fulfills: string[] }> {
-  let feature;
-  try {
-    feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${featureId}.md`), "utf8"));
-  } catch (error) {
-    throw new CharterToolError(`Evidence file references unknown featureId ${featureId}: ${error instanceof Error ? error.message : String(error)}`, {
-      code: "evidence.unknown_feature",
-      nextActions: [
-        { tool: "charter_plan", action: "view", hint: "List known feature ids, then fix evidenceFile.featureId." },
-      ],
-    });
-  }
-  if (feature.fulfills.length === 0) {
-    throw new CharterToolError(`Feature ${featureId} does not fulfill any criteria in charter ${charterId}.`, {
-      code: "evidence.no_feature_criteria",
-      nextActions: [
-        { tool: "charter_plan", action: "update_feature", hint: `Add at least one fulfilled VAL-* criterion to feature '${featureId}'.` },
-      ],
-    });
-  }
-  return { fulfills: feature.fulfills };
-}
-
 function outcomeFromEvidenceFile(evidence: EvidenceFile): EvidenceOutcome {
-  switch (evidence.kind) {
-    case "command":
-      return Object.values(evidence.checkResults).every((result) => result.outcome === "pass") ? "pass" : "fail";
-    case "readiness": {
-      const readiness = evidence as ReadinessEvidence & { outcome?: EvidenceOutcome };
-      if (readiness.outcome) return readiness.outcome;
-      if (readiness.probeResult === "verified") return "pass";
-      if (readiness.probeResult === "blocking") return "fail";
-      return "partial";
-    }
-    case "review":
-    case "qa":
-      return evidence.outcome as EvidenceOutcome;
-    default:
-      return assertNever(evidence);
-  }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled evidence kind: ${String((value as { kind?: unknown }).kind)}`);
+  return evidence.outcome;
 }
 
 function sourceFromEvidenceFile(evidence: EvidenceFile): NonNullable<EvidenceEntry["source"]> {
-  return evidence.kind === "command" ? "verifier" : "subagent";
+  return evidence.source ?? "manual";
 }
 
 function artifactsFromEvidenceFile(evidence: EvidenceFile, evidenceFile: string): string[] {
-  if (evidence.kind === "qa") return evidence.artifacts.map((artifact) => artifact.path);
+  if (evidence.artifacts?.length) return evidence.artifacts;
   return [evidenceFile];
 }
 
 function recordedByFromEvidenceFile(evidence: EvidenceFile): RecordedBy {
-  if (evidence.kind === "review") {
-    return `subagent:${DEFAULT_HANDOFF_PERSONA}:${evidence.subagentSessionId}` as RecordedBy;
-  }
+  if (evidence.recordedBy?.trim()) return evidence.recordedBy as RecordedBy;
   return DEFAULT_RECORDED_BY;
-}
-
-async function projectCommandCheckResults(dir: string, charterId: string, evidence: CommandEvidence, now: string): Promise<void> {
-  const state = await loadFeatureState(dir, charterId);
-  const feature = state.features[evidence.featureId] ?? { checks: {} };
-  const checks = { ...feature.checks };
-  for (const [checkId, result] of Object.entries(evidence.checkResults)) {
-    checks[checkId] = {
-      status: result.outcome === "pass" ? "passing" : "failing",
-      lastEvidenceTs: now,
-      ...(result.outcome === "fail" ? { lastError: result.stderrHead || result.stdoutHead || `exitCode=${result.exitCode}` } : {}),
-    };
-  }
-  state.features[evidence.featureId] = {
-    ...feature,
-    checks,
-  };
-  await writeFeatureState(dir, state);
 }
 
 export async function loadCriterionState(dir: string, charterId: string): Promise<CriterionStateFile> {
@@ -887,6 +825,7 @@ export async function loadCriterionState(dir: string, charterId: string): Promis
     return {
       charterId: parsed.charterId ?? charterId,
       criteria: parsed.criteria && typeof parsed.criteria === "object" ? (parsed.criteria as Record<string, CriterionStateRecord>) : {},
+      lastToolWriteAt: typeof parsed.lastToolWriteAt === "string" ? parsed.lastToolWriteAt : undefined,
     };
   } catch {
     return { charterId, criteria: {} };
@@ -921,13 +860,13 @@ export async function verifyCriterion(
   const dir = charterDir(projectDir, input.charterId);
   const state = await loadCharterState(dir);
   assertNotV1NeedsReplan(state);
-  if (state.status !== "active" && state.status !== "review") {
+  if (state.status !== "active") {
     throw new CharterToolError(`Cannot verify in status ${state.status}; charter must be active or in review.`, {
       code: "verify.bad_status",
       nextActions: [
         { tool: "charter_status", hint: "Inspect current status; verify is only legal in `active` or `review`." },
-        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so the verifier can run." },
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before running the verifier." },
+        { tool: "charter_status", hint: "Lock the plan to transition from `planning` to `active` so the verifier can run." },
+        { tool: "charter", action: "resume", hint: "Resume the paused charter before running the verifier." },
       ],
     });
   }
@@ -939,7 +878,7 @@ export async function verifyCriterion(
       code: "verify.unknown_criterion",
       nextActions: [
         { tool: "charter_record", action: "verify", hint: `Pass a known criterionId. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
-        { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying." },
+        { tool: "charter_status", hint: "List declared VAL-* criteria before retrying." },
       ],
     });
   }
@@ -954,7 +893,7 @@ export async function verifyCriterion(
       code: "verify.non_command_verifier",
       nextActions: [
         { tool: "charter_record", action: "evidence", hint: `Record evidence manually for ${criterion.id}; only the 'command' verifier auto-runs.` },
-        { tool: "charter_plan", action: "view", hint: "Inspect the criterion to confirm its declared verifier kind." },
+        { tool: "charter_status", hint: "Inspect the criterion to confirm its declared verifier kind." },
       ],
     });
   }
@@ -962,7 +901,7 @@ export async function verifyCriterion(
     throw new CharterToolError(`Criterion ${criterion.id} has verifier=command but no Command: field set in criteria.md.`, {
       code: "verify.missing_command",
       nextActions: [
-        { tool: "charter_plan", action: "view", hint: `Edit criteria.md to add a 'Command:' line under ${criterion.id} (e.g. 'Command: bun test tests/foo.test.ts').` },
+        { tool: "charter_status", hint: `Edit criteria.md to add a 'Command:' line under ${criterion.id} (e.g. 'Command: bun test tests/foo.test.ts').` },
         { tool: "charter_record", action: "evidence", hint: `Record manual evidence for ${criterion.id} until the Command: line is set.` },
       ],
     });
@@ -1018,7 +957,7 @@ async function verifySubagentCriterion(
     throw new CharterToolError(`Criterion ${criterion.id} has verifier=subagent but no valid subagent verifier spec.`, {
       code: "verify.missing_subagent_spec",
       nextActions: [
-        { tool: "charter_plan", action: "view", hint: `Inspect ${criterion.id}; subagent verifiers require Agent: and Task: fields.` },
+        { tool: "charter_status", hint: `Inspect ${criterion.id}; subagent verifiers require Agent: and Task: fields.` },
       ],
     });
   }
@@ -1092,22 +1031,21 @@ async function verifySubagentCriterion(
     throw new CharterToolError(`${SUBAGENT_WRITE_RESTRICTION_MESSAGE} Changed paths: ${paths}`, {
       code: "verify.subagent_forbidden_write",
       nextActions: [
-        { tool: "charter_record", action: "handoff", hint: "Have the subagent report results through a handoff instead of editing plan or charter state files." },
-        { tool: "charter_record", action: "evidence", hint: "Have the subagent write typed evidence under work/<feature>/evidence/<ts>/ and import it with charter_record action=evidence." },
+        { tool: "charter_record", action: "evidence", hint: "Have the subagent report results through a handoff instead of editing plan or charter state files." },
+        { tool: "charter_record", action: "evidence", hint: "Have the subagent write flat evidence under work/<segment>/evidence/<ts>/evidence.json and import it with charter_record action=evidence." },
         { tool: "charter_status", hint: "Inspect charter status after resolving the rejected subagent write." },
       ],
     });
   }
   const responseText = response.content.map((part) => part.text).join("\n");
-  const expectedKind = expectedEvidenceKindForSubagent(verifier);
-  const typedEvidence = await newestTypedEvidenceAfterDispatch(dir, projectDir, {
+  const freshEvidence = await newestFlatEvidenceAfterDispatch(dir, projectDir, {
     featureId: input.featureId,
-    expectedKind,
+    criterionId: criterion.id,
     dispatchStartedAt,
   });
 
-  if (!typedEvidence) {
-    const summary = `subagent verifier ${verifier.agent} produced no fresh typed evidence`;
+  if (!freshEvidence) {
+    const summary = `subagent verifier ${verifier.agent} produced no fresh flat evidence`;
     const evidence = await recordEvidence(projectDir, {
       charterId: input.charterId,
       criterionId: criterion.id,
@@ -1118,7 +1056,6 @@ async function verifySubagentCriterion(
       recordedBy: DEFAULT_RECORDED_BY,
       details: {
         agent: verifier.agent,
-        expectedEvidenceKind: expectedKind,
         dispatchStartedAt: new Date(dispatchStartedAt).toISOString(),
         durationMs,
         responseText,
@@ -1136,24 +1073,22 @@ async function verifySubagentCriterion(
     };
   }
 
-  const evidenceOutcome = outcomeFromEvidenceFile(typedEvidence.evidence);
+  const evidenceOutcome = freshEvidence.evidence.outcome;
   const outcome: EvidenceOutcome = evidenceOutcome === "pass" ? "pass" : "fail";
   const evidence = await recordEvidence(projectDir, {
     charterId: input.charterId,
     criterionId: criterion.id,
-    featureId: input.featureId ?? typedEvidence.evidence.featureId,
+    featureId: input.featureId ?? freshEvidence.evidence.featureId,
     outcome,
-    summary: typedEvidence.evidence.summary,
-    artifacts: artifactsFromEvidenceFile(typedEvidence.evidence, typedEvidence.relativePath),
-    source: sourceFromEvidenceFile(typedEvidence.evidence),
-    recordedBy: recordedByFromEvidenceFile(typedEvidence.evidence),
-    because: typedEvidence.evidence.because,
+    summary: freshEvidence.evidence.summary,
+    artifacts: artifactsFromEvidenceFile(freshEvidence.evidence, freshEvidence.relativePath),
+    source: sourceFromEvidenceFile(freshEvidence.evidence),
+    recordedBy: recordedByFromEvidenceFile(freshEvidence.evidence),
+    because: freshEvidence.evidence.because,
     details: {
-      evidenceFile: typedEvidence.relativePath,
-      kind: typedEvidence.evidence.kind,
-      typedEvidence: typedEvidence.evidence,
+      evidenceFile: freshEvidence.relativePath,
+      importedEvidence: freshEvidence.evidence,
       agent: verifier.agent,
-      expectedEvidenceKind: expectedKind,
       dispatchStartedAt: new Date(dispatchStartedAt).toISOString(),
       durationMs,
       responseText,
@@ -1183,7 +1118,7 @@ function interpolateSubagentTask(
     .replace(/\{commands\.([^}]+)\}/g, (_match, key: string) => input.commands[key] ?? "");
 }
 
-interface TypedEvidenceCandidate {
+interface FlatEvidenceCandidate {
   evidence: EvidenceFile;
   absolutePath: string;
   relativePath: string;
@@ -1191,34 +1126,34 @@ interface TypedEvidenceCandidate {
   evidenceTimeMs: number;
 }
 
-async function newestTypedEvidenceAfterDispatch(
+async function newestFlatEvidenceAfterDispatch(
   dir: string,
   projectDir: string,
-  options: { featureId?: string; expectedKind?: EvidenceKind; dispatchStartedAt: number },
-): Promise<TypedEvidenceCandidate | undefined> {
+  options: { featureId?: string; criterionId: string; dispatchStartedAt: number },
+): Promise<FlatEvidenceCandidate | undefined> {
   const roots = options.featureId
     ? [join(dir, "work", options.featureId, "evidence")]
     : [join(dir, "work")];
-  const candidates: TypedEvidenceCandidate[] = [];
+  const candidates: FlatEvidenceCandidate[] = [];
   for (const root of roots) {
     if (!(await pathExists(root))) continue;
-    await collectTypedEvidenceCandidates(root, dir, projectDir, options, candidates);
+    await collectFlatEvidenceCandidates(root, dir, projectDir, options, candidates);
   }
   candidates.sort((a, b) => (b.evidenceTimeMs - a.evidenceTimeMs) || (b.mtimeMs - a.mtimeMs));
   return candidates[0];
 }
 
-async function collectTypedEvidenceCandidates(
+async function collectFlatEvidenceCandidates(
   current: string,
   dir: string,
   projectDir: string,
-  options: { featureId?: string; expectedKind?: EvidenceKind; dispatchStartedAt: number },
-  candidates: TypedEvidenceCandidate[],
+  options: { featureId?: string; criterionId: string; dispatchStartedAt: number },
+  candidates: FlatEvidenceCandidate[],
 ): Promise<void> {
   for (const entry of await readdir(current, { withFileTypes: true })) {
     const absolutePath = join(current, entry.name);
     if (entry.isDirectory()) {
-      await collectTypedEvidenceCandidates(absolutePath, dir, projectDir, options, candidates);
+      await collectFlatEvidenceCandidates(absolutePath, dir, projectDir, options, candidates);
       continue;
     }
     if (!entry.isFile() || extname(entry.name) !== ".json") continue;
@@ -1232,8 +1167,8 @@ async function collectTypedEvidenceCandidates(
     const validation = validateEvidenceFile(raw);
     if (!validation.ok) continue;
     const evidence = validation.value;
-    if (options.featureId && evidence.featureId !== options.featureId) continue;
-    if (options.expectedKind && evidence.kind !== options.expectedKind) continue;
+    if (evidence.criterionId !== options.criterionId) continue;
+    if (options.featureId && evidence.featureId && evidence.featureId !== options.featureId) continue;
     const evidenceTimeMs = evidenceTimestampMs(evidence) ?? fileStat.mtimeMs;
     if (Math.max(evidenceTimeMs, fileStat.mtimeMs) < options.dispatchStartedAt) continue;
     candidates.push({
@@ -1247,27 +1182,8 @@ async function collectTypedEvidenceCandidates(
 }
 
 function evidenceTimestampMs(evidence: EvidenceFile): number | undefined {
-  const raw = evidence.kind === "command"
-    ? evidence.ts
-    : evidence.kind === "review"
-      ? evidence.reviewedAt
-      : evidence.kind === "readiness"
-        ? evidence.probedAt
-        : undefined;
-  if (!raw) return undefined;
-  const parsed = Date.parse(raw);
+  const parsed = Date.parse(evidence.ts);
   return Number.isNaN(parsed) ? undefined : parsed;
-}
-
-function expectedEvidenceKindForSubagent(verifier: SubagentVerifier): EvidenceKind | undefined {
-  const looseKind = (verifier as SubagentVerifier & { evidenceKind?: unknown }).evidenceKind;
-  if (looseKind === "review" || looseKind === "qa" || looseKind === "readiness" || looseKind === "command") {
-    return looseKind;
-  }
-  if (verifier.agent === "charter-reviewer") return "review";
-  if (verifier.agent === "charter-qa") return "qa";
-  if (verifier.agent === "charter-readiness-probe") return "readiness";
-  return undefined;
 }
 
 interface CommandResult {
@@ -1325,591 +1241,7 @@ function runCommand(command: string, options: { cwd: string; timeoutMs: number; 
   });
 }
 
-export interface HandoffCompletedCriterion {
-  criterionId: string;
-  outcome: EvidenceOutcome;
-  summary: string;
-  artifacts?: string[];
-  details?: Record<string, unknown>;
-}
-
-export interface HandoffInput extends Partial<HandoffRecordInput> {
-  charterId: string;
-  handoffFile?: string;
-  now?: string;
-}
-
-export interface HandoffResult {
-  charterId: string;
-  featureId: string;
-  sessionId: string;
-  handoffPath: string;
-  nextActions: NextAction[];
-}
-
-export async function handoff(projectDir: string, input: HandoffInput): Promise<HandoffResult> {
-  const dir = charterDir(projectDir, input.charterId);
-  return await withCharterLock(dir, () => handoffLocked(projectDir, input));
-}
-
-export async function readLatestHandoff(projectDir: string, charterId: string, featureId: string): Promise<HandoffRecord | undefined> {
-  const dir = charterDir(projectDir, charterId);
-  const handoffsDir = join(dir, "work", featureId, "handoffs");
-  let entries: string[];
-  try {
-    entries = await readdir(handoffsDir);
-  } catch {
-    return undefined;
-  }
-
-  const records: HandoffRecord[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".handoff.json")) continue;
-    try {
-      const parsed = JSON.parse(await readFile(join(handoffsDir, entry), "utf8"));
-      const validation = validateHandoffRecord(parsed);
-      if (validation.ok) records.push(validation.value);
-    } catch {
-      // Ignore malformed or unreadable handoff files; callers need the latest
-      // valid handoff context, not a hard failure caused by stale scratch data.
-    }
-  }
-  records.sort((a, b) => b.completedAt.localeCompare(a.completedAt));
-  return records[0];
-}
-
-async function handoffLocked(projectDir: string, input: HandoffInput): Promise<HandoffResult> {
-  const dir = charterDir(projectDir, input.charterId);
-  const state = await loadCharterState(dir);
-  assertNotV1NeedsReplan(state);
-  if (state.status !== "active" && state.status !== "review") {
-    throw new CharterToolError(`Cannot record handoff in status ${state.status}; charter must be active or in review.`, {
-      code: "handoff.bad_status",
-      nextActions: [
-        { tool: "charter_status", hint: "Inspect current status; handoff recording is only legal in `active` or `review`." },
-        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so handoffs can be recorded." },
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before recording a handoff." },
-      ],
-    });
-  }
-
-  const hasHandoffFile = Boolean(input.handoffFile?.trim());
-  const hasInline = hasInlineHandoffFields(input);
-  if (hasHandoffFile && hasInline) {
-    throw new CharterToolError("charter_record action=handoff: provide either handoffFile or inline handoff fields, not both.", {
-      code: "handoff.mixed_inputs",
-      nextActions: [
-        { tool: "charter_record", action: "handoff", hint: "Use `handoffFile: '<path>'` by itself, or omit handoffFile and pass the inline HandoffRecord fields." },
-      ],
-    });
-  }
-
-  const json = hasHandoffFile
-    ? await loadHandoffJsonFile(dir, input.handoffFile!)
-    : inlineHandoffJson(input);
-  const validation = validateHandoffRecord(json);
-  if (!validation.ok) {
-    throw new CharterToolError(`Handoff record does not match the schema: ${validation.error}`, {
-      code: "handoff.schema_violation",
-      nextActions: [
-        { tool: "charter_record", action: "handoff", hint: "Fix the JSON fields to match the HandoffRecord schema, then retry `handoffFile` or inline fields." },
-      ],
-    });
-  }
-
-  const record = validation.value;
-  assertSafeHandoffPathSegment("featureId", record.featureId);
-  assertSafeHandoffPathSegment("sessionId", record.sessionId);
-  const handoffRelative = join("work", record.featureId, "handoffs", `${record.sessionId}.handoff.json`);
-  const handoffAbsolute = join(dir, handoffRelative);
-  await writeTextAtomic(handoffAbsolute, `${JSON.stringify(record, null, 2)}\n`);
-
-  const featureState = await loadFeatureState(dir, input.charterId);
-  const existing = featureState.features[record.featureId] ?? { checks: {} };
-  if (record.successState === "partial" || record.successState === "failure") {
-    const pendingFeature = {
-      ...existing,
-      status: "pending",
-      lastWorkerSessionId: record.sessionId,
-      lastHandoffPath: handoffRelative,
-    };
-    delete pendingFeature.completedAt;
-    featureState.features[record.featureId] = pendingFeature;
-  } else {
-    featureState.features[record.featureId] = {
-      ...existing,
-      lastWorkerSessionId: record.sessionId,
-      lastHandoffPath: handoffRelative,
-    };
-  }
-  await writeFeatureState(dir, featureState);
-
-  if (record.successState === "partial" || record.successState === "failure") {
-    logger.info("feature reverted to pending", {
-      component: "record-service",
-      charterId: input.charterId,
-      featureId: record.featureId,
-      source: "handoff",
-      successState: record.successState,
-    });
-  }
-  logger.info("handoff recorded", {
-    component: "record-service",
-    charterId: input.charterId,
-    featureId: record.featureId,
-    sessionId: record.sessionId,
-    successState: record.successState,
-    undoneCount: record.whatWasLeftUndone.trim() ? 1 : 0,
-    discoveredIssuesCount: record.discoveredIssues.length,
-    blockingIssues: record.discoveredIssues.filter((issue) => issue.severity === "blocking").length,
-  });
-
-  return {
-    charterId: input.charterId,
-    featureId: record.featureId,
-    sessionId: record.sessionId,
-    handoffPath: handoffRelative,
-    nextActions: [
-      { tool: "charter_status", hint: "Inspect drift after handoff." },
-      ...nextActionsForStatus(state.status),
-    ],
-  };
-}
-
-function hasInlineHandoffFields(input: HandoffInput): boolean {
-  return input.sessionId !== undefined
-    || input.featureId !== undefined
-    || input.agent !== undefined
-    || input.startedAt !== undefined
-    || input.completedAt !== undefined
-    || input.successState !== undefined
-    || input.validatorsPassed !== undefined
-    || input.commitId !== undefined
-    || input.repoPath !== undefined
-    || input.fulfills !== undefined
-    || input.whatWasImplemented !== undefined
-    || input.whatWasLeftUndone !== undefined
-    || input.verification !== undefined
-    || input.discoveredIssues !== undefined
-    || input.skillFeedback !== undefined;
-}
-
-function inlineHandoffJson(input: HandoffInput): unknown {
-  const { charterId: _charterId, handoffFile: _handoffFile, now: _now, ...record } = input;
-  return record;
-}
-
-async function loadHandoffJsonFile(dir: string, handoffFile: string): Promise<unknown> {
-  const path = handoffFilePath(dir, handoffFile);
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (error) {
-    throw new CharterToolError(`Unable to read handoffFile ${handoffFile}: ${error instanceof Error ? error.message : String(error)}`, {
-      code: "handoff.file_read_error",
-      nextActions: [
-        { tool: "charter_record", action: "handoff", hint: `Pass an existing JSON handoff file path (received '${handoffFile}').` },
-      ],
-    });
-  }
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    throw new CharterToolError(`Unable to parse handoffFile ${handoffFile} as JSON: ${error instanceof Error ? error.message : String(error)}`, {
-      code: "handoff.file_read_error",
-      nextActions: [
-        { tool: "charter_record", action: "handoff", hint: `Fix JSON syntax in '${handoffFile}', then retry.` },
-      ],
-    });
-  }
-}
-
-function handoffFilePath(dir: string, handoffFile: string): string {
-  if (isAbsolute(handoffFile)) return handoffFile;
-  return join(dir, handoffFile);
-}
-
-function assertSafeHandoffPathSegment(field: "featureId" | "sessionId", value: string): void {
-  if (!value.trim() || value.includes("/") || value.includes("\\") || value === "." || value === "..") {
-    throw new CharterToolError(`Invalid handoff ${field} '${value}': value must be a single path segment.`, {
-      code: `handoff.invalid_${field}`,
-      nextActions: [
-        { tool: "charter_record", action: "handoff", hint: `Pass ${field} as a non-empty id without path separators.` },
-      ],
-    });
-  }
-}
-
-export interface ApplyHandoffInput {
-  charterId: string;
-  featureId: string;
-  subagentSessionId: string;
-  handoffNote: string;
-  completedCriteria: HandoffCompletedCriterion[];
-  now?: string;
-}
-
-export interface ApplyHandoffResult {
-  charterId: string;
-  featureId: string;
-  subagentSessionId: string;
-  handoffPath: string;
-  appliedCount: number;
-  ts: string;
-  nextActions: NextAction[];
-}
-
-export async function applyHandoff(projectDir: string, input: ApplyHandoffInput): Promise<ApplyHandoffResult> {
-  const dir = charterDir(projectDir, input.charterId);
-  return await withCharterLock(dir, () => applyHandoffLocked(projectDir, input));
-}
-
-async function applyHandoffLocked(projectDir: string, input: ApplyHandoffInput): Promise<ApplyHandoffResult> {
-  // VAL-HANDOFF-SCHEMA: featureId/subagentSessionId/handoffNote/completedCriteria
-  // are validated at the registration boundary (charter_record action=handoff_apply)
-  // which throws CharterToolError with structured nextActions[]. The duplicate
-  // guard that used to live here has been removed so the registration layer is
-  // the single source of truth for these four field validations.
-  const dir = charterDir(projectDir, input.charterId);
-  const state = await loadCharterState(dir);
-  assertNotV1NeedsReplan(state);
-  if (state.status !== "active" && state.status !== "review") {
-    throw new CharterToolError(`Cannot apply handoff in status ${state.status}; charter must be active or in review.`, {
-      code: "handoff_apply.bad_status",
-      nextActions: [
-        { tool: "charter_status", hint: "Inspect current status; handoff_apply is only legal in `active` or `review`." },
-        { tool: "charter_plan", action: "lock_plan", hint: "Lock the plan to transition from `planning` to `active` so handoffs can be applied." },
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before applying a handoff." },
-      ],
-    });
-  }
-  const charter = await loadParsedCharter(dir);
-  const criteriaById = new Map(charter.criteria.map((criterion) => [criterion.id, criterion]));
-  for (const completed of input.completedCriteria) {
-    if (!criteriaById.has(completed.criterionId)) {
-      const known = charter.criteria.map((c) => c.id);
-      throw new CharterToolError(`Unknown criterion ${completed.criterionId} in handoff.`, {
-        code: "handoff_apply.unknown_criterion",
-        nextActions: [
-          { tool: "charter_record", action: "handoff_apply", hint: `completedCriteria[].criterionId must be a declared VAL-* id. Declared: ${known.slice(0, 8).join(", ")}${known.length > 8 ? ", ..." : ""}.` },
-          { tool: "charter_plan", action: "view", hint: "List declared VAL-* criteria before retrying the handoff." },
-        ],
-      });
-    }
-  }
-  const now = input.now ?? new Date().toISOString();
-  const stamp = now.replace(/[:.]/g, "-");
-  const handoffRelative = join("handoffs", `${stamp}__${input.featureId}__${input.subagentSessionId}.json`);
-  const handoffAbsolute = join(dir, handoffRelative);
-  const envelope = {
-    charterId: input.charterId,
-    featureId: input.featureId,
-    subagentSessionId: input.subagentSessionId,
-    handoffNote: input.handoffNote,
-    completedCriteria: input.completedCriteria,
-    ts: now,
-  };
-  await writeTextAtomic(handoffAbsolute, `${JSON.stringify(envelope, null, 2)}\n`);
-
-  const prepared: Array<{
-    completed: HandoffCompletedCriterion;
-    criterion: CharterCriterion;
-    relativePath: string;
-    absolutePath: string;
-    record: Record<string, unknown>;
-    payload: string;
-    recordedBy: RecordedBy;
-  }> = [];
-  const reservedRunDirs = new Set<string>();
-  for (const completed of input.completedCriteria) {
-    const criterion = criteriaById.get(completed.criterionId)!;
-    const recordedBy = `subagent:${DEFAULT_HANDOFF_PERSONA}:${input.subagentSessionId}` as RecordedBy;
-    const { relativePath, absolutePath } = await allocateEvidenceRecordPath(dir, input.featureId, stamp, reservedRunDirs);
-    const record: Record<string, unknown> = {
-      charterId: input.charterId,
-      criterionId: criterion.id,
-      featureId: input.featureId,
-      outcome: completed.outcome,
-      summary: completed.summary.trim(),
-      artifacts: completed.artifacts ?? [],
-      details: { ...(completed.details ?? {}), subagentSessionId: input.subagentSessionId, handoffPath: handoffRelative },
-      source: "subagent",
-      recordedBy,
-      verifier: criterion.verifier,
-      ts: now,
-    };
-    prepared.push({
-      completed,
-      criterion,
-      relativePath,
-      absolutePath,
-      record,
-      payload: `${JSON.stringify(record, null, 2)}\n`,
-      recordedBy,
-    });
-  }
-
-  const writtenPaths: string[] = [];
-  try {
-    for (const item of prepared) {
-      await writeTextAtomic(item.absolutePath, item.payload);
-      writtenPaths.push(item.absolutePath);
-    }
-  } catch (error) {
-    for (const path of writtenPaths) {
-      await unlink(path).catch(() => undefined);
-    }
-    throw error;
-  }
-
-  const criterionState = await loadCriterionState(dir, input.charterId);
-  for (const item of prepared) {
-    criterionState.criteria[item.criterion.id] = {
-      outcome: item.completed.outcome,
-      lastEvidencePath: item.relativePath,
-      lastTs: now,
-      lastSummary: String(item.record.summary),
-      lastFeatureId: input.featureId,
-      source: "subagent",
-      recordedBy: item.recordedBy,
-    };
-  }
-  await writeJsonAtomic(join(dir, "criterion-state.json"), criterionState);
-
-  for (const item of prepared) {
-    await appendEvent(dir, {
-      type: "evidence_recorded",
-      ts: now,
-      charterId: input.charterId,
-      criterionId: item.criterion.id,
-      featureId: input.featureId,
-      outcome: item.completed.outcome,
-      source: "subagent",
-    });
-  }
-
-  const featureState = await loadFeatureState(dir, input.charterId);
-  const existing = featureState.features[input.featureId] ?? { checks: {} };
-  const completed = await handoffCompletesFeature(dir, input.featureId, input.charterId);
-  // A handoff from the charter-reviewer persona is a review, not an
-  // implementation. Preserve any existing implementer session id (VAL-13);
-  // when none is recorded, leave lastWorkerSessionId unset so the
-  // identity-disjoint predicate skips this feature cleanly instead of
-  // treating the reviewer as the implementer.
-  const isReviewHandoff = input.subagentSessionId.startsWith(`${DEFAULT_HANDOFF_PERSONA}-`)
-    || input.subagentSessionId === DEFAULT_HANDOFF_PERSONA
-    || input.subagentSessionId.includes("charter-reviewer");
-  const nextWorkerSessionId = isReviewHandoff
-    ? existing.lastWorkerSessionId
-    : input.subagentSessionId;
-  featureState.features[input.featureId] = {
-    ...existing,
-    status: completed ? "completed" : existing.status ?? "in_progress",
-    startedAt: existing.startedAt ?? now,
-    completedAt: completed ? existing.completedAt ?? now : existing.completedAt,
-    lastWorkerSessionId: nextWorkerSessionId,
-    lastHandoffPath: handoffRelative,
-  };
-  await writeFeatureState(dir, featureState);
-
-  await appendEvent(dir, {
-    type: "handoff_applied",
-    ts: now,
-    charterId: input.charterId,
-    featureId: input.featureId,
-    subagentSessionId: input.subagentSessionId,
-    appliedCount: input.completedCriteria.length,
-  });
-
-  await projectMilestoneReadyForReview(dir, input.charterId, input.featureId, now);
-
-  return {
-    charterId: input.charterId,
-    featureId: input.featureId,
-    subagentSessionId: input.subagentSessionId,
-    handoffPath: handoffRelative,
-    appliedCount: input.completedCriteria.length,
-    ts: now,
-    nextActions: [
-      { tool: "charter_status", hint: "Inspect drift after handoff." },
-      { tool: "charter_record", action: "verify", hint: "Re-run verifiers to confirm subagent claims." },
-      ...nextActionsForStatus(state.status),
-    ],
-  };
-}
-
-async function loadFeatureFulfills(dir: string, featureId: string): Promise<string[] | undefined> {
-  try {
-    const feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${featureId}.md`), "utf8"));
-    return feature.fulfills;
-  } catch {
-    return undefined;
-  }
-}
-
-async function handoffCompletesFeature(dir: string, featureId: string, charterId: string): Promise<boolean> {
-  const fulfills = await loadFeatureFulfills(dir, featureId);
-  if (!fulfills || fulfills.length === 0) return false;
-  const criterionState = await loadCriterionState(dir, charterId);
-  return fulfills.every((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass");
-}
-
-function isFeatureRevertingOutcome(outcome: EvidenceOutcome | undefined): boolean {
-  return outcome === "partial" || outcome === "fail";
-}
-
-/**
- * After an evidence record is written, project fulfilled criterion outcomes
- * onto feature-state. Any partial/fail evidence for a fulfilled criterion
- * reverts the feature to pending; all-pass evidence completes it.
- */
-async function projectFeatureCompletionFromEvidence(dir: string, featureId: string, charterId: string, now: string): Promise<void> {
-  const fulfills = await loadFeatureFulfills(dir, featureId);
-  if (!fulfills || fulfills.length === 0) return;
-  const criterionState = await loadCriterionState(dir, charterId);
-  const revertingCriterion = fulfills
-    .map((criterionId) => ({ criterionId, outcome: criterionState.criteria[criterionId]?.outcome }))
-    .find((entry) => isFeatureRevertingOutcome(entry.outcome));
-  const shouldRevert = Boolean(revertingCriterion);
-  const completed = fulfills.every((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass");
-  if (!shouldRevert && !completed) return;
-  const featureState = await loadFeatureState(dir, charterId);
-  const existing = featureState.features[featureId] ?? { checks: {} };
-  if (shouldRevert) {
-    if (existing.status === "pending" && existing.completedAt === undefined) return;
-    const pendingFeature = {
-      ...existing,
-      status: "pending",
-    };
-    delete pendingFeature.completedAt;
-    featureState.features[featureId] = pendingFeature;
-    await writeFeatureState(dir, featureState);
-    logger.info("feature reverted to pending", {
-      component: "record-service",
-      charterId,
-      featureId,
-      source: "evidence",
-      criterionId: revertingCriterion?.criterionId,
-      outcome: revertingCriterion?.outcome,
-    });
-    return;
-  }
-  if (existing.status === "completed") return;
-  featureState.features[featureId] = {
-    ...existing,
-    status: "completed",
-    startedAt: existing.startedAt ?? now,
-    completedAt: existing.completedAt ?? now,
-  };
-  await writeFeatureState(dir, featureState);
-}
-
-/**
- * After a feature flips to completed, check whether every feature in the
- * same milestone is now completed (none failed). If so, emit a single
- * `milestone_ready_for_review` event per `(milestoneId, planDigest)`. The
- * event is purely additive — it never gates anything. Charter status and the
- * evaluator surface it.
- */
-async function projectMilestoneReadyForReview(
-  dir: string,
-  charterId: string,
-  triggeringFeatureId: string,
-  now: string,
-): Promise<void> {
-  // Identify the milestone of the triggering feature.
-  let triggeringMilestone: string;
-  try {
-    const feature = parseFeatureMarkdown(await readFile(join(dir, "plan", `${triggeringFeatureId}.md`), "utf8"));
-    triggeringMilestone = feature.milestone;
-  } catch {
-    return;
-  }
-  if (!triggeringMilestone) return;
-
-  // Load every feature in the milestone and union their fulfills.
-  // Planner-authored review/QA/readiness features are first-class and must
-  // complete before the milestone-ready review signal fires.
-  const planDir = join(dir, "plan");
-  let entries: string[];
-  try {
-    entries = (await readdir(planDir)).filter((entry) => entry.endsWith(".md"));
-  } catch {
-    return;
-  }
-  const milestoneFeatures: { id: string; fulfills: string[] }[] = [];
-  for (const entry of entries) {
-    let feature;
-    try {
-      feature = parseFeatureMarkdown(await readFile(join(planDir, entry), "utf8"));
-    } catch {
-      continue;
-    }
-    if (feature.milestone === triggeringMilestone) {
-      milestoneFeatures.push({ id: feature.id, fulfills: feature.fulfills });
-    }
-  }
-  if (milestoneFeatures.length === 0) return;
-
-  const featureState = await loadFeatureState(dir, charterId);
-  // Suppress when ANY feature in the milestone is marked failed.
-  for (const feature of milestoneFeatures) {
-    if (featureState.features[feature.id]?.status === "failed") return;
-  }
-  // Require ALL features completed.
-  for (const feature of milestoneFeatures) {
-    if (featureState.features[feature.id]?.status !== "completed") return;
-  }
-
-  const planDigest = await loadPlanDigest(dir);
-  // Idempotency: skip if an event for this (milestoneId, planDigest) already exists.
-  const eventsPath = join(dir, "events.jsonl");
-  let existing = "";
-  try {
-    existing = await readFile(eventsPath, "utf8");
-  } catch {
-    existing = "";
-  }
-  if (existing) {
-    for (const line of existing.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      try {
-        const event = JSON.parse(line) as Record<string, unknown>;
-        if (
-          event.type === "milestone_ready_for_review" &&
-          event.milestoneId === triggeringMilestone &&
-          event.planDigest === planDigest
-        ) {
-          return;
-        }
-      } catch {
-        // ignore malformed lines
-      }
-    }
-  }
-
-  const criterionIds = Array.from(new Set(milestoneFeatures.flatMap((feature) => feature.fulfills))).sort();
-  await appendEvent(dir, {
-    type: "milestone_ready_for_review",
-    ts: now,
-    charterId,
-    milestoneId: triggeringMilestone,
-    planDigest,
-    criterionIds,
-  });
-}
-
-async function loadPlanDigest(dir: string): Promise<string> {
-  try {
-    const parsed = JSON.parse(await readFile(join(dir, "state.json"), "utf8")) as { planDigest?: unknown };
-    if (typeof parsed.planDigest === "string") return parsed.planDigest;
-  } catch {
-    // fall through
-  }
-  return "";
-}
-
-function nextActionsForEvidence(criterion: CharterCriterion, outcome: EvidenceOutcome, status: "active" | "review"): NextAction[] {
+function nextActionsForEvidence(criterion: CharterCriterion, outcome: EvidenceOutcome, status: "active"): NextAction[] {
   const baseline = nextActionsForStatus(status);
   if (outcome === "fail" || outcome === "partial") {
     return [

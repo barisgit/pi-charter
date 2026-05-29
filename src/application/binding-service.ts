@@ -150,7 +150,7 @@ export class NoCharterBoundError extends Error {
   readonly hint: string;
   constructor(
     message = "no charter bound to this session",
-    hint = "Call charter_manage action=create to start one, or rebind this session via session_start.",
+    hint = "Call charter action=create to start one, or rebind this session via session_start.",
   ) {
     super(message);
     this.name = "NoCharterBoundError";
@@ -166,8 +166,8 @@ export class NoCharterBoundError extends Error {
  * pass-through (`"argument"`) from a defaulted resolution (`"binding"`).
  * Throws `NoCharterBoundError` when neither path produces a charterId; the
  * error message contains the literal phrase `"no charter bound"` so the
- * VAL-2 grep test and operator log searches work without coupling to the
- * exact wording elsewhere in the codebase.
+ * bound-charter defaults test and operator log searches work without coupling
+ * to the exact wording elsewhere in the codebase.
  */
 export async function resolveCharterId(
   input: { charterId?: string },

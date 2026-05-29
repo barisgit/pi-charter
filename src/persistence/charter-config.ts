@@ -34,10 +34,10 @@ export type CharterPersonaRole = "plannerCritic" | "reviewer" | "qa" | "readines
 
 const DEFAULT_CHARTER_CONFIG: CharterConfig = {
   personas: {
-    plannerCritic: "charter-planner-critic",
-    reviewer: "charter-reviewer",
-    qa: "charter-qa",
-    readinessProbe: "charter-readiness-probe",
+    plannerCritic: "",
+    reviewer: "",
+    qa: "",
+    readinessProbe: "",
   },
   qaDir: "docs/qa",
   policy: "interactive",

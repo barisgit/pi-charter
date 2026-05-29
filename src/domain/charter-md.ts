@@ -1,5 +1,5 @@
 import { validateVerifier, type Verifier, type VerifierKind } from "./verifier";
-import type { CharterCommands, CharterCriterion, ParsedCharterMarkdown, ParseWarning } from "./types";
+import type { CharterCommands, CharterCriterion, CharterMilestone, ParsedCharterMarkdown, ParseWarning } from "./types";
 
 const DEFAULT_VERIFIER: VerifierKind = "manual";
 
@@ -33,36 +33,32 @@ export function renderInitialCharterMarkdown(objective: string, name = "Untitled
 }
 
 export function renderInitialCriteriaMarkdown(name = "Untitled"): string {
-  // The initial criteria template doubles as a worked example. The parser
-  // recognizes criteria written as `## VAL-<ID>` headings in criteria.md. For
-  // migration grace, it also accepts the old charter.md `## Criteria` wrapper
-  // with `### VAL-<ID>` H3 headings when criteria.md is absent.
+  // v3 criteria.md uses ## milestone headings with ### VAL-* leaves.
+  // Flat ## VAL-* headings remain supported for legacy charters.
   return [
     `# Criteria for ${name.trim() || "Untitled"}`,
     "",
     "<!--",
-    "Replace the example below with real VAL-* criteria for this charter.",
+    "Replace the example below with real milestones and VAL-* criteria.",
     "",
     "Format (strict — parsed by pi-charter):",
-    "  ## VAL-<UPPER-SNAKE-OR-NUMERIC-ID> <short title>",
+    "  ## <milestone-id> <optional title>",
+    "  ### VAL-<UPPER-SNAKE-OR-NUMERIC-ID> <short title>",
     "  <behavioral statement>",
-    "  Verifier: <command|review|qa|readiness|evidence-exists>",
+    "  Verifier: <command|manual|hook|prompt|subagent|evidence-exists>",
     "  Command: <shell command if Verifier: command>",
     "  Because: <required for manual verifier>",
     "  RequireFreshEvidence: <true|false>",
     "  RequireReviewSubagent: <true|false>",
-    "",
-    "Notes:",
-    "  - Bullet lists (`- VAL-1: ...`) are IGNORED. Use ## VAL- headings.",
-    "  - Every VAL-* id you list here must be the fulfills= target of at least one",
-    "    feature added via charter_plan action=add_feature.",
     "-->",
     "",
-    "## VAL-EXAMPLE Example criterion (delete me)",
+    "## m0-example Example milestone (delete me)",
+    "",
+    "### VAL-EXAMPLE Example criterion (delete me)",
     "Replace this example with the real outcome you want verified.",
     "",
     "Verifier: command",
-    "Command: <e.g. bun test tests/example.test.ts>",
+    "Command: <behavior-level: a whole test file/glob or a real command, e.g. bun test tests/example.test.ts — NOT bun test -t '<title>'>",
     "RequireFreshEvidence: false",
     "RequireReviewSubagent: false",
     "",
@@ -110,14 +106,21 @@ export function parseCharterMarkdown<T extends ParseCharterOptions>(markdown: st
   const sections = splitH2Sections(markdown);
   const objective = cleanBlock(sections.get("objective") ?? "");
   const warnings: ParseWarning[] = [];
-  const criteria = _options.criteriaMarkdown !== undefined
+  const { criteria, milestones } = _options.criteriaMarkdown !== undefined
     ? parseCriteriaMarkdown(_options.criteriaMarkdown, warnings)
-    : parseCriteria(sections.get("criteria") ?? "", warnings);
+    : (() => {
+      const legacy = parseCriteriaWithMilestones(sections.get("criteria") ?? "", warnings, 3);
+      if (legacy.criteria.length > 0) return legacy;
+      return {
+        criteria: parseCriteria(sections.get("criteria") ?? "", warnings),
+        milestones: [],
+      };
+    })();
   const constraints = parseConstraints(sections.get("scope and constraints") ?? "");
   const commands = sections.has("commands") ? parseCommands(sections.get("commands") ?? "", warnings) : {};
   const qaSection = sections.has("qa") ? sections.get("qa") : undefined;
   const readinessSection = sections.has("readiness") ? sections.get("readiness") : undefined;
-  return { objective, criteria, constraints, commands, qaSection, readinessSection, warnings };
+  return { objective, criteria, milestones, constraints, commands, qaSection, readinessSection, warnings };
 }
 
 function splitH2Sections(markdown: string): Map<string, string> {
@@ -139,18 +142,89 @@ function splitH2Sections(markdown: string): Map<string, string> {
   return sections;
 }
 
-export function parseCriteriaMarkdown(markdown: string, warnings: ParseWarning[] = []): CharterCriterion[] {
-  const criteria = parseCriteriaByHeadingLevel(markdown, warnings, 2);
-  if (criteria.length > 0) return criteria;
+const VAL_HEADING_RE = /^VAL-[A-Z0-9-]+/;
+
+export interface ParsedCriteriaMarkdown {
+  criteria: CharterCriterion[];
+  milestones: CharterMilestone[];
+}
+
+export function parseCriteriaMarkdown(markdown: string, warnings: ParseWarning[] = []): ParsedCriteriaMarkdown {
+  const fromMilestones = parseCriteriaWithMilestones(markdown, warnings, 2);
+  if (fromMilestones.criteria.length > 0) return fromMilestones;
 
   const sections = splitH2Sections(markdown);
-  if (sections.has("criteria")) return parseCriteria(sections.get("criteria") ?? "", warnings);
+  if (sections.has("criteria")) {
+    return parseCriteriaWithMilestones(sections.get("criteria") ?? "", warnings, 3);
+  }
 
-  return parseCriteria(markdown, warnings);
+  return {
+    criteria: parseCriteriaByHeadingLevel(markdown, warnings, 3),
+    milestones: [],
+  };
 }
 
 function parseCriteria(section: string, warnings: ParseWarning[]): CharterCriterion[] {
   return parseCriteriaByHeadingLevel(section, warnings, 3);
+}
+
+function parseCriteriaWithMilestones(
+  markdown: string,
+  warnings: ParseWarning[],
+  valHeadingLevel: 2 | 3,
+): ParsedCriteriaMarkdown {
+  const sections = splitCriteriaH2Sections(markdown);
+  if (sections.length === 0) return { criteria: [], milestones: [] };
+
+  const criteria: CharterCriterion[] = [];
+  const milestones: CharterMilestone[] = [];
+  for (const section of sections) {
+    const heading = section.heading.trim();
+    if (VAL_HEADING_RE.test(heading)) {
+      const parsed = parseCriterion(heading, section.body, warnings);
+      if (parsed) criteria.push(parsed);
+      continue;
+    }
+    const milestoneCriteria = parseCriteriaByHeadingLevel(section.body, warnings, valHeadingLevel === 2 ? 3 : 3);
+    if (milestoneCriteria.length === 0) continue;
+    const { id, title } = milestoneHeadingParts(heading);
+    const criterionIds = milestoneCriteria.map((criterion) => criterion.id);
+    criteria.push(...milestoneCriteria);
+    milestones.push({ id, title, criterionIds });
+  }
+  return { criteria, milestones };
+}
+
+function splitCriteriaH2Sections(markdown: string): Array<{ heading: string; body: string }> {
+  const sections: Array<{ heading: string; body: string }> = [];
+  let currentHeading: string | undefined;
+  let buffer: string[] = [];
+
+  for (const line of markdown.split(/\r?\n/)) {
+    const h1 = /^#\s+/.exec(line);
+    if (h1) {
+      if (currentHeading) sections.push({ heading: currentHeading, body: buffer.join("\n") });
+      currentHeading = undefined;
+      buffer = [];
+      continue;
+    }
+    const h2 = /^##\s+(.+?)\s*$/.exec(line);
+    if (h2) {
+      if (currentHeading) sections.push({ heading: currentHeading, body: buffer.join("\n") });
+      currentHeading = h2[1].trim();
+      buffer = [];
+      continue;
+    }
+    if (currentHeading) buffer.push(line);
+  }
+  if (currentHeading) sections.push({ heading: currentHeading, body: buffer.join("\n") });
+  return sections;
+}
+
+function milestoneHeadingParts(heading: string): { id: string; title: string } {
+  const trimmed = heading.trim();
+  const id = trimmed.split(/\s+/)[0] ?? trimmed;
+  return { id, title: trimmed };
 }
 
 function parseCriteriaByHeadingLevel(section: string, warnings: ParseWarning[], headingLevel: 2 | 3): CharterCriterion[] {
@@ -197,7 +271,14 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
   if (verifierRaw?.trim().toLowerCase() === "manual" && !because) {
     warnings.push({ criterionId: headingMatch[1], reason: "missing-because" });
   }
-  const verifierSpec = parseVerifier(verifierRaw, fields, commandValue, headingMatch[1]);
+  const verifierSpec = parseVerifier(verifierRaw, fields, commandValue, headingMatch[1], warnings);
+  if (verifierSpec.kind === "command" && isPhraseCoupledTestCommand(commandValue)) {
+    warnings.push({
+      criterionId: headingMatch[1],
+      reason: "weak-verifier-phrase-coupled",
+      detail: "command filters tests by title (-t/--test-name-pattern) without a file/glob; this couples the VAL to a brittle test name and passes silently on 0 matches. Verify a behavior at file/glob/observable-command level instead.",
+    });
+  }
   const description = fields.get("description") ?? parseBodyDescription(body);
   return {
     id: headingMatch[1],
@@ -215,6 +296,117 @@ function parseCriterion(heading: string, body: string, warnings: ParseWarning[])
     ),
     because,
   };
+}
+
+/**
+ * Detect the phrase-coupled test anti-pattern: a command verifier that selects
+ * tests by TITLE (`-t '<phrase>'` / `--test-name-pattern`) without naming a test
+ * FILE or GLOB. That form couples the VAL to one implementer's test title and,
+ * worst of all, EXITS 0 when zero tests match. Behavior-level verifiers (a whole
+ * file/glob, or a real observable command) fail on absence for free. Conservative
+ * string heuristic — no execution, no test-runner output parsing.
+ */
+export function isPhraseCoupledTestCommand(command: string | undefined): boolean {
+  const raw = command?.trim();
+  if (!raw) return false;
+  // Tokenize quote-aware (so a separator or file-looking token INSIDE a quoted
+  // title phrase does not mis-split the command or mask the warning), splitting
+  // into shell segments on unquoted && || ; | & and newlines. A phrase-coupled
+  // run chained with a real file run stays flagged on its weak segment.
+  return splitShellSegments(raw).some(isPhraseCoupledSegment);
+}
+
+// Title-filter flags common to most runners. `-t` is added per-runner below
+// because in Mocha `-t` is `--timeout`, not a title filter.
+const TITLE_FLAGS_COMMON = new Set(["-g", "--grep", "--test-name-pattern", "--testNamePattern"]);
+// Options whose VALUE is a config/setup path, not a test selector — their value
+// must not be mistaken for behavior-level file coverage.
+const PATH_OPTION_FLAGS = new Set(["--config", "-c", "--preload", "--require", "-r", "--reporter", "--setupFiles", "--setup"]);
+
+function isPhraseCoupledSegment(tokens: string[]): boolean {
+  const runner = detectRunner(tokens);
+  if (!runner) return false;
+  const titleFlags = new Set(TITLE_FLAGS_COMMON);
+  if (runner.name !== "mocha") titleFlags.add("-t"); // bun/jest/vitest use -t for title
+
+  // Walk only the ARGS (after the runner subcommand), so env prefixes and the
+  // `bun test` literal are never mistaken for file coverage. Classify each
+  // token: title flag (consumes its value), path-option flag (consumes its
+  // value), other flag (boolean, skipped), or positional (file/glob check).
+  let hasTitleFilter = false;
+  let hasFileOrGlob = false;
+  const args = tokens.slice(runner.argStart);
+  for (let i = 0; i < args.length; i++) {
+    const tok = args[i];
+    const eq = tok.indexOf("=");
+    const flag = tok.startsWith("-") ? (eq === -1 ? tok : tok.slice(0, eq)) : undefined;
+    if (flag && titleFlags.has(flag)) {
+      hasTitleFilter = true;
+      if (eq === -1 && i + 1 < args.length && !args[i + 1].startsWith("-")) i++; // consume value
+      continue;
+    }
+    if (flag && PATH_OPTION_FLAGS.has(flag)) {
+      if (eq === -1 && i + 1 < args.length && !args[i + 1].startsWith("-")) i++; // consume path value
+      continue;
+    }
+    if (flag) continue; // boolean / unknown flag
+    if (/(\.[cm]?[jt]sx?$|\.test\b|\.spec\b|\/|[*?{])/.test(tok)) hasFileOrGlob = true; // positional file/glob
+  }
+  return hasTitleFilter && !hasFileOrGlob;
+}
+
+/**
+ * Detect a test runner from the command head (after env assignments) and return
+ * its name plus the token index where its ARGS begin. Returns undefined when the
+ * segment is not a recognized test-runner invocation.
+ */
+function detectRunner(tokens: string[]): { name: string; argStart: number } | undefined {
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++; // skip FOO=1 prefixes
+  const t0 = tokens[i], t1 = tokens[i + 1], t2 = tokens[i + 2];
+  if (!t0) return undefined;
+  if (t0 === "vitest" || t0 === "jest" || t0 === "mocha") return { name: t0, argStart: i + 1 };
+  if (t0 === "bun" || t0 === "npm" || t0 === "pnpm" || t0 === "yarn") {
+    if (t1 === "test") return { name: t0, argStart: i + 2 };
+    if (t1 === "run" && t2 === "test") return { name: t0, argStart: i + 3 };
+    return undefined;
+  }
+  if (t0 === "deno" && t1 === "test") return { name: "deno", argStart: i + 2 };
+  if (t0 === "playwright" && t1 === "test") return { name: "playwright", argStart: i + 2 };
+  if (t0 === "node" && tokens.slice(i).includes("--test")) return { name: "node", argStart: i + 1 };
+  if (t0 === "npx" && (t1 === "vitest" || t1 === "jest" || t1 === "mocha" || t1 === "playwright")) {
+    return { name: t1, argStart: t1 === "playwright" && t2 === "test" ? i + 3 : i + 2 };
+  }
+  return undefined;
+}
+
+/** Quote-aware split into shell segments, each a list of tokens. */
+function splitShellSegments(raw: string): string[][] {
+  const segments: string[][] = [];
+  let current: string[] = [];
+  let token = "";
+  let hasToken = false;
+  const endToken = () => { if (hasToken) { current.push(token); token = ""; hasToken = false; } };
+  const endSegment = () => { endToken(); if (current.length) { segments.push(current); current = []; } };
+  let i = 0;
+  while (i < raw.length) {
+    const c = raw[i];
+    if (c === "'" || c === "\"") {
+      const close = raw.indexOf(c, i + 1);
+      const end = close === -1 ? raw.length : close;
+      token += raw.slice(i + 1, end);
+      hasToken = true;
+      i = end + 1;
+      continue;
+    }
+    if (c === "\n" || c === "\r") { endSegment(); i++; continue; }
+    if (c === " " || c === "\t") { endToken(); i++; continue; }
+    if ((c === "&" && raw[i + 1] === "&") || (c === "|" && raw[i + 1] === "|")) { endSegment(); i += 2; continue; }
+    if (c === ";" || c === "|" || c === "&") { endSegment(); i++; continue; }
+    token += c; hasToken = true; i++;
+  }
+  endSegment();
+  return segments;
 }
 
 function parseFields(body: string): Map<string, string> {
@@ -260,8 +452,9 @@ function parseVerifier(
   fields: Map<string, string>,
   commandValue: string | undefined,
   criterionId: string,
+  warnings: ParseWarning[],
 ): Verifier {
-  const kind = parseVerifierKind(value, criterionId);
+  const kind = parseVerifierKind(value, criterionId, warnings);
   const evidenceKind = evidenceKindAlias(value);
   let verifier: unknown;
   switch (kind) {
@@ -293,10 +486,18 @@ function parseVerifier(
 
   const result = validateVerifier(verifier);
   if (result.ok) return result.value;
-  throw new Error(`Invalid verifier for ${criterionId}: ${result.error}`);
+  // Recoverable authoring mistake: a present-but-incomplete verifier (for
+  // example `Verifier: subagent` with no Agent/Task lines). Degrade to a safe
+  // manual verifier and surface a warning instead of throwing. A throw here
+  // propagates up through loadParsedCharter (whose callers swallow it into
+  // empty defaults), which would silently zero EVERY criterion in the
+  // register over one malformed entry. Independent flags such as
+  // requireReviewSubagent still apply to the degraded criterion.
+  warnings.push({ criterionId, reason: "invalid-verifier", detail: result.error });
+  return { kind: "manual" };
 }
 
-function parseVerifierKind(value: string | undefined, criterionId: string): VerifierKind {
+function parseVerifierKind(value: string | undefined, criterionId: string, warnings: ParseWarning[]): VerifierKind {
   if (value === undefined) return DEFAULT_VERIFIER;
   const normalized = value.trim().toLowerCase();
   if (
@@ -308,7 +509,10 @@ function parseVerifierKind(value: string | undefined, criterionId: string): Veri
     normalized === "evidence-exists"
   ) return normalized;
   if (normalized === "review" || normalized === "qa" || normalized === "readiness") return "evidence-exists";
-  throw new Error(`Unknown verifier kind for ${criterionId}: ${value}`);
+  // Unknown kind (typo, unsupported value): degrade to the default verifier
+  // and warn rather than throwing and zeroing the whole register.
+  warnings.push({ criterionId, reason: "invalid-verifier", detail: `Unknown verifier kind: ${value}` });
+  return DEFAULT_VERIFIER;
 }
 
 function evidenceKindAlias(value: string | undefined): "review" | "qa" | "readiness" | undefined {

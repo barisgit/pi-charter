@@ -1,6 +1,6 @@
 # pi-charter Context
 
-pi-charter is a Pi extension for durable, charter-bound agent work: an agent receives an objective, authors or reuses a charter, decomposes the work into features, records evidence against criteria, and stays aligned until the charter is satisfied.
+pi-charter is a Pi extension for durable, charter-bound agent work: an agent receives an objective, authors or reuses a charter (charter.md + criteria.md), groups VAL-* criteria under milestone headings, records evidence against each criterion, and stays aligned until the completion gate passes.
 
 This context defines the domain language. It intentionally describes the product model, not TypeScript implementation details.
 

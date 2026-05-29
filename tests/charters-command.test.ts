@@ -1,31 +1,19 @@
 /**
  * VAL-6 verifier: `/charters` slash command.
- *
- * Exercises:
- *  - bare invocation opens the picker overlay (ctx.ui.custom is spied),
- *  - `/charters list` notifies a multi-line summary,
- *  - `/charters select <id>` -> selection becomes `explicit`,
- *  - `/charters select none` -> selection becomes `explicit-clear` and
- *    SURVIVES a subsequent widget refresh (the selection module never
- *    auto-promotes back to `unset`),
- *  - status/pause/resume with no selection and 2 actives re-open the picker,
- *  - tab-completion: verbs for the bare prefix; ids + literal `none` for
- *    `select <prefix>`.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCharter } from "../src/application/service";
-import { lockPlan } from "../src/application/plan-service";
-import { writeFile, mkdir } from "node:fs/promises";
 import { registerCharterCommands } from "../src/application/registration";
 import {
   getCharterSelection,
   resetCharterSelection,
   setCharterSelection,
 } from "../src/ui/charter-selection";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 type RegisteredCommand = {
   description?: string;
@@ -101,41 +89,23 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
-const VALIDATION_MD = `## Validation
-
-### Happy
-- check: smoke-happy
-  command: true
-
-### Edge
-- check: smoke-edge
-  command: true
-`;
-
 async function seedActiveCharter(projectDir: string, opts: { name: string; objective?: string }): Promise<string> {
-  const created = await createCharter(projectDir, {
-    objective: opts.objective ?? `objective for ${opts.name}`,
+  const charterId = randomUUID();
+  await makeActiveCharter({
+    projectDir,
+    charterId,
     name: opts.name,
+    objective: opts.objective ?? `objective for ${opts.name}`,
     now: "2026-05-15T00:00:00.000Z",
+    criteria: [{ id: "VAL-1", title: "first", because: "test fixture rationale" }],
   });
-  const dir = join(projectDir, ".pi/charters", created.charterId);
-  await writeFile(
-    join(dir, "charter.md"),
-    `# Charter\n## Objective\n${opts.objective ?? `objective for ${opts.name}`}\n## Criteria\n### VAL-1 first\nVerifier: manual\nBecause: test fixture rationale\n## Scope and constraints\n- none\n`,
-  );
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await writeFile(
-    join(dir, "plan/f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
-  );
-  await lockPlan(projectDir, { charterId: created.charterId, now: "2026-05-15T00:01:00.000Z" });
-  return created.charterId;
+  return charterId;
 }
 
 beforeEach(() => resetCharterSelection());
 afterEach(() => resetCharterSelection());
 
-describe("VAL-6: /charters command", () => {
+describe("/charters command", () => {
   test("bare opens the picker overlay with overlay anchor/width options", async () => {
     await withTempProject(async (projectDir) => {
       const idA = await seedActiveCharter(projectDir, { name: "alpha" });
@@ -143,7 +113,6 @@ describe("VAL-6: /charters command", () => {
       const pi = makeFakePi();
       registerCharterCommands(pi as never);
       const charters = pi.commands.get("charters")!;
-      // Picker confirms charter A.
       const { ctx, customCalls } = makeCtx(projectDir, { hasUI: true, customResult: idA });
       await charters.handler("", ctx);
       expect(customCalls).toHaveLength(1);
@@ -152,7 +121,6 @@ describe("VAL-6: /charters command", () => {
         overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
       });
       expect(getCharterSelection()).toEqual({ kind: "explicit", charterId: idA });
-      // sanity: idB exists, ensures we actually had a multi-charter project
       expect(idB).not.toEqual(idA);
     });
   });
@@ -168,7 +136,6 @@ describe("VAL-6: /charters command", () => {
       expect(notifications).toHaveLength(1);
       const lines = notifications[0]!.message.split("\n");
       expect(lines).toHaveLength(2);
-      // Each row carries: <id-prefix>  <name>  <status>  <pass/total>
       for (const line of lines) {
         expect(line).toMatch(/^[0-9a-f]+\s+\w+\s+\w+\s+\d+\/\d+$/);
       }
@@ -194,7 +161,6 @@ describe("VAL-6: /charters command", () => {
       const { ctx } = makeCtx(projectDir);
       await pi.commands.get("charters")!.handler("select none", ctx);
       expect(getCharterSelection()).toEqual({ kind: "explicit-clear" });
-      // Simulate "another refresh" — no command mutates selection in between.
       expect(getCharterSelection()).toEqual({ kind: "explicit-clear" });
     });
   });
@@ -220,7 +186,6 @@ describe("VAL-6: /charters command", () => {
       const { ctx, notifications } = makeCtx(projectDir, { hasUI: false });
       await pi.commands.get("charters")!.handler("status", ctx);
       expect(notifications).toHaveLength(1);
-      // The hint mentions the short id prefixes of both actives.
       expect(notifications[0]!.message).toContain(idA.slice(0, 8));
       expect(notifications[0]!.message).toContain(idB.slice(0, 8));
     });
@@ -241,22 +206,19 @@ describe("VAL-6: /charters command", () => {
   test("status with explicit selection on a terminated charter downgrades to unset and falls back", async () => {
     await withTempProject(async (projectDir) => {
       const idA = await seedActiveCharter(projectDir, { name: "alpha" });
-      // Set explicit to an id that is NOT in the active list.
       setCharterSelection({ kind: "explicit", charterId: "ghost-charter-id" });
       const pi = makeFakePi();
       registerCharterCommands(pi as never);
       const { ctx, notifications } = makeCtx(projectDir);
       await pi.commands.get("charters")!.handler("status", ctx);
-      // Sole active -> fallback notifies; selection downgraded.
       expect(notifications).toHaveLength(1);
       expect(getCharterSelection()).toEqual({ kind: "unset" });
-      // sanity: we did seed idA
       expect(typeof idA).toBe("string");
     });
   });
 });
 
-describe("VAL-6: /charters autocompletions", () => {
+describe("/charters autocompletions", () => {
   test("empty / verb prefix completes the verb set", async () => {
     const pi = makeFakePi();
     registerCharterCommands(pi as never);

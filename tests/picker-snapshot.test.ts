@@ -12,7 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CharterStatus } from "../src/domain/types";
+import type { CharterStatus, LegacyCharterStatus } from "../src/domain/types";
 import {
   buildPickerSnapshot,
   extractTitleFromH3,
@@ -23,21 +23,15 @@ interface CharterFixture {
   charterId: string;
   name?: string;
   objective?: string;
-  status: CharterStatus;
+  status: CharterStatus | LegacyCharterStatus;
   createdAt: string;
   completedAt?: string;
   terminatedAt?: string;
   charterMd?: string;
+  criteriaMd?: string;
   criterionState?: Record<string, { outcome: "pass" | "fail" | "partial" }>;
-  featureState?: Record<string, { status: "completed" | "in_progress" | "pending" }>;
-  features?: Array<{
-    id: string;
-    milestone: string;
-    order: number;
-    fulfills: string[];
-  }>;
   evidence?: Array<{
-    featureId: string;
+    workSegment?: string;
     file: string;
     criterionId: string;
     outcome: "pass" | "fail" | "partial";
@@ -59,7 +53,7 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 
 async function seedCharter(projectDir: string, f: CharterFixture): Promise<void> {
   const dir = join(projectDir, ".pi", "charters", f.charterId);
-  await mkdir(join(dir, "plan"), { recursive: true });
+  await mkdir(dir, { recursive: true });
 
   if (!f.omitState) {
     const state: Record<string, unknown> = {
@@ -80,9 +74,13 @@ async function seedCharter(projectDir: string, f: CharterFixture): Promise<void>
   } else {
     await writeFile(
       join(dir, "charter.md"),
-      ["# Charter", "", "## Objective", "", f.objective ?? "n/a", "", "## Criteria", ""].join("\n"),
+      ["# Charter", "", "## Objective", "", f.objective ?? "n/a", ""].join("\n"),
       "utf8",
     );
+  }
+
+  if (f.criteriaMd !== undefined) {
+    await writeFile(join(dir, "criteria.md"), f.criteriaMd, "utf8");
   }
 
   if (f.criterionState) {
@@ -102,37 +100,13 @@ async function seedCharter(projectDir: string, f: CharterFixture): Promise<void>
     );
   }
 
-  if (f.featureState) {
-    await writeFile(
-      join(dir, "feature-state.json"),
-      `${JSON.stringify({ charterId: f.charterId, features: f.featureState }, null, 2)}\n`,
-      "utf8",
-    );
-  }
-
-  for (const feature of f.features ?? []) {
-    const frontmatter = [
-      "---",
-      `id: ${feature.id}`,
-      `milestone: ${feature.milestone}`,
-      `order: ${feature.order}`,
-      "fulfills:",
-      ...feature.fulfills.map((v) => `  - ${v}`),
-      "preconditions: []",
-      "---",
-      `Feature ${feature.id}`,
-      "",
-    ].join("\n");
-    await writeFile(join(dir, "plan", `${feature.id}.md`), frontmatter, "utf8");
-  }
-
   for (const ev of f.evidence ?? []) {
-    const evidenceDir = join(dir, "work", ev.featureId, "evidence");
+    const workSegment = ev.workSegment ?? "_charter";
+    const evidenceDir = join(dir, "work", workSegment, "evidence");
     await mkdir(evidenceDir, { recursive: true });
     const record = {
       charterId: f.charterId,
       criterionId: ev.criterionId,
-      featureId: ev.featureId,
       outcome: ev.outcome,
       summary: "seeded evidence",
       artifacts: [],
@@ -151,53 +125,51 @@ async function seedCharter(projectDir: string, f: CharterFixture): Promise<void>
 
 }
 
-describe("buildPickerSnapshot (VAL-PICKER-DATA-001)", () => {
+describe("buildPickerSnapshot", () => {
   test("assembles a full snapshot across all source files", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "snap-001";
-      const charterMd = [
-        "# Charter",
+      const criteriaMd = [
+        "# Criteria",
         "",
-        "## Objective",
-        "",
-        "Drive feature X to done.",
-        "",
-        "## Criteria",
+        "## m1 First milestone",
         "",
         "### VAL-A First title",
         "Description: a.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
         "### VAL-B Second title",
         "Description: b.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
         "### VAL-C Third title",
         "Description: c.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
         "### VAL-D Fourth title",
         "Description: d.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
+        "",
+        "## m2 Second milestone",
         "",
         "### VAL-E Fifth title",
         "Description: e.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
         "### VAL-F Sixth title",
         "Description: f.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
         "### VAL-G Seventh title",
         "Description: g.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
       ].join("\n");
 
@@ -207,31 +179,20 @@ describe("buildPickerSnapshot (VAL-PICKER-DATA-001)", () => {
         objective: "Drive feature X to done.",
         status: "active",
         createdAt: "2026-05-15T00:00:00.000Z",
-        charterMd,
+        criteriaMd,
         criterionState: {
           "VAL-A": { outcome: "pass" },
           "VAL-B": { outcome: "pass" },
           "VAL-C": { outcome: "fail" },
           "VAL-D": { outcome: "partial" },
-          // VAL-E, VAL-F, VAL-G left without state -> outcome null
         },
-        featureState: {
-          "f1-alpha": { status: "completed" },
-          "f2-beta": { status: "in_progress" },
-          "f3-gamma": { status: "pending" },
-        },
-        features: [
-          { id: "f1-alpha", milestone: "m1", order: 1, fulfills: ["VAL-A", "VAL-B"] },
-          { id: "f2-beta", milestone: "m1", order: 2, fulfills: ["VAL-C", "VAL-D"] },
-          { id: "f3-gamma", milestone: "m2", order: 1, fulfills: ["VAL-E", "VAL-F", "VAL-G"] },
-        ],
         evidence: [
-          { featureId: "f1-alpha", file: "VAL-A__1.json", criterionId: "VAL-A", outcome: "pass", ts: "2026-05-15T01:00:00.000Z", recordedBy: "agent:root" },
-          { featureId: "f1-alpha", file: "VAL-B__1.json", criterionId: "VAL-B", outcome: "pass", ts: "2026-05-15T02:00:00.000Z", recordedBy: "agent:root" },
-          { featureId: "f2-beta", file: "VAL-C__1.json", criterionId: "VAL-C", outcome: "fail", ts: "2026-05-15T03:00:00.000Z", recordedBy: "agent:root" },
-          { featureId: "f2-beta", file: "VAL-D__1.json", criterionId: "VAL-D", outcome: "partial", ts: "2026-05-15T04:00:00.000Z", recordedBy: "agent:root" },
-          { featureId: "f3-gamma", file: "VAL-E__1.json", criterionId: "VAL-E", outcome: "fail", ts: "2026-05-15T05:00:00.000Z", recordedBy: "agent:root" },
-          { featureId: "f3-gamma", file: "VAL-F__1.json", criterionId: "VAL-F", outcome: "partial", ts: "2026-05-15T06:00:00.000Z", recordedBy: "agent:root" },
+          { file: "VAL-A__1.json", criterionId: "VAL-A", outcome: "pass", ts: "2026-05-15T01:00:00.000Z", recordedBy: "agent:root" },
+          { file: "VAL-B__1.json", criterionId: "VAL-B", outcome: "pass", ts: "2026-05-15T02:00:00.000Z", recordedBy: "agent:root" },
+          { file: "VAL-C__1.json", criterionId: "VAL-C", outcome: "fail", ts: "2026-05-15T03:00:00.000Z", recordedBy: "agent:root" },
+          { file: "VAL-D__1.json", criterionId: "VAL-D", outcome: "partial", ts: "2026-05-15T04:00:00.000Z", recordedBy: "agent:root" },
+          { file: "VAL-E__1.json", criterionId: "VAL-E", outcome: "fail", ts: "2026-05-15T05:00:00.000Z", recordedBy: "agent:root" },
+          { file: "VAL-F__1.json", criterionId: "VAL-F", outcome: "partial", ts: "2026-05-15T06:00:00.000Z", recordedBy: "agent:root" },
         ],
       });
 
@@ -256,41 +217,34 @@ describe("buildPickerSnapshot (VAL-PICKER-DATA-001)", () => {
         "2026-05-15T02:00:00.000Z",
       ]);
 
-      // Plan tree: 2 milestones, 3 features, per-feature pass counts.
       expect(snap.planTree.map((m) => m.milestoneId)).toEqual(["m1", "m2"]);
       const m1 = snap.planTree[0]!;
-      expect(m1.features.map((f) => f.featureId)).toEqual(["f1-alpha", "f2-beta"]);
+      expect(m1.features).toHaveLength(1);
       expect(m1.features[0]).toMatchObject({
-        featureId: "f1-alpha",
-        status: "completed",
-        passCount: 2,
-        totalCount: 2,
-      });
-      expect(m1.features[1]).toMatchObject({
-        featureId: "f2-beta",
+        featureId: "m1",
         status: "in_progress",
-        passCount: 0,
-        totalCount: 2,
+        passCount: 2,
+        totalCount: 4,
       });
+      expect(m1.features[0].criteria).toEqual([
+        { criterionId: "VAL-A", titleFromH3: "First title", outcome: "pass" },
+        { criterionId: "VAL-B", titleFromH3: "Second title", outcome: "pass" },
+        { criterionId: "VAL-C", titleFromH3: "Third title", outcome: "fail" },
+        { criterionId: "VAL-D", titleFromH3: "Fourth title", outcome: "partial" },
+      ]);
       const m2 = snap.planTree[1]!;
       expect(m2.features[0]).toMatchObject({
-        featureId: "f3-gamma",
+        featureId: "m2",
         status: "pending",
         passCount: 0,
         totalCount: 3,
       });
-      // Per-criterion outcome wiring on a representative feature.
-      expect(m1.features[1].criteria).toEqual([
-        { criterionId: "VAL-C", titleFromH3: "Third title", outcome: "fail" },
-        { criterionId: "VAL-D", titleFromH3: "Fourth title", outcome: "partial" },
-      ]);
-      // Uncovered criteria stay null.
       expect(m2.features[0].criteria.find((c) => c.criterionId === "VAL-G")?.outcome).toBeNull();
     });
   });
 });
 
-describe("buildPickerSnapshot title source (VAL-PICKER-DATA-002)", () => {
+describe("buildPickerSnapshot title source", () => {
   test("titleFromH3 reflects the raw H3 line, not parser fallback; extractTitleFromH3 unit cases", async () => {
     // Pure helper unit cases per spec.
     expect(extractTitleFromH3("### VAL-PRX-004 Error normalization")).toBe(
@@ -301,24 +255,20 @@ describe("buildPickerSnapshot title source (VAL-PICKER-DATA-002)", () => {
 
     await withTempProject(async (projectDir) => {
       const charterId = "snap-002";
-      const charterMd = [
-        "# Charter",
+      const criteriaMd = [
+        "# Criteria",
         "",
-        "## Objective",
-        "",
-        "title source probe.",
-        "",
-        "## Criteria",
+        "## m1 Title milestone",
         "",
         "### VAL-A Title text",
         "Description: a.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
         "### VAL-B",
         "Description: b.",
         "Verifier: manual",
-        "Fresh evidence required: false",
+        "Because: seeded",
         "",
       ].join("\n");
 
@@ -327,10 +277,7 @@ describe("buildPickerSnapshot title source (VAL-PICKER-DATA-002)", () => {
         name: "snap2",
         status: "active",
         createdAt: "2026-05-15T00:00:00.000Z",
-        charterMd,
-        features: [
-          { id: "f1", milestone: "m1", order: 1, fulfills: ["VAL-A", "VAL-B"] },
-        ],
+        criteriaMd,
       });
 
       const snap = await buildPickerSnapshot(projectDir, charterId);
@@ -346,10 +293,10 @@ describe("buildPickerSnapshot title source (VAL-PICKER-DATA-002)", () => {
   });
 });
 
-describe("listAllCharters (VAL-PICKER-DATA-003)", () => {
+describe("listAllCharters ordering", () => {
   test("returns every charter ordered: non-terminal by createdAt desc, terminal by completedAt/terminatedAt desc", async () => {
     await withTempProject(async (projectDir) => {
-      const seed = async (status: CharterStatus, suffix: string, opts: { createdAt: string; completedAt?: string; terminatedAt?: string }) => {
+      const seed = async (status: CharterStatus | LegacyCharterStatus, suffix: string, opts: { createdAt: string; completedAt?: string; terminatedAt?: string }) => {
         await seedCharter(projectDir, {
           charterId: `c-${suffix}`,
           name: suffix,
@@ -450,7 +397,7 @@ describe("listAllCharters (VAL-PICKER-DATA-003)", () => {
   });
 });
 
-describe("corruption handling (VAL-PICKER-DATA-004)", () => {
+describe("corruption handling", () => {
   test("listAllCharters skips charter with missing state.json; buildPickerSnapshot returns null", async () => {
     await withTempProject(async (projectDir) => {
       await seedCharter(projectDir, {

@@ -70,7 +70,7 @@ function makeCtx(): { ctx: FakeCommandCtx; notifications: Array<{ message: strin
   };
 }
 
-describe("VAL-7: /charter command", () => {
+describe("/charter command", () => {
   test("bare invocation notifies a Usage: hint and does NOT call sendUserMessage", async () => {
     const pi = makeFakePi();
     registerCharterCommands(pi as never);
@@ -118,7 +118,7 @@ describe("VAL-7: /charter command", () => {
   });
 });
 
-describe("VAL-7: SKILL.md doc surface", () => {
+describe("SKILL.md doc surface", () => {
   test("SKILL.md does NOT contain removed /charter verb references", async () => {
     const here = fileURLToPath(import.meta.url);
     const skillPath = resolve(join(here, "..", "..", "skills", "pi-charter", "SKILL.md"));

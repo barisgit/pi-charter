@@ -1,157 +1,56 @@
 import { Type, type Static } from "typebox";
 import { Check, Errors } from "typebox/value";
 
-const NarrativePathSchema = Type.Optional(Type.String());
-
 const OutcomeSchema = Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("partial")]);
-const CommandCheckOutcomeSchema = Type.Union([Type.Literal("pass"), Type.Literal("fail")]);
+const SourceSchema = Type.Union([Type.Literal("manual"), Type.Literal("verifier"), Type.Literal("subagent")]);
 
-const CommandCheckResultSchema = Type.Object({
-  outcome: CommandCheckOutcomeSchema,
-  exitCode: Type.Number(),
-  stdoutHead: Type.Optional(Type.String()),
-  stderrHead: Type.Optional(Type.String()),
-  durationMs: Type.Optional(Type.Number()),
-}, { additionalProperties: false });
-
-export const CommandEvidenceSchema = Type.Object({
-  kind: Type.Literal("command"),
-  featureId: Type.String(),
-  ts: Type.String(),
-  checkResults: Type.Record(Type.String(), CommandCheckResultSchema),
-  summary: Type.String(),
-  because: Type.String(),
-  narrativePath: NarrativePathSchema,
-}, { additionalProperties: false });
-
-const BlockingIssueSchema = Type.Object({
-  file: Type.String(),
-  line: Type.Number(),
-  description: Type.String(),
-}, { additionalProperties: false });
-
-export const ReviewEvidenceSchema = Type.Object({
-  kind: Type.Literal("review"),
-  featureId: Type.String(),
-  round: Type.Number(),
-  reviewedAt: Type.String(),
-  subagentSessionId: Type.String(),
-  commitId: Type.Optional(Type.String()),
-  outcome: Type.Optional(OutcomeSchema),
-  blockingIssues: Type.Array(BlockingIssueSchema),
-  nonBlockingNotes: Type.Array(Type.String()),
-  summary: Type.String(),
-  because: Type.String(),
-  narrativePath: NarrativePathSchema,
-}, { additionalProperties: false });
-
-const QaFindingSchema = Type.Object({
-  description: Type.String(),
-  severity: Type.Optional(Type.String()),
-  file: Type.Optional(Type.String()),
-  line: Type.Optional(Type.Number()),
-}, { additionalProperties: false });
-
-const QaArtifactSchema = Type.Object({
-  kind: Type.Union([
-    Type.Literal("screenshot"),
-    Type.Literal("video"),
-    Type.Literal("playwright_trace"),
-    Type.Literal("har"),
-    Type.Literal("terminal_capture"),
-    Type.Literal("console_log"),
-    Type.Literal("server_log"),
-    Type.Literal("http_trace"),
-    Type.Literal("dom_snapshot"),
-    Type.Literal("a11y_audit"),
-    Type.Literal("diff"),
-    Type.Literal("file"),
-  ]),
-  path: Type.String(),
-  caption: Type.Optional(Type.String({ maxLength: 280 })),
-}, { additionalProperties: false });
-
-export const QaEvidenceSchema = Type.Object({
-  kind: Type.Literal("qa"),
-  featureId: Type.String(),
-  milestone: Type.String(),
-  surfaces: Type.Array(Type.String()),
+/** v3 flat evidence row written under work/<segment>/evidence/<ts>/evidence.json */
+export const FlatEvidenceSchema = Type.Object({
+  charterId: Type.Optional(Type.String()),
+  criterionId: Type.String(),
+  featureId: Type.Optional(Type.String()),
   outcome: OutcomeSchema,
-  artifacts: Type.Array(QaArtifactSchema),
-  findings: Type.Array(QaFindingSchema),
   summary: Type.String(),
-  because: Type.String(),
-  narrativePath: NarrativePathSchema,
+  because: Type.Optional(Type.String()),
+  artifacts: Type.Optional(Type.Array(Type.String())),
+  details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  source: Type.Optional(SourceSchema),
+  recordedBy: Type.Optional(Type.String()),
+  narrativePath: Type.Optional(Type.String()),
+  verifier: Type.Optional(Type.String()),
+  ts: Type.String(),
 }, { additionalProperties: false });
 
-export const ReadinessEvidenceSchema = Type.Object({
-  kind: Type.Literal("readiness"),
-  featureId: Type.String(),
-  probeResult: Type.Union([
-    Type.Literal("verified"),
-    Type.Literal("deferred-with-fallback"),
-    Type.Literal("blocking"),
-  ]),
-  outcome: Type.Optional(OutcomeSchema),
-  probedAt: Type.String(),
-  details: Type.Record(Type.String(), Type.Unknown()),
-  summary: Type.String(),
-  because: Type.String(),
-  narrativePath: NarrativePathSchema,
-}, { additionalProperties: false });
-
-export const EvidenceFileSchema = Type.Union([
-  CommandEvidenceSchema,
-  ReviewEvidenceSchema,
-  QaEvidenceSchema,
-  ReadinessEvidenceSchema,
-]);
-
-export type CommandEvidence = Static<typeof CommandEvidenceSchema>;
-export type ReviewEvidence = Static<typeof ReviewEvidenceSchema>;
-export type QaEvidence = Static<typeof QaEvidenceSchema>;
-export type ReadinessEvidence = Static<typeof ReadinessEvidenceSchema>;
-export type EvidenceFile = Static<typeof EvidenceFileSchema>;
-export type EvidenceKind = EvidenceFile["kind"];
+export type FlatEvidence = Static<typeof FlatEvidenceSchema>;
+export type EvidenceFile = FlatEvidence;
 
 export type ValidateEvidenceFileResult =
   | { ok: true; value: EvidenceFile }
   | { ok: false; error: string };
 
-const schemasByKind = {
-  command: CommandEvidenceSchema,
-  review: ReviewEvidenceSchema,
-  qa: QaEvidenceSchema,
-  readiness: ReadinessEvidenceSchema,
-} as const;
+const LEGACY_KINDS = new Set(["command", "review", "qa", "readiness"]);
 
 export function validateEvidenceFile(json: unknown): ValidateEvidenceFileResult {
-  const kind = getEvidenceKind(json);
-  if (!isEvidenceKind(kind)) {
-    return { ok: false, error: `Unknown evidence kind: ${String(kind ?? "<missing>")}` };
+  const legacyKind = getLegacyKind(json);
+  if (legacyKind && LEGACY_KINDS.has(legacyKind)) {
+    return {
+      ok: false,
+      error: `Legacy typed evidence kind '${legacyKind}' is no longer supported; use the flat evidence row shape (criterionId, outcome, summary, ts, ...).`,
+    };
   }
 
-  if (kind === "qa" && hasOwnProperty(json, "screenshots")) {
-    return { ok: false, error: "Invalid qa evidence: screenshots: is no longer supported; use artifacts:[{kind, path, caption?}]" };
+  if (!Check(FlatEvidenceSchema, json)) {
+    const [first] = Errors(FlatEvidenceSchema, json);
+    const missing = (first?.params as { requiredProperties?: unknown } | undefined)?.requiredProperties;
+    const [missingField] = Array.isArray(missing) ? missing : [];
+    const fieldPath = typeof missingField === "string" ? `/${missingField}` : first?.instancePath || "/";
+    const message = first?.message ?? "schema validation failed";
+    return { ok: false, error: `Invalid evidence at ${fieldPath}: ${message}` };
   }
 
-  const schema = schemasByKind[kind];
-  if (Check(schema, json)) {
-    const narrativePathError = validateNarrativePath(json as EvidenceFile);
-    if (narrativePathError) return { ok: false, error: narrativePathError };
-    if (kind === "qa") {
-      const pathError = validateQaArtifactPaths(json as QaEvidence);
-      if (pathError) return { ok: false, error: pathError };
-    }
-    return { ok: true, value: json as EvidenceFile };
-  }
-
-  const [first] = Errors(schema, json);
-  const missing = (first?.params as { requiredProperties?: unknown } | undefined)?.requiredProperties;
-  const [missingField] = Array.isArray(missing) ? missing : [];
-  const fieldPath = typeof missingField === "string" ? `/${missingField}` : first?.instancePath || "/";
-  const message = first?.message ?? "schema validation failed";
-  return { ok: false, error: `Invalid ${kind} evidence at ${fieldPath}: ${message}` };
+  const narrativePathError = validateNarrativePath(json as EvidenceFile);
+  if (narrativePathError) return { ok: false, error: narrativePathError };
+  return { ok: true, value: json as EvidenceFile };
 }
 
 export function parseEvidence(json: unknown): EvidenceFile {
@@ -160,37 +59,17 @@ export function parseEvidence(json: unknown): EvidenceFile {
   return validation.value;
 }
 
-function getEvidenceKind(json: unknown): unknown {
+function getLegacyKind(json: unknown): string | undefined {
   if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
-  return (json as { kind?: unknown }).kind;
-}
-
-function hasOwnProperty(value: unknown, key: string): boolean {
-  return !!value && typeof value === "object" && !Array.isArray(value) && Object.prototype.hasOwnProperty.call(value, key);
-}
-
-function validateQaArtifactPaths(evidence: QaEvidence): string | undefined {
-  for (let index = 0; index < evidence.artifacts.length; index += 1) {
-    const path = evidence.artifacts[index]!.path;
-    if (path.startsWith("/")) {
-      return `Invalid qa evidence at /artifacts/${index}/path: artifact path must be relative`;
-    }
-    if (path.split("/").includes("..")) {
-      return `Invalid qa evidence at /artifacts/${index}/path: artifact path must not contain '..' segments`;
-    }
-  }
-  return undefined;
+  const kind = (json as { kind?: unknown }).kind;
+  return typeof kind === "string" ? kind : undefined;
 }
 
 function validateNarrativePath(evidence: EvidenceFile): string | undefined {
   const path = evidence.narrativePath;
   if (path === undefined) return undefined;
   if (path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\")) {
-    return `Invalid ${evidence.kind} evidence at /narrativePath: narrativePath must be relative`;
+    return "Invalid evidence at /narrativePath: narrativePath must be relative";
   }
   return undefined;
-}
-
-function isEvidenceKind(kind: unknown): kind is EvidenceKind {
-  return typeof kind === "string" && kind in schemasByKind;
 }

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bindCharterToSession } from "../src/application/binding-service";
-import { lockPlan } from "../src/application/plan-service";
 import { registerCharterRalphLoop } from "../src/application/registration";
-import { amendCharter, createCharter, forceCompleteCharter } from "../src/application/service";
+import { createCharter } from "../src/application/service";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
 import { logger } from "../src/infrastructure/logger";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
 
@@ -34,17 +34,6 @@ interface FakeTurnContext {
   isIdle(): boolean;
   hasPendingMessages(): boolean;
 }
-
-const VALIDATION_MD = `## Validation
-
-### Happy
-- check: smoke-happy
-  command: true
-
-### Edge
-- check: smoke-edge
-  command: true
-`;
 
 function makeFakePi(): FakePi {
   const handlers = new Map<string, PiHandler[]>();
@@ -91,28 +80,28 @@ async function withTempProject<T>(fn: (input: { projectDir: string; homeDir: str
 }
 
 async function createBoundActiveCharter(input: { projectDir: string; homeDir: string; sessionId: string }): Promise<string> {
-  const charter = await createCharter(input.projectDir, {
+  const charterId = `ralph-active-${input.sessionId}`;
+  await makeActiveCharter({
+    projectDir: input.projectDir,
+    charterId,
     objective: "Ship Ralph loop",
     now: "2026-05-15T00:00:00.000Z",
+    criteria: [
+      { id: "VAL-1", title: "Blocked verdict continues Ralph loop", because: "registration tests need a minimal valid active charter fixture" },
+      { id: "VAL-2", title: "Drifting verdict continues Ralph loop", because: "registration tests need a minimal valid active charter fixture" },
+      { id: "VAL-3", title: "Ready verdict continues Ralph loop", because: "registration tests need a minimal valid active charter fixture" },
+      { id: "VAL-4", title: "On-track verdict does not continue Ralph loop", because: "registration tests need a minimal valid active charter fixture" },
+      { id: "VAL-5", title: "Dormant statuses do not continue Ralph loop", because: "registration tests need a minimal valid active charter fixture" },
+      { id: "VAL-6", title: "Same verdict dedup suppresses steer and trigger", because: "registration tests need a minimal valid active charter fixture" },
+    ],
   });
-  const dir = join(input.projectDir, ".pi/charters", charter.charterId);
-  await writeFile(
-    join(dir, "charter.md"),
-    `# Charter\n## Objective\nShip Ralph loop\n## Criteria\n### VAL-1 Blocked verdict continues Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-2 Drifting verdict continues Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-3 Ready verdict continues Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-4 On-track verdict does not continue Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-5 Dormant statuses do not continue Ralph loop\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n### VAL-6 Same verdict dedup suppresses steer and trigger\nVerifier: manual\nBecause: registration tests need a minimal valid active charter fixture\n## Scope and constraints\n- none\n`,
-  );
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await writeFile(
-    join(dir, "plan/f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills: [VAL-1, VAL-2, VAL-3, VAL-4, VAL-5, VAL-6]\npreconditions: []\n---\nbody\n\n${VALIDATION_MD}`,
-  );
-  await lockPlan(input.projectDir, { charterId: charter.charterId, now: "2026-05-15T00:01:00.000Z" });
   await bindCharterToSession(input.projectDir, {
-    charterId: charter.charterId,
+    charterId,
     sessionId: input.sessionId,
     homeDir: input.homeDir,
     now: "2026-05-15T00:02:00.000Z",
   });
-  return charter.charterId;
+  return charterId;
 }
 
 async function createBoundPlanningCharter(input: { projectDir: string; homeDir: string; sessionId: string }): Promise<string> {
@@ -127,23 +116,6 @@ async function createBoundPlanningCharter(input: { projectDir: string; homeDir: 
     now: "2026-05-15T00:02:00.000Z",
   });
   return charter.charterId;
-}
-
-async function createBoundReviewCharter(input: { projectDir: string; homeDir: string; sessionId: string }): Promise<string> {
-  const charterId = await createBoundActiveCharter(input);
-  await forceCompleteCharter(input.projectDir, {
-    charterId,
-    target: "abandoned",
-    reason: "test review fixture",
-    now: "2026-05-15T00:03:00.000Z",
-  });
-  await amendCharter(input.projectDir, {
-    charterId,
-    target: "review",
-    reason: "test review fixture",
-    now: "2026-05-15T00:04:00.000Z",
-  });
-  return charterId;
 }
 
 function ctxFor(projectDir: string, sessionId: string, input: { idle?: boolean; pendingMessages?: boolean } = {}): FakeTurnContext {
@@ -204,9 +176,8 @@ async function waitForDebugMessage(spy: DebugSpy, message: string): Promise<void
 
 describe("charter ralph loop idle gate", () => {
   test.each([
-    ["planning" as const, createBoundPlanningCharter, "planning"],
     ["active" as const, createBoundActiveCharter, "active"],
-    ["review" as const, createBoundReviewCharter, "active"],
+    ["active" as const, createBoundPlanningCharter, "active"],
   ])("fires in %s when root and async subagents are idle", async (status, createBound, promptCase) => {
     await withTempProject(async ({ projectDir, homeDir }) => {
       const sessionId = `session-ralph-${status}`;
@@ -223,7 +194,7 @@ describe("charter ralph loop idle gate", () => {
       expect(pi.sentMessages[0]!.options).toMatchObject({ deliverAs: "steer", triggerTurn: true });
       const message = pi.sentMessages[0]!.message as { content?: string; details?: { promptCase?: string } };
       expect(message.details?.promptCase).toBe(promptCase);
-      expect(message.content).toContain(`status: ${status}`);
+      expect(message.content).toContain("status: active");
       expect(message.content).toContain("legalNextActions:");
     });
   });

@@ -16,9 +16,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CharterCriterion } from "../domain/types";
-import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { charterDir, loadCharterState, loadParsedCharter } from "../infrastructure/store";
-import { readdir } from "node:fs/promises";
 import { buildViewModel, type CharterWidgetVM, type ReducerInput, type RunningSubagent } from "./widget-state";
 
 export interface SnapshotInput {
@@ -30,12 +28,10 @@ export interface SnapshotInput {
 
 export async function loadCharterSnapshot(input: SnapshotInput): Promise<CharterWidgetVM> {
   const dir = charterDir(input.projectDir, input.charterId);
-  const [state, charter, features, criterionOutcomes, featureStates] = await Promise.all([
+  const [state, charter, criterionOutcomes] = await Promise.all([
     loadCharterState(dir),
     readCharter(dir),
-    readFeatures(dir),
     readCriterionOutcomes(dir),
-    readFeatureStates(dir),
   ]);
   const reducerInput: ReducerInput = {
     charterId: input.charterId,
@@ -43,9 +39,7 @@ export async function loadCharterSnapshot(input: SnapshotInput): Promise<Charter
     status: state.status,
     createdAt: state.createdAt,
     criteria: charter.criteria,
-    features,
     criterionOutcomes,
-    featureStates,
     runningSubagents: input.runningSubagents,
     now: input.now,
   };
@@ -60,43 +54,12 @@ async function readCharter(dir: string): Promise<{ criteria: CharterCriterion[] 
   }
 }
 
-async function readFeatures(dir: string): Promise<FeatureDefinition[]> {
-  const planDir = join(dir, "plan");
-  let entries: string[];
-  try {
-    entries = await readdir(planDir);
-  } catch {
-    return [];
-  }
-  const features: FeatureDefinition[] = [];
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith(".md")) continue;
-    try {
-      features.push(parseFeatureMarkdown(await readFile(join(planDir, entry), "utf8")));
-    } catch {
-      // skip malformed features rather than break the widget
-    }
-  }
-  return features.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
-}
-
 async function readCriterionOutcomes(dir: string): Promise<Record<string, { outcome?: string }>> {
   try {
     const parsed = JSON.parse(await readFile(join(dir, "criterion-state.json"), "utf8")) as {
       criteria?: Record<string, { outcome?: string }>;
     };
     return parsed.criteria ?? {};
-  } catch {
-    return {};
-  }
-}
-
-async function readFeatureStates(dir: string): Promise<Record<string, { status?: string }>> {
-  try {
-    const parsed = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8")) as {
-      features?: Record<string, { status?: string }>;
-    };
-    return parsed.features ?? {};
   } catch {
     return {};
   }

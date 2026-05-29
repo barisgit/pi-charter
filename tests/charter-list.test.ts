@@ -10,7 +10,7 @@ import {
   writeCharterState,
   writeJsonAtomic,
 } from "../src/infrastructure/store";
-import type { CharterStatus } from "../src/domain/types";
+import type { CharterStatus, LegacyCharterStatus } from "../src/domain/types";
 import { listActiveCharters } from "../src/application/service";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -29,7 +29,7 @@ async function seedCharter(
     suffix: string;
     name?: string;
     objective: string;
-    status: CharterStatus;
+    status: CharterStatus | LegacyCharterStatus;
     /** When true, charter.md is rewritten to contain `count` VAL criteria. */
     criteriaCount?: number;
     /** When provided, force this many criterion outcomes to `pass`. */
@@ -44,11 +44,9 @@ async function seedCharter(
     objective: opts.objective,
     now,
   });
-  if (opts.status !== "planning") {
+  if (opts.status !== "active") {
     const state = await loadCharterState(created.charterDir);
-    state.status = opts.status;
-    state.updatedAt = now;
-    await writeCharterState(created.charterDir, state);
+    await writeJsonAtomic(join(created.charterDir, "state.json"), { ...state, status: opts.status, updatedAt: now });
   }
   if (opts.criteriaCount !== undefined) {
     const ids = Array.from({ length: opts.criteriaCount }, (_, i) => `VAL-${i + 1}`);
@@ -191,7 +189,7 @@ describe("listActiveCharters", () => {
         charterId: planningId,
         name: "planner",
         objective: "planning charter",
-        status: "planning",
+        status: "active",
         createdAt: "2026-05-15T00:00:00.000Z",
         passCount: 0,
         totalCount: 3,
@@ -208,7 +206,7 @@ describe("listActiveCharters", () => {
       // name fallback: state.name unset → charterId.slice(0,8).
       const review = rows.find((r) => r.charterId === reviewId)!;
       expect(review.name).toBe(reviewId.slice(0, 8));
-      expect(review).toMatchObject({ status: "review", passCount: 1, totalCount: 2 });
+      expect(review).toMatchObject({ status: "active", passCount: 1, totalCount: 2 });
 
       const paused = rows.find((r) => r.charterId === pausedId)!;
       expect(paused).toMatchObject({ status: "paused", passCount: 5, totalCount: 5 });

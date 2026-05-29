@@ -1,9 +1,9 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
-import { parseFeatureMarkdown, type FeatureDefinition } from "../domain/feature-md";
 import { charterDir, loadCharterState, loadParsedCharter } from "../infrastructure/store";
-import { loadCriterionState, type CriterionStateRecord } from "./record-service";
-import { getLatestReadinessProbe, type ReadinessProbeResult } from "./readiness-service";
+import { isEvidenceStaleForSrcChange, lastSrcChangeMs } from "../domain/src-freshness";
+import { computeSidecarDrift, type SidecarDriftEntry } from "./sidecar-drift";
+import { loadCriterionState } from "./record-service";
 
 export interface UncoveredEntry {
   criterionId: string;
@@ -14,46 +14,45 @@ export interface StaleEntry {
   criterionId: string;
   ageMs: number;
   lastTs: string;
+  reason: "src-change" | "age-window";
 }
 
 export interface ReadyNextEntry {
-  featureId: string;
-  fulfills: string[];
-  probeResult?: ReadinessProbeResult;
+  criterionId: string;
+  milestoneId: string;
 }
 
-export interface StuckEntry {
-  featureId: string;
-  status: string;
-  startedAt?: string;
+export interface MilestoneArtifactReminder {
+  milestoneId: string;
+  reason: "no-artifact-capture";
 }
 
 export interface DriftViews {
   uncovered: UncoveredEntry[];
-  stuck: StuckEntry[];
   stale: StaleEntry[];
   readyNext: ReadyNextEntry[];
+  sidecarDrift: SidecarDriftEntry[];
+  milestoneArtifacts: MilestoneArtifactReminder[];
 }
-
-const DEFAULT_FRESHNESS_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export async function computeDrift(
   projectDir: string,
-  input: { charterId: string; now?: number; freshnessWindowMs?: number },
+  input: { charterId: string; now?: number },
 ): Promise<DriftViews> {
   const dir = charterDir(projectDir, input.charterId);
   let charter: Awaited<ReturnType<typeof loadParsedCharter>>;
+  let state: Awaited<ReturnType<typeof loadCharterState>>;
   try {
-    charter = await loadParsedCharter(dir);
+    [charter, state] = await Promise.all([
+      loadParsedCharter(dir),
+      loadCharterState(dir),
+    ]);
   } catch {
-    return { uncovered: [], stuck: [], stale: [], readyNext: [] };
+    return { uncovered: [], stale: [], readyNext: [], sidecarDrift: [], milestoneArtifacts: [] };
   }
-  const features = await readFeatures(join(dir, "plan"));
   const criterionState = await loadCriterionState(dir, input.charterId);
-  const featureState = await loadFeatureStateSafely(dir);
-  const state = await loadCharterState(dir);
   const now = input.now ?? Date.now();
-  const freshnessWindowMs = input.freshnessWindowMs ?? DEFAULT_FRESHNESS_WINDOW_MS;
+  const srcChangeMs = await lastSrcChangeMs(projectDir);
 
   const uncovered: UncoveredEntry[] = [];
   const stale: StaleEntry[] = [];
@@ -68,84 +67,74 @@ export async function computeDrift(
       continue;
     }
     if (criterion.requireFreshEvidence) {
-      const lastMs = Date.parse(record.lastTs);
-      if (Number.isFinite(lastMs)) {
-        const ageMs = now - lastMs;
-        if (ageMs > freshnessWindowMs) stale.push({ criterionId: criterion.id, ageMs, lastTs: record.lastTs });
+      if (isEvidenceStaleForSrcChange(record.lastTs, srcChangeMs)) {
+        stale.push({
+          criterionId: criterion.id,
+          ageMs: srcChangeMs === undefined ? 0 : Math.max(0, srcChangeMs - Date.parse(record.lastTs)),
+          lastTs: record.lastTs,
+          reason: "src-change",
+        });
       }
     }
   }
 
   const uncoveredIds = new Set(uncovered.map((entry) => entry.criterionId));
-  const passedCriteria = new Set(
-    Object.entries(criterionState.criteria)
-      .filter(([, record]: [string, CriterionStateRecord]) => record.outcome === "pass")
-      .map(([id]) => id),
-  );
-  const completedFeatures = new Set(
-    Object.entries(featureState).filter(([, record]) => record.status === "completed").map(([id]) => id),
-  );
-  const readyNext: ReadyNextEntry[] = [];
-  for (const feature of features) {
-    if (completedFeatures.has(feature.id)) continue;
-    const preconditionsMet = feature.preconditions.every((id) => completedFeatures.has(id));
-    if (!preconditionsMet) continue;
-    const fulfilledUncovered = feature.fulfills.filter((id) => uncoveredIds.has(id));
-    if (fulfilledUncovered.length === 0 && feature.fulfills.length > 0) continue;
-    const probeResult = feature.kind === "readiness" ? await getLatestReadinessProbe(feature.id, dir) : undefined;
-    readyNext.push({
-      featureId: feature.id,
-      fulfills: fulfilledUncovered.length > 0 ? fulfilledUncovered : feature.fulfills,
-      ...(probeResult ? { probeResult } : {}),
-    });
-  }
+  const readyNext = firstNonPassVal(charter.milestones, charter.criteria.map((criterion) => criterion.id), uncoveredIds);
+  const sidecarDrift = await computeSidecarDrift(dir, state, criterionState);
+  const milestoneArtifacts = await computeMilestoneArtifactReminders(dir, charter.milestones, criterionState);
 
-  const stuck: StuckEntry[] = [];
-  for (const [featureId, record] of Object.entries(featureState)) {
-    if (record.status === "in_progress") {
-      stuck.push({ featureId, status: record.status, startedAt: record.startedAt });
+  return { uncovered, stale, readyNext, sidecarDrift, milestoneArtifacts };
+}
+
+async function computeMilestoneArtifactReminders(
+  dir: string,
+  milestones: Array<{ id: string; criterionIds: string[] }>,
+  criterionState: Awaited<ReturnType<typeof loadCriterionState>>,
+): Promise<MilestoneArtifactReminder[]> {
+  const reminders: MilestoneArtifactReminder[] = [];
+  for (const milestone of milestones) {
+    if (milestone.criterionIds.length === 0) continue;
+    const allPass = milestone.criterionIds.every((criterionId) =>
+      criterionState.criteria[criterionId]?.outcome === "pass",
+    );
+    if (!allPass) continue;
+    const captureDir = join(dir, "work", milestone.id, "evidence");
+    if (!(await pathExists(captureDir))) {
+      reminders.push({ milestoneId: milestone.id, reason: "no-artifact-capture" });
     }
   }
-
-  void state;
-  void passedCriteria;
-  return { uncovered, stuck, stale, readyNext };
+  return reminders;
 }
 
-async function readFeatures(planDir: string): Promise<FeatureDefinition[]> {
-  let entries: string[];
-  try {
-    entries = await readdir(planDir);
-  } catch {
+function firstNonPassVal(
+  milestones: Array<{ id: string; criterionIds: string[] }>,
+  flatCriterionOrder: string[],
+  uncoveredIds: ReadonlySet<string>,
+): ReadyNextEntry[] {
+  if (milestones.length > 0) {
+    for (const milestone of milestones) {
+      for (const criterionId of milestone.criterionIds) {
+        if (uncoveredIds.has(criterionId)) {
+          return [{ criterionId, milestoneId: milestone.id }];
+        }
+      }
+    }
     return [];
   }
-  const features: FeatureDefinition[] = [];
-  for (const entry of entries.sort()) {
-    if (!entry.endsWith(".md")) continue;
-    features.push(parseFeatureMarkdown(await readFile(join(planDir, entry), "utf8")));
+
+  for (const criterionId of flatCriterionOrder) {
+    if (uncoveredIds.has(criterionId)) {
+      return [{ criterionId, milestoneId: "" }];
+    }
   }
-  return features.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  return [];
 }
 
-interface FeatureStateRow {
-  status?: string;
-  startedAt?: string;
-  completedAt?: string;
-  lastWorkerSessionId?: string;
-}
-
-async function loadFeatureStateSafely(dir: string): Promise<Record<string, FeatureStateRow>> {
+async function pathExists(path: string): Promise<boolean> {
   try {
-    await stat(join(dir, "feature-state.json"));
+    await access(path);
+    return true;
   } catch {
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8")) as {
-      features?: Record<string, FeatureStateRow>;
-    };
-    return parsed.features ?? {};
-  } catch {
-    return {};
+    return false;
   }
 }

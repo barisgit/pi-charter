@@ -3,9 +3,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { addFeatureBatch, lockPlan, updateFeature, viewPlan, type FeatureEntry } from "./plan-service";
-import { applyHandoff, handoff as recordHandoff, recordEvidenceBatch, recordEvidenceFromFile, verifyCriterion, type EvidenceEntry, type HandoffCompletedCriterion } from "./record-service";
-import { amendCharter, askCharter, completeCharter, createCharter, forceCompleteCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
+import { recordEvidenceBatch, recordEvidenceFromFile, verifyCriterion, type EvidenceEntry } from "./record-service";
+import { abandonCharter, completeCharter, createCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
 import { buildRalphPromptForCharter } from "./ralph-service";
@@ -14,7 +13,6 @@ import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import { logger } from "../infrastructure/logger";
 import { TERMINAL_STATUSES } from "../domain/types";
-import { HandoffRecordInputProperties, type HandoffRecordInput } from "../persistence/handoff-store";
 import {
   PI_CHARTER_EXTENSION_ID,
   PI_CHARTER_METADATA_KEYS,
@@ -23,16 +21,10 @@ import {
   SUBAGENT_ASYNC_STARTED_EVENT,
   SUBAGENT_EXPOSE_API_EVENT,
   SUBAGENT_LINEAGE_EVENT,
-  SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT,
-  SUBAGENT_REGISTER_PERSONA_DIR_EVENT,
-  SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT,
-  type PersonaDirErrorPayload,
-  type RegisterPersonaDirPayload,
   type SubagentAsyncCompletePayload,
   type SubagentAsyncStartedPayload,
   type SubagentExposedAPI,
   type SubagentLineagePayload,
-  type UnregisterPersonaDirPayload,
 } from "../infrastructure/subagent-bridge";
 import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service";
 import { __resetSubagentApiForTests, getSubagentApi, setSubagentApiForBridge } from "./subagent-api";
@@ -51,17 +43,13 @@ import {
   setCharterSelection,
 } from "../ui/charter-selection";
 
-type CharterManageInput = {
-  action: "create" | "pause" | "resume" | "complete" | "force_complete" | "amend_charter" | "ask";
+type CharterInput = {
+  action: "create" | "pause" | "resume" | "complete" | "abandon";
   charterId?: string;
   name?: string;
   objective?: string;
-  note?: string;
-  acknowledgeClarification?: boolean;
   reason?: string;
   completionNote?: string;
-  target?: "completed" | "abandoned" | "budget_limited" | "planning" | "review";
-  triage?: Array<{ handoffPath: string; itemId: string; decision: "cut"; reason: string }>;
   idempotencyKey?: string;
   budget?: { tokens?: number; wallclockMs?: number; turns?: number };
 };
@@ -70,21 +58,6 @@ type CharterStatusInput = {
   charterId?: string;
   verbose?: boolean;
 };
-
-type CharterPlanInput =
-  | { action: "view" | "lock_plan"; charterId?: string }
-  | { action: "add_feature"; charterId?: string; features: FeatureEntry[] }
-  | {
-    action: "update_feature";
-    charterId?: string;
-    id?: string;
-    milestone?: string;
-    order?: number;
-    fulfills?: string[];
-    preconditions?: string[];
-    category?: "behavior" | "infrastructure";
-    body?: string;
-  };
 
 type EvidenceBatchEntryInput = {
   criterionId: string;
@@ -100,39 +73,15 @@ type EvidenceBatchEntryInput = {
 type CharterRecordInput =
   | { action: "evidence"; charterId?: string; entries: EvidenceBatchEntryInput[]; evidenceFile?: never }
   | { action: "evidence"; charterId?: string; evidenceFile: string; entries?: never }
-  | { action: "verify"; charterId?: string; criterionId?: string; featureId?: string; timeoutMs?: number }
-  | ({
-    action: "handoff_apply";
-    charterId?: string;
-    featureId?: string;
-    subagentSessionId?: string;
-    handoffNote?: string;
-    completedCriteria?: Array<{
-      criterionId: string;
-      outcome: "pass" | "fail" | "partial";
-      summary: string;
-      artifacts?: string[];
-      details?: object;
-    }>;
-  } & Partial<HandoffRecordInput>)
-  | ({ action: "handoff"; charterId?: string; handoffFile?: string } & Partial<HandoffRecordInput>);
+  | { action: "verify"; charterId?: string; criterionId?: string; featureId?: string; timeoutMs?: number };
 
-const CharterManageParams = Type.Object({
-  action: StringEnum(["create", "pause", "resume", "complete", "force_complete", "amend_charter", "ask"] as const),
+const CharterParams = Type.Object({
+  action: StringEnum(["create", "pause", "resume", "complete", "abandon"] as const),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional for every action except create; when omitted, resolves to the charter bound to the current session." })),
   name: Type.Optional(Type.String({ description: "Optional short slug shown in widget headers and status (e.g. 'headless-click-pid'). Lowercased; non-slug chars stripped; clamped to 32 chars. Falls back to the first 8 chars of the charterId when omitted." })),
   objective: Type.Optional(Type.String({ description: "Required for action=create. The desired outcome, not a spec path." })),
-  note: Type.Optional(Type.String({ description: "One-line clarification note stored in state.json for action=ask." })),
-  acknowledgeClarification: Type.Optional(Type.Boolean({ description: "For action=resume, clears unansweredClarification after the user has answered the ask." })),
-  reason: Type.Optional(Type.String({ description: "Pause or force-complete reason." })),
+  reason: Type.Optional(Type.String({ description: "Pause or abandon reason. Required for action=abandon." })),
   completionNote: Type.Optional(Type.String({ description: "Completion note for action=complete." })),
-  target: Type.Optional(StringEnum(["completed", "abandoned", "budget_limited", "planning", "review"] as const)),
-  triage: Type.Optional(Type.Array(Type.Object({
-    handoffPath: Type.String(),
-    itemId: Type.String(),
-    decision: StringEnum(["cut"] as const),
-    reason: Type.String(),
-  }), { description: "For action=amend_charter, mark handoff items as intentionally cut from scope. Idempotent by handoffPath+itemId+decision." })),
   idempotencyKey: Type.Optional(Type.String({ description: "Stable retry key for orchestrator-driven creates." })),
   budget: Type.Optional(Type.Object({
     tokens: Type.Optional(Type.Number()),
@@ -146,49 +95,6 @@ const CharterStatusParams = Type.Object({
   verbose: Type.Optional(Type.Boolean({ default: false })),
 });
 
-const FeatureEntryParams = Type.Object({
-  id: Type.String(),
-  milestone: Type.String(),
-  order: Type.Number(),
-  fulfills: Type.Array(Type.String()),
-  preconditions: Type.Optional(Type.Array(Type.String())),
-  category: Type.Optional(StringEnum(["behavior", "infrastructure"] as const, { description: "Feature category. Defaults to 'behavior'." })),
-  body: Type.String(),
-}, { additionalProperties: false });
-
-// Flat single-object schema for OpenAI strict-mode compatibility. The previous
-// root-level `Type.Union` produced `type: null` which codex/gpt-5.5 strict mode
-// rejects (`Invalid schema ... got 'type: "None"'`). All action-specific fields
-// are Optional here; per-action required-field validation is enforced at runtime
-// in the execute handler below (see `params.features.length === 0` and
-// `!params.id?.trim()` guards).
-const CharterPlanParams = Type.Object({
-  action: StringEnum(["view", "lock_plan", "add_feature", "update_feature"] as const, {
-    description: "What to do: 'view' (inspect coverage), 'lock_plan' (transition planning -> active), 'add_feature' (batch-write managed plan/<featureId>.md files), 'update_feature' (mutate one feature by id).",
-  }),
-  charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-  // action=add_feature
-  features: Type.Optional(Type.Array(FeatureEntryParams, { description: "Batch shape for action=add_feature. Atomic: all entries land or none. Response preserves request order." })),
-  // action=update_feature
-  id: Type.Optional(Type.String({ description: "Feature id slug, e.g. m1-bootstrap. Required for action=update_feature." })),
-  milestone: Type.Optional(Type.String({ description: "Milestone id this feature belongs to, e.g. m1-bootstrap." })),
-  order: Type.Optional(Type.Number({ description: "Sort order within the milestone (lower runs first)." })),
-  fulfills: Type.Optional(Type.Array(Type.String(), { description: "VAL-* criterion ids this feature claims to fulfill." })),
-  preconditions: Type.Optional(Type.Array(Type.String(), { description: "Other feature ids that should land before this one. Advisory only." })),
-  category: Type.Optional(StringEnum(["behavior", "infrastructure"] as const, { description: "Feature category: 'behavior' (default; must fulfill at least one VAL) or 'infrastructure'." })),
-  body: Type.Optional(Type.String({ description: "Feature markdown body (prose under the YAML frontmatter)." })),
-}, { additionalProperties: false });
-
-// Flat single-object schema for OpenAI strict-mode compatibility (codex/gpt-5.5
-// reject root-level `Type.Union` because the resulting schema has `type: null`
-// instead of `type: 'object'`). All handoff fields are Optional here and the
-// `handoff` action handler in record-service validates the union shape
-// (handoffFile XOR inline HandoffRecord fields) at runtime via
-// `validateHandoffRecord`. Sonnet accepted the union; codex did not.
-const HandoffInputOptionalProperties = Object.fromEntries(
-  Object.entries(HandoffRecordInputProperties).map(([k, v]) => [k, Type.Optional(v as any)]),
-);
-
 const EvidenceEntryParams = Type.Object({
   criterionId: Type.String(),
   featureId: Type.Optional(Type.String()),
@@ -201,39 +107,18 @@ const EvidenceEntryParams = Type.Object({
 }, { additionalProperties: false });
 
 // Flat single-object schema for OpenAI strict-mode + Anthropic anyOf-confusion
-// compatibility. The previous root-level `Type.Union` produced `type: null`
-// which codex/gpt-5.5 strict mode rejects (`Invalid schema ... got 'type:
-// "None"'`) and which Sonnet sometimes calls with empty `{}` args because
-// `anyOf` confuses the planner. All action-specific fields are Optional here;
-// per-action required-field validation is enforced at runtime in the execute
-// handler below (see `params.action === "evidence" | "verify" | "handoff" |
-// "handoff_apply"`).
+// compatibility. All action-specific fields are Optional here; per-action
+// required-field validation is enforced at runtime in the execute handler.
 const CharterRecordParams = Type.Object({
-  action: StringEnum(["evidence", "verify", "handoff", "handoff_apply"] as const, {
-    description: "What to record: 'evidence' (manual/typed file), 'verify' (run a command verifier), 'handoff' (write a subagent HandoffRecord), 'handoff_apply' (apply a handoff to criteria).",
+  action: StringEnum(["evidence", "verify"] as const, {
+    description: "What to record: 'evidence' (manual/typed file), 'verify' (run a command verifier).",
   }),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
-  // action=evidence (XOR: evidenceFile or entries)
   evidenceFile: Type.Optional(Type.String({ description: "Path to typed evidence JSON (kind=command|review|qa|readiness) to import for action=evidence. Mutually exclusive with `entries`." })),
   entries: Type.Optional(Type.Array(EvidenceEntryParams, { description: "Batch evidence entries for action=evidence; the batch is atomic within the call (one criterion-state.json write covering all entries). Mutually exclusive with `evidenceFile`." })),
-  // action=verify
   criterionId: Type.Optional(Type.String({ description: "VAL-* criterion id. Required for action=verify." })),
   timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for action=verify (default 120000)." })),
-  // shared: handoff_apply requires featureId, handoff inline records use it too
-  featureId: Type.Optional(Type.String({ description: "Feature id this record belongs to (required for action=verify when the criterion is feature-scoped, and for action=handoff_apply)." })),
-  // action=handoff (inline HandoffRecord fields OR handoffFile path)
-  handoffFile: Type.Optional(Type.String({ description: "Absolute or charter-relative path to a pre-written HandoffRecord JSON file for action=handoff. Mutually exclusive with inline HandoffRecord fields (sessionId/agent/...)." })),
-  ...(HandoffInputOptionalProperties as Record<string, ReturnType<typeof Type.Optional>>),
-  // action=handoff_apply
-  subagentSessionId: Type.Optional(Type.String({ description: "Subagent session id for action=handoff_apply." })),
-  handoffNote: Type.Optional(Type.String({ description: "Free-text handoff note for action=handoff_apply." })),
-  completedCriteria: Type.Optional(Type.Array(Type.Object({
-    criterionId: Type.String(),
-    outcome: StringEnum(["pass", "fail", "partial"] as const),
-    summary: Type.String(),
-    artifacts: Type.Optional(Type.Array(Type.String())),
-    details: Type.Optional(Type.Object({}, { additionalProperties: true })),
-  }, { additionalProperties: false }), { description: "Completed criteria for action=handoff_apply (each entry: {criterionId, outcome, summary[, artifacts, details]})." })),
+  featureId: Type.Optional(Type.String({ description: "Feature id this record belongs to (required for action=verify when the criterion is feature-scoped)." })),
 }, { additionalProperties: false });
 
 interface RegisterCharterToolsOptions {
@@ -245,23 +130,19 @@ const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 
 export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterToolsOptions = {}): void {
   pi.registerTool({
-    name: "charter_manage",
-    label: "Charter Manage",
-    description: "Manage pi-charter lifecycle actions: create, pause, resume, ask, complete, force_complete, amend_charter.",
+    name: "charter",
+    label: "Charter",
+    description: "Manage pi-charter lifecycle actions: create, pause, resume, complete, abandon.",
     promptSnippet: "Manage a durable charter lifecycle with minimal create input and evidence-gated completion.",
     promptGuidelines: [
-      "Use charter_manage action=create when the user asks for durable charter-bound work; provide only objective, optional budget, and optional idempotencyKey.",
-      "Do not pass spec paths to charter_manage. Read spec files with normal file tools and author charter.md plus criteria.md during planning.",
+      "Use charter action=create when the user asks for durable charter-bound work; provide only objective, optional budget, and optional idempotencyKey.",
+      "Do not pass spec paths to charter. Read spec files with normal file tools and author charter.md plus criteria.md directly.",
     ],
-    parameters: CharterManageParams,
-    async execute(_toolCallId, params: CharterManageInput, _signal, _onUpdate, ctx) {
-      // `create` is the only charter_manage action that does not require a
-      // pre-existing charter (it MINTS one). Every other action resolves
-      // charterId from the explicit argument or the session reverse binding,
-      // throwing NoCharterBoundError when neither is available.
+    parameters: CharterParams,
+    async execute(_toolCallId, params: CharterInput, _signal, _onUpdate, ctx) {
       switch (params.action) {
         case "create": {
-          if (!params.objective?.trim()) throw new Error("objective is required for charter_manage action=create");
+          if (!params.objective?.trim()) throw new Error("objective is required for charter action=create");
           const sessionId = ctx.sessionManager.getSessionId?.();
           const result = await createCharter(ctx.cwd, {
             objective: params.objective,
@@ -282,15 +163,9 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
-        case "ask": {
-          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
-          const result = await askCharter(ctx.cwd, { charterId: resolved.charterId, note: params.note });
-          await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
-          return toolResult(result.message, result);
-        }
         case "resume": {
           const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
-          const result = await resumeCharter(ctx.cwd, { charterId: resolved.charterId, acknowledgeClarification: params.acknowledgeClarification });
+          const result = await resumeCharter(ctx.cwd, { charterId: resolved.charterId });
           const sessionId = ctx.sessionManager.getSessionId?.();
           if (sessionId) {
             await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
@@ -304,86 +179,23 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
-        case "force_complete": {
+        case "abandon": {
           const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
-          const target = params.target === "completed" || params.target === "abandoned" || params.target === "budget_limited" ? params.target : undefined;
-          const result = await forceCompleteCharter(ctx.cwd, {
+          const result = await abandonCharter(ctx.cwd, {
             charterId: resolved.charterId,
             reason: params.reason ?? "",
-            target,
           });
           tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
-        case "amend_charter": {
-          const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
-          const target = params.target === "planning" || params.target === "review" ? params.target : undefined;
-          const result = await amendCharter(ctx.cwd, {
-            charterId: resolved.charterId,
-            reason: params.reason ?? "",
-            target,
-            triage: params.triage,
-          });
-          return toolResult(result.message, result);
-        }
       }
-    },
-  });
-
-  pi.registerTool({
-    name: "charter_plan",
-    label: "Charter Plan",
-    description: "View and edit the charter macro-DAG (features under .pi/charters/<id>/plan/). Read the pi-charter skill for end-to-end workflow.",
-    promptSnippet: "Inspect charter feature coverage and planning drift before locking or executing a charter.",
-    promptGuidelines: [
-      "Use charter_plan action=view to inspect coverage; action=add_feature/update_feature to write managed plan/<featureId>.md files; action=lock_plan to transition to active.",
-      "Never write plan/<featureId>.md or charter.md at the repo root — charter files live under .pi/charters/<id>/ and the tools manage them.",
-    ],
-    parameters: CharterPlanParams,
-    async execute(_toolCallId, params: CharterPlanInput, _signal, _onUpdate, ctx) {
-      const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
-      const status = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
-      if (params.action === "view") {
-        const result = await viewPlan(ctx.cwd, { charterId: status.charterId });
-        return toolResult(`Plan for charter ${result.charterId}: ${result.features.length} feature(s), ${result.drift.uncovered.length} uncovered criterion/criteria.`, result);
-      }
-      if (params.action === "lock_plan") {
-        const result = await lockPlan(ctx.cwd, { charterId: status.charterId });
-        await tryUpsertCharterReminder(pi, ctx.cwd, result.charterId);
-        return toolResult(result.message, result);
-      }
-      if (params.action === "add_feature") {
-        if (!Array.isArray(params.features) || params.features.length === 0) {
-          throw new Error("features array must be non-empty for charter_plan action=add_feature; legacy single-entry shape (id/milestone/order/fulfills/body at top level) is rejected — wrap in features:[{...}]");
-        }
-        const result = await addFeatureBatch(ctx.cwd, {
-          charterId: status.charterId,
-          features: params.features,
-        });
-        return toolResult(result.message, result);
-      }
-      if (params.action === "update_feature") {
-        if (!params.id?.trim()) throw new Error("id is required for charter_plan action=update_feature");
-        const result = await updateFeature(ctx.cwd, {
-          charterId: status.charterId,
-          id: params.id,
-          milestone: params.milestone,
-          order: params.order,
-          fulfills: params.fulfills,
-          preconditions: params.preconditions,
-          category: params.category,
-          body: params.body,
-        });
-        return toolResult(result.message, result);
-      }
-      throw new Error(`charter_plan action=${params.action} is not implemented`);
     },
   });
 
   pi.registerTool({
     name: "charter_record",
     label: "Charter Record",
-    description: "Record evidence, run verifiers, or apply subagent handoffs against charter criteria.",
+    description: "Record evidence or run command verifiers against charter criteria.",
     promptSnippet: "Record evidence, run command verifiers, and link results back to charter criteria.",
     promptGuidelines: [
       "Use charter_record action=evidence after a manual check; charter_record action=verify to execute a command verifier defined in charter.md.",
@@ -409,7 +221,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
             evidenceFile: params.evidenceFile!,
           });
           await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
-          return toolResult(`Imported ${imported.kind} evidence for feature ${imported.featureId} (${imported.entries.length} criteria).`, imported);
+          return toolResult(`Imported evidence for ${imported.criterionId} (${imported.entries.length} criteria).`, imported);
         }
         if (!params.entries || params.entries.length === 0) throw new Error("entries array must be non-empty for charter_record action=evidence");
         const batch = await recordEvidenceBatch(ctx.cwd, {
@@ -431,94 +243,6 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
         });
         await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
-      }
-      if (params.action === "handoff") {
-        const { action: _action, charterId: _charterId, ...handoffParams } = params;
-        const result = await recordHandoff(ctx.cwd, {
-          charterId: status.charterId,
-          ...handoffParams,
-        });
-        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
-        return toolResult(`Recorded handoff from ${result.sessionId} for feature ${result.featureId}.`, result);
-      }
-      if (params.action === "handoff_apply") {
-        // VAL-HANDOFF-SCHEMA: the four de-facto-required handoff_apply fields
-        // are validated here as the single source of truth (the duplicate guard
-        // inside record-service.applyHandoff has been removed). Each rejection
-        // is a CharterToolError carrying a structured `code` plus nextActions[]
-        // that name the canonical subagent-spawn metadata key so the agent can
-        // self-correct without parsing the message.
-        if (!params.featureId?.trim()) {
-          throw new CharterToolError(
-            "charter_record action=handoff_apply requires 'featureId' (the feature this handoff completes; same value passed in metadata.pi-charter.featureId on the subagent spawn).",
-            {
-              code: "handoff_apply.missing_featureId",
-              nextActions: [
-                {
-                  tool: "charter_record",
-                  action: "handoff_apply",
-                  hint: "Pass `featureId: '<id>'` (same value as metadata['pi-charter.featureId'] on the subagent spawn).",
-                },
-                { tool: "charter_status", hint: "Use charter_status to list active features and pick the right featureId." },
-              ],
-            },
-          );
-        }
-        if (!params.subagentSessionId?.trim()) {
-          throw new CharterToolError(
-            "charter_record action=handoff_apply requires 'subagentSessionId' (the worker/reviewer session id that produced this handoff; same value passed in metadata.pi-charter.subagentSessionId on the subagent spawn).",
-            {
-              code: "handoff_apply.missing_subagentSessionId",
-              nextActions: [
-                {
-                  tool: "charter_record",
-                  action: "handoff_apply",
-                  hint: "Pass `subagentSessionId: '<sessionId>'` (same value as metadata['pi-charter.subagentSessionId'] on the subagent spawn).",
-                },
-              ],
-            },
-          );
-        }
-        if (!params.handoffNote?.trim()) {
-          throw new CharterToolError(
-            "charter_record action=handoff_apply requires 'handoffNote' (a short free-text summary from the subagent describing what was completed and any caveats).",
-            {
-              code: "handoff_apply.missing_handoffNote",
-              nextActions: [
-                {
-                  tool: "charter_record",
-                  action: "handoff_apply",
-                  hint: "Pass `handoffNote: '<summary>'` describing what the subagent completed and any caveats.",
-                },
-              ],
-            },
-          );
-        }
-        if (!params.completedCriteria || params.completedCriteria.length === 0) {
-          throw new CharterToolError(
-            "charter_record action=handoff_apply requires 'completedCriteria' with at least one entry (each entry: {criterionId, outcome, summary[, artifacts, details]}); empty handoffs are not allowed.",
-            {
-              code: "handoff_apply.empty_completedCriteria",
-              nextActions: [
-                {
-                  tool: "charter_record",
-                  action: "handoff_apply",
-                  hint: "Pass `completedCriteria: [{criterionId, outcome, summary}, ...]` with at least one entry (criterionIds match the VAL-* ids fulfilled by this feature).",
-                },
-                { tool: "charter_status", hint: "Use charter_status to list VAL-* criterion ids fulfilled by this feature." },
-              ],
-            },
-          );
-        }
-        const result = await applyHandoff(ctx.cwd, {
-          charterId: status.charterId,
-          featureId: params.featureId,
-          subagentSessionId: params.subagentSessionId,
-          handoffNote: params.handoffNote,
-          completedCriteria: params.completedCriteria as HandoffCompletedCriterion[],
-        });
-        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
-        return toolResult(`Applied handoff from ${result.subagentSessionId} for feature ${result.featureId} (${result.appliedCount} criteria).`, result);
       }
       throw new Error("charter_record action is not implemented yet");
     },
@@ -553,15 +277,24 @@ export function formatCharterStatusText(result: {
   status: string;
   phase: string;
   objective: string;
-  clarificationNote?: string;
   migrationHint?: string;
-  drift: { uncovered: unknown[]; stuck: unknown[]; stale: unknown[]; readyNext: { featureId: string; fulfills: string[]; probeResult?: string }[] };
-  milestones?: { milestoneId: string; featureCount: number; fulfilledValCount: number; valPassCount: number; qaEvidenceCount: number; featureIds: string[] }[];
+  drift: {
+    uncovered: unknown[];
+    stale: unknown[];
+    readyNext: { criterionId: string; milestoneId: string }[];
+    sidecarDrift?: { path: string; lastToolWriteAt: string; fileMtimeMs: number }[];
+    milestoneArtifacts?: { milestoneId: string; reason: string }[];
+  };
+  milestones?: { milestoneId: string; title: string; criterionIds: string[]; valCount: number; valPassCount: number }[];
   qaBriefs?: string[];
   commands?: Record<string, string>;
   nextActions: { tool: string; action?: string; hint: string }[];
   guidelines: string[];
-  details?: { blockingForComplete?: { criterionId?: string; reason: string; featureId?: string; probeResult?: string; handoffPath?: string; itemId?: string }[] };
+  details?: { blockingForComplete?: { criterionId?: string; reason: string; featureId?: string; probeResult?: string; handoffPath?: string; itemId?: string; description?: string }[] };
+  parseWarnings?: { criterionId?: string; reason: string; section?: string; key?: string; detail?: string }[];
+  valTotal?: number;
+  valPass?: number;
+  registerEmpty?: boolean;
 }): string {
   const lines: string[] = [];
   const firstObjectiveLine = result.objective.split("\n", 1)[0] ?? "";
@@ -571,26 +304,58 @@ export function formatCharterStatusText(result: {
   const idLabel = result.name ? `${result.name} (${result.charterId})` : result.charterId;
   lines.push(`Charter ${idLabel} [${result.status} · phase=${result.phase}]`);
   lines.push(`  objective: ${trimmedObjective}`);
-  if (result.clarificationNote) {
-    lines.push(`  clarification: ${result.clarificationNote}`);
-  }
   if (result.migrationHint) {
     lines.push(`  migration: ${result.migrationHint}`);
   }
+  if (result.registerEmpty) {
+    lines.push(
+      "  REGISTER EMPTY: 0 VAL criteria parsed from criteria.md. This is not a finished charter — either criteria were never authored or criteria.md failed to parse. Check parse-warnings below and author/repair criteria.md.",
+    );
+  } else if (typeof result.valTotal === "number") {
+    lines.push(`  VAL totals: ${result.valPass ?? 0}/${result.valTotal} pass`);
+  }
+  const drift = result.drift ?? { uncovered: [], stale: [], readyNext: [], sidecarDrift: [], milestoneArtifacts: [] };
   lines.push(
-    `  drift: uncovered=${result.drift.uncovered.length} stuck=${result.drift.stuck.length} stale=${result.drift.stale.length} readyNext=${result.drift.readyNext.length}`,
+    `  drift: uncovered=${drift.uncovered.length} stale=${drift.stale.length} readyNext=${drift.readyNext.length} sidecarDrift=${drift.sidecarDrift?.length ?? 0} milestoneArtifacts=${drift.milestoneArtifacts?.length ?? 0}`,
   );
+  if ((drift.sidecarDrift?.length ?? 0) > 0) {
+    const preview = drift.sidecarDrift!.map((entry) => `${entry.path}(edited out-of-band)`).join(", ");
+    lines.push(`  sidecar-drift: ${preview}`);
+  }
+  if ((drift.milestoneArtifacts?.length ?? 0) > 0) {
+    const preview = drift.milestoneArtifacts!.map((entry) => `${entry.milestoneId}(${entry.reason})`).join(", ");
+    lines.push(`  milestone-artifacts: ${preview}`);
+  }
   if ((result.milestones?.length ?? 0) > 0) {
     lines.push("  milestones:");
     for (const milestone of result.milestones!) {
-      const featurePreview = milestone.featureIds.slice(0, 3).join(", ");
-      const more = milestone.featureIds.length > 3 ? ", ..." : "";
-      lines.push(`    - ${milestone.milestoneId}: features=${milestone.featureCount} VALs=${milestone.fulfilledValCount} pass=${milestone.valPassCount} QA=${milestone.qaEvidenceCount} :: ${featurePreview}${more}`);
+      const valPreview = milestone.criterionIds.slice(0, 3).join(", ");
+      const more = milestone.criterionIds.length > 3 ? ", ..." : "";
+      const label = milestone.milestoneId || "(flat)";
+      lines.push(`    - ${label}: VALs=${milestone.valCount} pass=${milestone.valPassCount} :: ${valPreview}${more}`);
     }
+  }
+  const parseWarnings = result.parseWarnings ?? [];
+  if (parseWarnings.length > 0) {
+    const preview = parseWarnings
+      .slice(0, 5)
+      .map((w) => {
+        const who = w.criterionId ?? w.section ?? w.key ?? "criteria.md";
+        return w.detail ? `${who}: ${w.reason} (${w.detail})` : `${who}: ${w.reason}`;
+      })
+      .join("; ");
+    const more = parseWarnings.length > 5 ? ", ..." : "";
+    lines.push(`  parse-warnings: ${parseWarnings.length} — ${preview}${more}`);
   }
   const blocking = result.details?.blockingForComplete ?? [];
   if (blocking.length > 0) {
-    const preview = blocking.map((row) => `${row.featureId ?? row.criterionId ?? row.handoffPath ?? row.itemId ?? "item"}(${row.reason})`).join(", ");
+    const preview = blocking.map((row) => {
+      if (row.reason.startsWith("report-")) {
+        const section = row.description ?? "REPORT.md";
+        return `REPORT.md/${section}(${row.reason})`;
+      }
+      return `${row.featureId ?? row.criterionId ?? row.handoffPath ?? row.itemId ?? "item"}(${row.reason})`;
+    }).join(", ");
     const unit = blocking.some((row) => row.featureId) ? "item(s)" : "VAL(s)";
     lines.push(`  blocking-for-complete: ${blocking.length} ${unit}: ${preview}`);
   }
@@ -604,9 +369,9 @@ export function formatCharterStatusText(result: {
   if (result.drift.readyNext.length > 0) {
     const preview = result.drift.readyNext
       .slice(0, 3)
-      .map((entry) => `${entry.featureId}${entry.probeResult ? ` [probe=${entry.probeResult}]` : ""} (→ ${entry.fulfills.join(", ") || "-"})`)
+      .map((entry) => `${entry.criterionId}${entry.milestoneId ? ` @ ${entry.milestoneId}` : ""}`)
       .join("; ");
-    lines.push(`  ready features: ${preview}${result.drift.readyNext.length > 3 ? ", ..." : ""}`);
+    lines.push(`  ready-next VAL: ${preview}${result.drift.readyNext.length > 3 ? ", ..." : ""}`);
   }
   lines.push("  nextActions:");
   for (const action of result.nextActions) {
@@ -639,7 +404,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
       // objective to the agent, which picks the charterId and shapes the
       // criteria/plan during the planning phase. This prevents long objective
       // text from leaking into ids and keeps charter authorship inside the
-      // tool surface where the verifier/critic personas can see it.
+      // tool surface where the agent can read and shape the contract.
       pi.sendUserMessage(
         [
           "The user has handed you a new pi-charter objective:",
@@ -649,19 +414,15 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "Before calling any charter tool, do this:",
           "0. Read every file, path, or URL the user referenced above. If the user pointed at a handoff doc, spec, screenshot, or temp file, open it first with normal file tools. Recon is mandatory — pi-charter SKILL.md §2a 'Recon before authoring' explains why brittle charters come from skipping this.",
           "0b. If the request is ambiguous (short phrase, 'continue from handoff', 'make it better', no measurable outcome, contradictory requirements), ask the user EXACTLY ONE clarifying question before proceeding. Do not invent an objective.",
-          "1. Extract the real objective from the material you read. Derive a short kebab-case 'name' (≤32 chars, no slugified instruction text — e.g. 'oauth-google-signin' not 'continue-handoff'). Then call charter_manage action=create with the extracted objective and derived name.",
-          "2. Run charter_status to confirm the planning state and legal nextActions.",
+          "1. Extract the real objective from the material you read. Derive a short kebab-case 'name' (≤32 chars, no slugified instruction text — e.g. 'oauth-google-signin' not 'continue-handoff'). Then call charter action=create with the extracted objective and derived name.",
+          "2. Run charter_status to confirm the active state and legal nextActions.",
           "3. Author the contract by editing .pi/charters/<id>/criteria.md for VAL-* criteria and .pi/charters/<id>/charter.md for scope/constraints. Do NOT create a charter.md at the repo root.",
-          "4. Seed the macro plan by calling charter_plan action=add_feature for each feature (id, milestone, order, fulfills[], body). Do NOT write plan/<featureId>.md files yourself — the tool writes them under .pi/charters/<id>/plan/.",
-          "5. Before locking, delegate to subagent({agent:'charter-planner-critic'}) to stress-test coverage; resolve every BLOCK finding.",
-          "6. Call charter_plan action=lock_plan to transition to active.",
-          "7. Execute feature by feature. Prefer delegating to subagent({agent:'charter-reviewer', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.projectDir':<cwd>}}) for evidence rather than running verifier commands inline. Record results with charter_record action=evidence (manual) or charter_record action=verify (command verifier).",
-          "8. Call charter_manage action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
+          "4. Execute work toward each VAL. Record results with charter_record action=evidence (manual) or charter_record action=verify (command verifier).",
+          "5. Call charter action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
           "",
           "Follow charter_status nextActions instead of guessing transitions. Read the pi-charter skill for the full workflow if you are unsure.",
-          "You MUST use subagents (charter-planner-critic, charter-reviewer, explorer) rather than doing planning critique, verification, or read-only recon inline. Main agent context is precious; long charters die when it fills with grep results and tool output. Delegate aggressively.",
-          "The four bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal: they will NOT appear in `subagent({action:'list'})` output, but invoking them by name through `subagent({agent:'<name>',...})` works. Full workflow + delegation tables: `skills/pi-charter/SKILL.md`.",
-          "After lock_plan, implement every feature end-to-end without pausing to ask 'should I keep going?'. The locked plan is your authorization. Surface routine decisions (commit identity, build flags, branch names) in the work itself, not as blocking questions.",
+          "Delegate read-only recon, verification, and critique to user-owned subagents rather than doing that work inline. Main agent context is precious; long charters die when it fills with grep results and tool output. Prefer `subagent({async:true, ...})` when the next step does not need the child's output — async returns immediately and main keeps working in parallel. Sync subagent calls block main entirely until the child finishes; use them only when the next move depends on the result.",
+          "Drive every VAL to evidence end-to-end without pausing to ask 'should I keep going?'. Surface routine decisions (commit identity, build flags, branch names) in the work itself, not as blocking questions.",
         ].join("\n"),
       );
     },
@@ -959,8 +720,7 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
         const reconciledState = await loadCharterState(charterDir(binding.projectDir, binding.charterId)).catch(() => undefined);
         const terminal = reconciledState
           && (reconciledState.status === "completed"
-            || reconciledState.status === "abandoned"
-            || reconciledState.status === "budget_limited");
+            || reconciledState.status === "abandoned");
         if (terminal) {
           removeCharterReminder(pi, binding.charterId);
           await clearSessionBinding(sessionId, options.homeDir).catch(() => undefined);
@@ -986,22 +746,20 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
     if (!objective) return;
     // Same authorship rule as the /charter slash command: hand the objective
     // to the agent rather than creating the charter directly. The agent will
-    // call charter_manage action=create with a concise id during turn 1.
+    // call charter action=create with a concise id during turn 1.
     pi.sendUserMessage(
       [
         "The user launched pi with --charter-objective. Start a new charter end-to-end:",
         "",
         objective,
         "",
-        "1. Call charter_manage action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; do not embed objective text in id or name.",
+        "1. Call charter action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; do not embed objective text in id or name.",
         "2. Run charter_status; then edit .pi/charters/<id>/criteria.md to add VAL-* criteria (do NOT create a repo-root charter.md).",
-        "3. Seed features via charter_plan action=add_feature (id, milestone, order, fulfills[], body); do NOT write plan/*.md files yourself.",
-        "4. Delegate plan critique to subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan.",
-        "5. Execute feature by feature. Prefer subagent({agent:'charter-reviewer'}) for evidence over inline verifier runs; record results with charter_record action=evidence or action=verify.",
-        "6. Follow charter_status nextActions; never guess transitions. Read the pi-charter skill for the full workflow if you are unsure.",
-        "7. After lock_plan, drive every feature to evidence end-to-end. Delegate verification and recon to subagents (charter-reviewer, charter-planner-critic, explorer) — main agent context is precious.",
-        "8. Do not stop mid-charter to ask routine questions; surface decisions in the work itself.",
-        "9. Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in `subagent({action:'list'})`; invoke by name directly. Full workflow: `skills/pi-charter/SKILL.md`.",
+        "3. Execute work toward each VAL. Record results with charter_record action=evidence or action=verify.",
+        "4. Follow charter_status nextActions; never guess transitions. Read the pi-charter skill for the full workflow if you are unsure.",
+        "5. Drive every VAL to evidence end-to-end. Delegate verification and recon to subagents — main agent context is precious.",
+        "6. Do not stop mid-charter to ask routine questions; surface decisions in the work itself.",
+        "7. Call charter action=complete only after every criterion has pass evidence.",
       ].join("\n"),
     );
   });
@@ -1081,66 +839,6 @@ export function registerCharterAsyncBridge(pi: ExtensionAPI): void {
       logger.warn("async-bridge feature_completed skipped", { error: message });
     });
   }));
-}
-
-// ---------------------------------------------------------------------------
-// pi-subagents bridge: surface 1 — register bundled personas directory
-// ---------------------------------------------------------------------------
-
-/**
- * Resolve the absolute path to the `pi-charter/agents/` directory.
- *
- * Both Bun (dev/test) and bundled production builds put this file under
- * `<extension-root>/src/application/registration.{ts,js}`, so the personas
- * directory is always two `..` away.
- */
-function resolveAgentsDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url));
-  return resolvePath(here, "..", "..", "agents");
-}
-
-export function registerCharterPersonas(pi: ExtensionAPI): void {
-  const agentsDir = resolveAgentsDir();
-  const subs: Array<() => void> = [];
-  let disposed = false;
-
-  const registerPayload: RegisterPersonaDirPayload = {
-    extensionId: PI_CHARTER_EXTENSION_ID,
-    path: agentsDir,
-    scope: "internal",
-  };
-  const unregisterPayload: UnregisterPersonaDirPayload = {
-    extensionId: PI_CHARTER_EXTENSION_ID,
-  };
-
-  // Surface collisions to the UI; pi-subagents emits this on persona-name
-  // conflict and never throws (originating extension is responsible for
-  // failing its own startup).
-  subs.push(pi.events.on(SUBAGENT_REGISTER_PERSONA_DIR_ERROR_EVENT, (raw: unknown) => {
-    const payload = raw as PersonaDirErrorPayload | undefined;
-    if (!payload || payload.extensionId !== PI_CHARTER_EXTENSION_ID) return;
-    // No ctx here; events.on has no UI handle. Best-effort file log so the
-    // conflict is visible without writing to stdout/stderr.
-    logger.warn("persona dir registration failed", { error: payload.message });
-  }));
-
-  // Emit at startup …
-  pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, registerPayload);
-
-  // … and re-emit on session_start (matches pi-prune-swe-pruner-provider
-  // re-announce pattern; survives pi-subagents restarts).
-  pi.on("session_start", () => {
-    pi.events.emit(SUBAGENT_REGISTER_PERSONA_DIR_EVENT, registerPayload);
-  });
-
-  pi.on("session_shutdown", () => {
-    if (!disposed) {
-      disposed = true;
-      for (const unsubscribe of subs) unsubscribe();
-      subs.length = 0;
-    }
-    pi.events.emit(SUBAGENT_UNREGISTER_PERSONA_DIR_EVENT, unregisterPayload);
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,7 +1166,7 @@ async function trySyncCharterReminder(pi: ExtensionAPI, projectDir: string, char
     const state = await loadCharterState(charterDir(projectDir, charterId));
     // Terminal charters are removed; planning/active/review/paused keep a
     // status-aware reminder so the agent always sees the correct next step.
-    if (state.status === "completed" || state.status === "abandoned" || state.status === "budget_limited") {
+    if (state.status === "completed" || state.status === "abandoned") {
       removeCharterReminder(pi, charterId);
       return;
     }

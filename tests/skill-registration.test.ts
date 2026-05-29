@@ -47,12 +47,12 @@ async function discoverSkills(roots: string[]): Promise<Array<{ name: string; fi
 }
 
 describe("skill registration", () => {
-  test("VAL-SKILL-001: package.json declares pi.skills with ./skills", () => {
+  test("package.json declares pi.skills with ./skills", () => {
     expect(pkg.pi.skills).toBeArray();
     expect(pkg.pi.skills).toContain("./skills");
   });
 
-  test("VAL-SKILL-002: discovery walker finds pi-charter SKILL.md", async () => {
+  test("discovery walker finds pi-charter SKILL.md", async () => {
     const records = await discoverSkills(pkg.pi.skills);
     expect(records).toHaveLength(1);
     expect(records[0].name).toBe("pi-charter");

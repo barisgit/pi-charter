@@ -2,7 +2,9 @@
 
 Status: accepted; supersedes ADR-0002
 
-The authored layout for a charter is two files: `charter.md` (Objective, Scope and constraints, Mission Boundaries, Commands) and `criteria.md` (the `VAL-*` register, with per-criterion pass criteria, failure modes, and trust-gate flags). Sidecar JSON files (`state.json`, `feature-state.json`, `criterion-state.json`) hold mutable runtime state.
+The authored layout for a charter is two files: `charter.md` (Objective, Scope and constraints, Mission Boundaries, Commands) and `criteria.md` (the `VAL-*` register, with per-criterion pass criteria, failure modes, and trust-gate flags). Sidecar JSON files (`state.json`, `criterion-state.json`) hold mutable runtime state.
+
+(v2.3 also had `feature-state.json`; v3 removes it along with features. See ADR-0012.)
 
 ## Why
 

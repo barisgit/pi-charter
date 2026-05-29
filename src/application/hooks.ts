@@ -1,7 +1,7 @@
 /**
  * Charter hook bus. Minimal in-process registry that lets subscribers veto
  * charter state transitions (charter:before_lock_plan, charter:before_complete,
- * charter:before_amend_charter, charter:before_force_complete).
+ * charter:before_abandon).
  *
  * Subscribers return `{decision: 'block', reason}` to block the transition or
  * `{decision: 'allow'}` to pass through. The host agent decides whether to
@@ -11,8 +11,7 @@
 export type CharterHookEvent =
   | "charter:before_lock_plan"
   | "charter:before_complete"
-  | "charter:before_amend_charter"
-  | "charter:before_force_complete";
+  | "charter:before_abandon";
 
 export interface HookPayloadBase {
   charterId: string;
@@ -31,23 +30,15 @@ export interface BeforeCompletePayload extends HookPayloadBase {
   completionNote?: string;
 }
 
-export interface BeforeAmendCharterPayload extends HookPayloadBase {
-  type: "charter:before_amend_charter";
-  target: "planning" | "review";
-  reason: string;
-}
-
-export interface BeforeForceCompletePayload extends HookPayloadBase {
-  type: "charter:before_force_complete";
-  target: "completed" | "abandoned" | "budget_limited";
+export interface BeforeAbandonPayload extends HookPayloadBase {
+  type: "charter:before_abandon";
   reason: string;
 }
 
 export type HookPayload =
   | BeforeLockPlanPayload
   | BeforeCompletePayload
-  | BeforeAmendCharterPayload
-  | BeforeForceCompletePayload;
+  | BeforeAbandonPayload;
 
 export type HookDecision = { decision: "allow" } | { decision: "block"; reason: string };
 

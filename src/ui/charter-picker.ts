@@ -483,7 +483,7 @@ export class CharterPickerComponent implements Component {
     // Suppress entirely for terminal charters (completed/abandoned/budget_limited);
     // the section only makes sense for live work. If all VAL pass on a non-terminal
     // charter, surface Ready regardless of any stale blockingForComplete data.
-    const isTerminal = snapshot.header.status === "completed" || snapshot.header.status === "abandoned" || snapshot.header.status === "budget_limited";
+    const isTerminal = snapshot.header.status === "completed" || snapshot.header.status === "abandoned";
     if (!isTerminal) {
     lines.push("");
     if (allPass(snapshot)) {
@@ -859,7 +859,7 @@ function wrapText(text: string, width: number): string[] {
 
 function compactRecordedBy(recordedBy: string): string {
   return recordedBy
-    .replace(/^subagent:charter-reviewer:/, "charter-reviewer:")
+    .replace(/^subagent:([^:]+):/, "subagent:$1:")
     .replace(/^subagent:/, "")
     .replace(/^agent:/, "");
 }
@@ -878,11 +878,8 @@ function statusColor(status: CharterStatus): ThemeColorName {
   switch (status) {
     case "active": return "accent";
     case "completed": return "success";
-    case "planning": return "muted";
     case "paused": return "warning";
-    case "review": return "warning";
     case "abandoned": return "error";
-    case "budget_limited": return "error";
     default: return "dim";
   }
 }

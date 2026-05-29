@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { parseCharterMarkdown, renderInitialCharterMarkdown, renderInitialCriteriaMarkdown } from "../domain/charter-md";
-import type { Budget, CharterEvent, CharterState, ParsedCharterMarkdown } from "../domain/types";
+import type { Budget, CharterEvent, CharterState, LegacyCharterStatus, ParsedCharterMarkdown } from "../domain/types";
 
 export interface CreateCharterWorkspaceInput {
   charterId: string;
@@ -28,7 +28,7 @@ export async function loadParsedCharter(dirOrProject: string, charterId?: string
 
 function isDefaultCriteriaScaffold(markdown: string): boolean {
   const valHeadings = markdown.match(/^#{2,3}\s+VAL-[A-Z0-9-]+\b/gm) ?? [];
-  return valHeadings.length === 1 && /^##\s+VAL-EXAMPLE\b/m.test(markdown);
+  return valHeadings.length === 1 && /^(?:##|###)\s+VAL-EXAMPLE\b/m.test(markdown);
 }
 
 function charterHasInlineCriteria(markdown: string): boolean {
@@ -94,22 +94,19 @@ export async function createCharterWorkspace(
     schemaVersion: "v2",
     name: input.name,
     objective: input.objective.trim(),
-    status: "planning",
+    status: "active",
     createdAt: input.now,
     updatedAt: input.now,
+    lastToolWriteAt: input.now,
     budget: input.budget,
     sessionId: input.sessionId,
-    triage: [],
   };
 
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await mkdir(join(dir, "qa-briefs"), { recursive: true });
+  await mkdir(join(dir, "work"), { recursive: true });
   await writeTextAtomic(join(dir, "charter.md"), renderInitialCharterMarkdown(state.objective, state.name));
   await writeTextAtomic(join(dir, "criteria.md"), renderInitialCriteriaMarkdown(state.name));
   await writeJsonAtomic(join(dir, "state.json"), state);
-  await writeJsonAtomic(join(dir, "plan.json"), { charterId: input.charterId, milestones: [], features: [] });
-  await writeJsonAtomic(join(dir, "feature-state.json"), { charterId: input.charterId, features: {} });
-  await writeJsonAtomic(join(dir, "criterion-state.json"), { charterId: input.charterId, criteria: {} });
+  await writeJsonAtomic(join(dir, "criterion-state.json"), { charterId: input.charterId, criteria: {}, lastToolWriteAt: input.now });
   await appendEvent(dir, {
     type: "charter_created",
     ts: input.now,
@@ -146,7 +143,8 @@ async function isV1CharterDir(dir: string): Promise<boolean> {
   return /(?:^|\n)###\s+VAL-[A-Z0-9-]+\b/i.test(criteriaSection);
 }
 
-export async function writeCharterState(dir: string, state: CharterState): Promise<void> {
+export async function writeCharterState(dir: string, state: CharterState, toolWriteAt?: string): Promise<void> {
+  state.lastToolWriteAt = toolWriteAt ?? new Date().toISOString();
   await writeJsonAtomic(join(dir, "state.json"), state);
 }
 
@@ -263,66 +261,45 @@ function normalizeCharterState(value: unknown): CharterState {
     schemaVersion: raw.schemaVersion === "v2" || raw.schemaVersion === "v1-needs-replan" ? raw.schemaVersion : undefined,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
     objective: raw.objective.trim(),
-    status: raw.status,
+    status: normalizeStatus(raw.status),
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now,
     charterDigest: typeof raw.charterDigest === "string" ? raw.charterDigest : undefined,
-    planDigest: typeof raw.planDigest === "string" ? raw.planDigest : undefined,
     sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
     budget: typeof raw.budget === "object" && raw.budget ? (raw.budget as Budget) : undefined,
-    previousStatus: isStatus(raw.previousStatus) ? raw.previousStatus : undefined,
-    clarificationNote: typeof raw.clarificationNote === "string" ? raw.clarificationNote : undefined,
-    unansweredClarification: typeof raw.unansweredClarification === "boolean" ? raw.unansweredClarification : undefined,
+    previousStatus: raw.previousStatus === undefined ? undefined : normalizeStatus(raw.previousStatus),
     completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
     completionReason: typeof raw.completionReason === "string" ? raw.completionReason : undefined,
-    triage: normalizeTriage(raw.triage),
-    planning: normalizePlanningState(raw.planning),
+    lastToolWriteAt: typeof raw.lastToolWriteAt === "string" ? raw.lastToolWriteAt : undefined,
   };
 }
 
-function normalizeTriage(value: unknown): CharterState["triage"] {
-  if (!Array.isArray(value)) return [];
-  const entries: CharterState["triage"] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const raw = item as Record<string, unknown>;
-    if (typeof raw.handoffPath !== "string" || !raw.handoffPath.trim()) continue;
-    if (typeof raw.itemId !== "string" || !raw.itemId.trim()) continue;
-    if (!isTriageDecision(raw.decision)) continue;
-    if (typeof raw.reason !== "string" || !raw.reason.trim()) continue;
-    if (typeof raw.decidedAt !== "string" || !raw.decidedAt.trim()) continue;
-    entries.push({
-      handoffPath: raw.handoffPath.trim(),
-      itemId: raw.itemId.trim(),
-      decision: raw.decision,
-      reason: raw.reason.trim(),
-      decidedAt: raw.decidedAt.trim(),
-    });
-  }
-  return entries;
-}
-
-function isTriageDecision(value: unknown): value is CharterState["triage"][number]["decision"] {
-  return value === "addFeature" || value === "updateFeature" || value === "cut";
-}
-
-function normalizePlanningState(value: unknown): CharterState["planning"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  if (typeof raw.valCeilingOverride !== "boolean") return undefined;
-  return { valCeilingOverride: raw.valCeilingOverride };
-}
-
-function isStatus(value: unknown): value is CharterState["status"] {
+function isLegacyStatus(value: unknown): value is LegacyCharterStatus {
   return (
     value === "planning" ||
-    value === "active" ||
     value === "review" ||
-    value === "paused" ||
     value === "awaiting-clarification" ||
-    value === "completed" ||
-    value === "budget_limited" ||
-    value === "abandoned"
+    value === "budget_limited"
+  );
+}
+
+function normalizeStatus(value: unknown): CharterState["status"] {
+  if (value === "active" || value === "paused" || value === "completed" || value === "abandoned") {
+    return value;
+  }
+  if (value === "planning" || value === "review" || value === "awaiting-clarification") {
+    return "active";
+  }
+  if (value === "budget_limited") {
+    return "abandoned";
+  }
+  throw new Error(`Invalid charter state: status (${String(value)})`);
+}
+
+function isStatus(value: unknown): value is CharterState["status"] | LegacyCharterStatus {
+  return (
+    value === "active" ||
+    value === "paused" || value === "completed" || value === "abandoned" || isLegacyStatus(value)
   );
 }

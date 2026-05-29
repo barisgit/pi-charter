@@ -1,11 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { lockPlan } from "../src/application/plan-service";
 import { recordEvidence, recordEvidenceBatch } from "../src/application/record-service";
-import { createCharter } from "../src/application/service";
-import { charterDir } from "../src/infrastructure/store";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "pi-charter-concurrent-record-"));
@@ -16,52 +14,29 @@ async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   }
 }
 
-const VALIDATION_MD = `## Validation
-
-### Happy
-- check: smoke-happy
-  command: true
-
-### Edge
-- check: smoke-edge
-  command: true
-`;
-
-async function makeActiveCharter(projectDir: string, charterId: string): Promise<string> {
-  await createCharter(projectDir, { objective: "Concurrent record probe", charterId, now: "2026-05-15T00:00:00.000Z" });
-  const dir = charterDir(projectDir, charterId);
-  const criteria = Array.from({ length: 30 }, (_, index) => {
-    const id = `VAL-R-${String(index).padStart(2, "0")}`;
-    return [`### ${id} — Criterion ${index}`, `Description: Criterion ${index}.`, "Verifier: manual", "Because: test fixture rationale", ""].join("\n");
-  });
-  await writeFile(
-    join(dir, "charter.md"),
-    ["# Charter", "", "## Objective", "", "Concurrent record probe.", "", "## Criteria", "", ...criteria].join("\n"),
-    "utf8",
-  );
-  await mkdir(join(dir, "plan"), { recursive: true });
-  await writeFile(
-    join(dir, "plan", "f1.md"),
-    `---\nid: f1\nmilestone: m1\norder: 1\nfulfills:\n${Array.from({ length: 30 }, (_, index) => `  - VAL-R-${String(index).padStart(2, "0")}`).join("\n")}\npreconditions: []\n---\n\n# F1\n\n${VALIDATION_MD}`,
-    "utf8",
-  );
-  const state = JSON.parse(await readFile(join(dir, "state.json"), "utf8"));
-  state.planning = { ...(state.planning ?? {}), valCeilingOverride: true };
-  await writeFile(join(dir, "state.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T00:30:00.000Z" });
-  return dir;
+function criteriaSpecs() {
+  return Array.from({ length: 30 }, (_, index) => ({
+    id: `VAL-R-${String(index).padStart(2, "0")}`,
+    title: `Criterion ${index}`,
+    because: `manual rationale ${index}`,
+  }));
 }
 
 describe("concurrent record evidence", () => {
   test("parallel single recordEvidence calls preserve every criterion update", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "cha-concurrent-record-single";
-      const dir = await makeActiveCharter(projectDir, charterId);
+      const dir = await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Concurrent record probe",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: criteriaSpecs(),
+      });
 
       await Promise.all(Array.from({ length: 10 }, (_, index) => recordEvidence(projectDir, {
         charterId,
         criterionId: `VAL-R-${String(index).padStart(2, "0")}`,
-        featureId: "f1",
         outcome: "pass",
         summary: `single ${index}`,
         because: `manual rationale ${index}`,
@@ -79,7 +54,13 @@ describe("concurrent record evidence", () => {
   test("parallel recordEvidenceBatch calls preserve every criterion update", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "cha-concurrent-record-batch";
-      const dir = await makeActiveCharter(projectDir, charterId);
+      const dir = await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "Concurrent record probe",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: criteriaSpecs(),
+      });
 
       await Promise.all(Array.from({ length: 10 }, (_, index) => {
         const first = 10 + index * 2;
@@ -88,7 +69,6 @@ describe("concurrent record evidence", () => {
           now: `2026-05-15T02:00:${String(index).padStart(2, "0")}.000Z`,
           entries: [first, first + 1].map((criterionIndex) => ({
             criterionId: `VAL-R-${String(criterionIndex).padStart(2, "0")}`,
-            featureId: "f1",
             outcome: "pass" as const,
             summary: `batch ${criterionIndex}`,
             because: `batch rationale ${criterionIndex}`,

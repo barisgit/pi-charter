@@ -1,7 +1,7 @@
 /**
- * Picker data layer (f4-picker-data).
+ * Picker data layer.
  *
- * Pure data assembly the picker render layer (f5) consumes. No UI here.
+ * Pure data assembly for the picker render layer. No UI here.
  *
  * `buildPickerSnapshot` gathers a single charter's slice across charter.md,
  * state.json, criterion-state.json, feature-state.json, plan/*.md,
@@ -27,10 +27,9 @@ import {
   computeBlockingForComplete,
   loadBlockingContext,
 } from "../application/service";
-import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "../application/plan-tree";
 import { loadCriterionState, type CriterionStateFile } from "../application/record-service";
 import { charterDir, chartersRoot, loadCharterState, loadParsedCharter } from "../infrastructure/store";
-import type { CharterStatus, ParsedCharterMarkdown } from "../domain/types";
+import type { CharterMilestone, CharterStatus, ParsedCharterMarkdown } from "../domain/types";
 
 export interface PickerSnapshot {
   charterId: string;
@@ -88,7 +87,6 @@ export interface CharterListRow {
 const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "completed",
   "abandoned",
-  "budget_limited",
 ]);
 const TERMINAL_CAP = 10;
 
@@ -126,8 +124,6 @@ export async function buildPickerSnapshot(
   const titleByCriterionId = buildTitleMap(effectiveCriteriaTitleSource(charterMd, criteriaMd));
 
   const criterionState = await safeLoadCriterionState(dir, charterId);
-  const featureState = await safeLoadFeatureState(dir);
-  const features = await readPlanFeatures(dir);
 
   const totalCount = parsed?.criteria.length ?? 0;
   const passCount = Object.values(criterionState.criteria).filter(
@@ -140,10 +136,10 @@ export async function buildPickerSnapshot(
   const endMs = endIso ? Date.parse(endIso) : Date.now();
   const elapsedMs = Number.isFinite(createdMs) && Number.isFinite(endMs) ? Math.max(0, endMs - createdMs) : 0;
 
-  const planTree = buildPlanTree(features, featureState, criterionState, titleByCriterionId);
+  const planTree = buildPlanTree(parsed, criterionState, titleByCriterionId);
 
   const blockingForComplete = await safeComputeBlocking(dir, charterId);
-  const recentEvidence = await collectRecentEvidence(dir, features);
+  const recentEvidence = await collectRecentEvidence(dir);
 
   return {
     charterId,
@@ -278,22 +274,6 @@ async function safeLoadCriterionState(dir: string, charterId: string): Promise<C
   }
 }
 
-interface FeatureStateMap {
-  features: Record<string, { status?: string }>;
-}
-
-async function safeLoadFeatureState(dir: string): Promise<FeatureStateMap> {
-  try {
-    const parsed = JSON.parse(await readFile(join(dir, "feature-state.json"), "utf8")) as Partial<FeatureStateMap>;
-    const features = parsed.features && typeof parsed.features === "object"
-      ? (parsed.features as FeatureStateMap["features"])
-      : {};
-    return { features };
-  } catch {
-    return { features: {} };
-  }
-}
-
 /**
  * Build a map of VAL id → title taken from the raw H3 line via
  * `extractTitleFromH3` (NOT the charter-md parser's `title`, which falls
@@ -310,37 +290,43 @@ function buildTitleMap(markdown: string): Map<string, string> {
 }
 
 function buildPlanTree(
-  features: PlanFeatureRef[],
-  featureState: FeatureStateMap,
+  parsed: ParsedCharterMarkdown | null,
   criterionState: CriterionStateFile,
   titleByCriterionId: Map<string, string>,
 ): PlanMilestoneNode[] {
-  const nodes: PlanMilestoneNode[] = [];
-  for (const milestone of groupFeaturesByMilestone(features)) {
-    const featureNodes: PlanFeatureNode[] = milestone.features.map((feature) => {
-      const status = normalizeFeatureStatus(featureState.features[feature.id]?.status);
-      const criteria: PlanCriterionNode[] = feature.fulfills.map((criterionId) => ({
-        criterionId,
-        titleFromH3: titleByCriterionId.get(criterionId) ?? "",
-        outcome: normalizeOutcome(criterionState.criteria[criterionId]?.outcome),
-      }));
-      const passCount = criteria.filter((c) => c.outcome === "pass").length;
-      return {
-        featureId: feature.id,
-        status,
-        passCount,
-        totalCount: criteria.length,
-        criteria,
-      };
-    });
-    nodes.push({ milestoneId: milestone.milestoneId, features: featureNodes });
-  }
-  return nodes;
+  if (!parsed) return [];
+  const milestones: CharterMilestone[] = parsed.milestones.length > 0
+    ? parsed.milestones
+    : [{
+      id: "",
+      title: "",
+      criterionIds: parsed.criteria.map((criterion) => criterion.id),
+    }];
+  return milestones.map((milestone) => {
+    const criteria: PlanCriterionNode[] = milestone.criterionIds.map((criterionId) => ({
+      criterionId,
+      titleFromH3: titleByCriterionId.get(criterionId) ?? "",
+      outcome: normalizeOutcome(criterionState.criteria[criterionId]?.outcome),
+    }));
+    const passCount = criteria.filter((criterion) => criterion.outcome === "pass").length;
+    const featureNode: PlanFeatureNode = {
+      featureId: milestone.id || "_flat",
+      status: deriveMilestoneFeatureStatus(criteria),
+      passCount,
+      totalCount: criteria.length,
+      criteria,
+    };
+    return { milestoneId: milestone.id, features: [featureNode] };
+  });
 }
 
-function normalizeFeatureStatus(value: string | undefined): "completed" | "in_progress" | "pending" {
-  if (value === "completed" || value === "in_progress") return value;
-  return "pending";
+function deriveMilestoneFeatureStatus(
+  criteria: PlanCriterionNode[],
+): "completed" | "in_progress" | "pending" {
+  if (criteria.length === 0) return "pending";
+  if (criteria.every((criterion) => criterion.outcome === "pass")) return "completed";
+  if (criteria.every((criterion) => criterion.outcome === null)) return "pending";
+  return "in_progress";
 }
 
 function normalizeOutcome(value: string | undefined): "pass" | "fail" | "partial" | null {
@@ -362,13 +348,17 @@ async function safeComputeBlocking(dir: string, charterId: string): Promise<stri
 }
 
 
-async function collectRecentEvidence(
-  dir: string,
-  features: PlanFeatureRef[],
-): Promise<EvidenceRow[]> {
+async function collectRecentEvidence(dir: string): Promise<EvidenceRow[]> {
   const rows: EvidenceRow[] = [];
-  for (const feature of features) {
-    const evidenceDir = join(dir, "work", feature.id, "evidence");
+  const workRoot = join(dir, "work");
+  let workEntries: string[];
+  try {
+    workEntries = await readdir(workRoot);
+  } catch {
+    return [];
+  }
+  for (const segment of workEntries) {
+    const evidenceDir = join(workRoot, segment, "evidence");
     let entries: string[];
     try {
       entries = await readdir(evidenceDir);
@@ -395,6 +385,38 @@ async function collectRecentEvidence(
         rows.push({ ts, criterionId, outcome, recordedBy });
       } catch {
         // skip malformed evidence
+      }
+    }
+    const runEvidenceDirs = entries.filter((name) => !name.endsWith(".json"));
+    for (const runDir of runEvidenceDirs) {
+      const runEvidenceDir = join(evidenceDir, runDir);
+      let runFiles: string[];
+      try {
+        runFiles = await readdir(runEvidenceDir);
+      } catch {
+        continue;
+      }
+      for (const name of runFiles) {
+        if (!name.endsWith(".json")) continue;
+        const text = await safeReadFile(join(runEvidenceDir, name));
+        if (!text) continue;
+        try {
+          const parsed = JSON.parse(text) as {
+            ts?: unknown;
+            criterionId?: unknown;
+            outcome?: unknown;
+            recordedBy?: unknown;
+          };
+          const outcome = normalizeOutcome(typeof parsed.outcome === "string" ? parsed.outcome : undefined);
+          if (!outcome) continue;
+          const ts = typeof parsed.ts === "string" ? parsed.ts : "";
+          const criterionId = typeof parsed.criterionId === "string" ? parsed.criterionId : "";
+          const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : "";
+          if (!ts || !criterionId) continue;
+          rows.push({ ts, criterionId, outcome, recordedBy });
+        } catch {
+          // skip malformed evidence
+        }
       }
     }
   }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Dogfood script (VAL-9): exercise the new multi-charter widget pipeline
- * end-to-end against the live project.
+ * Dogfood script: exercise the multi-charter widget pipeline end-to-end
+ * against the live project.
  *
  * Usage:
  *   bun run scripts/dogfood-render.ts                  # uses process.cwd()

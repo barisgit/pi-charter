@@ -10,7 +10,7 @@
  * Pattern: same shape as OpenAI Codex `/goal` continuation + Anthropic Claude
  * Code `/goal` Stop-hook loop, minus any LLM judgment about whether to
  * continue. The agent itself decides when the charter is actually done, then
- * calls `charter_manage action=complete`.
+ * calls `charter action=complete`.
  *
  * Prompts are sourced in override order:
  *   1. repo-level   `<cwd>/.pi/charter-prompts/ralph/<case>.md`
@@ -28,7 +28,7 @@ import { getCharterStatus, type CharterStatusResult } from "./service";
 import { formatCommandsBlock } from "./subagent-bootstrap";
 import type { CharterStatus } from "../domain/types";
 
-export type RalphCase = "planning" | "active";
+export type RalphCase = "active";
 
 /**
  * Statuses where Ralph should NOT reprompt. Mirrors the previous evaluator
@@ -38,8 +38,6 @@ export const RALPH_SKIP_STATUSES = new Set<CharterStatus>([
   "completed",
   "abandoned",
   "paused",
-  "awaiting-clarification",
-  "budget_limited",
 ]);
 
 /**
@@ -47,9 +45,7 @@ export const RALPH_SKIP_STATUSES = new Set<CharterStatus>([
  * execution; planning is its own track. Anything terminal is filtered out
  * upstream by `RALPH_SKIP_STATUSES`.
  */
-export function ralphCaseForStatus(status: CharterStatus): RalphCase {
-  if (status === "planning") return "planning";
-  // active | review → execution prompt.
+export function ralphCaseForStatus(_status: CharterStatus): RalphCase {
   return "active";
 }
 
@@ -61,14 +57,19 @@ export function ralphCaseForStatus(status: CharterStatus): RalphCase {
 export function renderStatusSummary(status: CharterStatusResult): string {
   const lines: string[] = [];
   lines.push(`status: ${status.status}`);
+  if (status.registerEmpty) {
+    lines.push("REGISTER EMPTY: 0 VAL criteria parsed from criteria.md — author or repair criteria.md (see parseWarnings) before recording evidence or completing.");
+  } else if (typeof status.valTotal === "number") {
+    lines.push(`valTotals: ${status.valPass ?? 0}/${status.valTotal} pass`);
+  }
 
   const drift = status.drift;
   const readyNext = drift.readyNext ?? [];
   if (readyNext.length > 0) {
     lines.push("readyNext:");
     for (const r of readyNext.slice(0, 5)) {
-      const fulfills = r.fulfills?.length ? ` -> ${r.fulfills.join(",")}` : "";
-      lines.push(`  - ${r.featureId}${fulfills}`);
+      const milestone = r.milestoneId ? ` @ ${r.milestoneId}` : "";
+      lines.push(`  - ${r.criterionId}${milestone}`);
     }
   } else {
     lines.push("readyNext: (none)");
@@ -82,20 +83,21 @@ export function renderStatusSummary(status: CharterStatusResult): string {
     }
   }
 
-  const stuck = drift.stuck ?? [];
-  if (stuck.length > 0) {
-    lines.push("stuck:");
-    for (const s of stuck.slice(0, 5)) {
-      lines.push(`  - ${s.featureId} (${s.status})`);
-    }
-  }
-
   const stale = drift.stale ?? [];
   if (stale.length > 0) {
     lines.push("stale:");
     for (const s of stale.slice(0, 5)) {
       const ageMin = Math.round(s.ageMs / 60_000);
       lines.push(`  - ${s.criterionId} (${ageMin}m old)`);
+    }
+  }
+
+  const parseWarnings = status.parseWarnings ?? [];
+  if (parseWarnings.length > 0) {
+    lines.push("parseWarnings:");
+    for (const w of parseWarnings.slice(0, 5)) {
+      const who = w.criterionId ?? w.section ?? w.key ?? "criteria.md";
+      lines.push(`  - ${who}: ${w.reason}${w.detail ? ` (${w.detail})` : ""}`);
     }
   }
 

@@ -92,8 +92,8 @@ function rightCell(row: string, width: number): string {
   return row.slice(2 + leftWidth, -1);
 }
 
-describe("CharterPickerComponent f5-picker-render", () => {
-  test("VAL-PICKER-RENDER-001: exact height, width, and divider position", () => {
+describe("CharterPickerComponent rendering and navigation", () => {
+  test("renders exact height, width, and divider position", () => {
     const picker = makePicker();
     for (const width of [80, 120, 160]) {
       const lines = picker.render(width);
@@ -104,7 +104,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     }
   });
 
-  test("VAL-PICKER-RENDER-002: terminal separator, bound marker, and cursor marker", () => {
+  test("renders terminal separator, bound marker, and cursor marker", () => {
     const charters = [
       charter("alpha"),
       charter("bound"),
@@ -120,7 +120,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(left.split("\n").find((line) => line.includes("cursor"))).toContain("►");
   });
 
-  test("VAL-PICKER-RENDER-003: right pane sections render in order", () => {
+  test("renders right pane sections in order", () => {
     const picker = makePicker();
     const right = picker.render(160).slice(1, -1).map((line) => rightCell(line, 160)).join("\n");
     // Picker renders either "Blocking complete" or "Ready to complete" depending on state.
@@ -133,7 +133,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     }
   });
 
-  test("VAL-PICKER-RENDER-004: bars use █░ and space toggles all criteria", () => {
+  test("renders progress bars and space toggles all criteria", () => {
     const picker = makePicker();
     let lines = picker.render(160);
     expect(lines.some((line) => line.includes("▰") || line.includes("▱"))).toBe(false);
@@ -152,7 +152,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(lines.join("\n")).not.toMatch(/VAL-A\s\sFirst criterion/);
   });
 
-  test("VAL-PICKER-RENDER-005: objective truncation hint and expansion", () => {
+  test("renders objective truncation hint and expansion", () => {
     // The right detail pane truncates objectives > 2 lines and shows [o for full];
     // pressing 'o' (with focus right) expands. The left info pane has its own short
     // preview — we scope this assertion to the right detail pane only.
@@ -175,7 +175,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(expandedRight).toContain("line four");
   });
 
-  test("VAL-PICKER-NAV-001: tab changes focus and j scrolls right pane", () => {
+  test("tab changes focus and j scrolls right pane", () => {
     const picker = makePicker({ height: 8 });
     picker.render(80);
     expect((picker as any).focus).toBe("left");
@@ -187,7 +187,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect((picker as any).cursorIndex).toBe(0);
   });
 
-  test("VAL-PICKER-NAV-002: banned keys do not mutate rendered output", () => {
+  test("banned keys do not mutate rendered output", () => {
     const picker = makePicker();
     for (const key of ["b", "r", "p", "a", "c", "\r", "\n", "\x1b[3~"]) {
       const before = picker.render(120).join("\n");
@@ -197,7 +197,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     }
   });
 
-  test("VAL-PICKER-NAV-003: shared legend in left pane, pane-specific keys in right bottom border", () => {
+  test("renders shared and pane-specific keyboard legends", () => {
     const lines = makePicker().render(160);
     const left = lines.slice(1, -1).map((line) => leftCell(line, 160)).join("\n");
     // Shared legend lives as a third section inside the left pane (with a `keys`
@@ -224,7 +224,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(bottom).toMatch(/o:obj/);
   });
 
-  test("VAL-PICKER-RENDER-006: left list hides progress bars and then status under pressure", () => {
+  test("left list hides progress bars and then status under pressure", () => {
     const picker = makePicker();
     const mediumLeft = picker.render(120).slice(1, 4).map((line) => leftCell(line, 120)).join("\n");
     expect(mediumLeft).not.toContain("█");
@@ -242,7 +242,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(tightLeft).not.toMatch(/completed|abandoned/);
   });
 
-  test("VAL-PICKER-NAV-004: arrow keys mirror j/k without legend entries", () => {
+  test("arrow keys mirror j/k without legend entries", () => {
     const picker = makePicker({ height: 8 });
     picker.render(80);
     picker.handleInput("\u001b[B");
@@ -260,7 +260,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(left).not.toMatch(/up|down|arrow/i);
   });
 
-  test("VAL-PICKER-RENDER-007: top border stays aligned at minimum left split", () => {
+  test("top border stays aligned at minimum left split", () => {
     const picker = makePicker({ charters: [
       charter("depth2-smoke", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
       charter("autobind-smoke", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
@@ -275,7 +275,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(lines[0]!.slice(1, bodyDivider)).not.toContain("active /");
   });
 
-  test("VAL-PICKER-RENDER-008: right pane uses available space for evidence and wraps fields", () => {
+  test("right pane uses available space for evidence and wraps fields", () => {
     const manyEvidence = Array.from({ length: 8 }, (_, i) => ({
       ts: `2026-05-15T09:${String(10 + i).padStart(2, "0")}:00.000Z`,
       criterionId: `VAL-LONG-${i}`,
@@ -301,7 +301,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(right).toContain("disappearing past");
   });
 
-  test("VAL-PICKER-NAV-005: s collapses and restores the sidebar", () => {
+  test("s collapses and restores the sidebar", () => {
     const picker = makePicker();
     const expanded = picker.render(100);
     const expandedDivider = expanded[1]!.indexOf("│", 1);
@@ -315,7 +315,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(restored[1]!.indexOf("│", 1)).toBe(expandedDivider);
   });
 
-  test("VAL-PICKER-NAV-006: bracket keys resize split using last rendered width", () => {
+  test("bracket keys resize split using last rendered width", () => {
     const picker = makePicker();
     let lines = picker.render(80);
     const dividerIndex = (rendered: string[]) => rendered[1]!.indexOf("│", 1);
@@ -337,7 +337,7 @@ describe("CharterPickerComponent f5-picker-render", () => {
     expect(dividerIndex(lines)).toBeGreaterThan(wideInitial);
   });
 
-  test("VAL-PICKER-WIRE-001: bare /charters opens top-left fullscreen overlay", async () => {
+  test("bare /charters opens top-left fullscreen overlay", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-picker-wire-"));
     try {
       const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> | void }>();

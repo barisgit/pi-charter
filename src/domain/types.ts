@@ -1,32 +1,30 @@
 import type { Verifier, VerifierKind } from "./verifier";
 export type { EvidenceExistsVerifier, SubagentVerifier, Verifier, VerifierKind } from "./verifier";
 
-export type CharterStatus =
+export type CharterStatus = "active" | "paused" | "completed" | "abandoned";
+
+/** Legacy statuses persisted by v2 charters; normalized on read to v3. */
+export type LegacyCharterStatus =
   | "planning"
-  | "active"
   | "review"
-  | "paused"
   | "awaiting-clarification"
-  | "completed"
-  | "budget_limited"
-  | "abandoned";
+  | "budget_limited";
 
 export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "completed",
-  "budget_limited",
   "abandoned",
 ]);
 
 export type CharterSchemaVersion = "v2" | "v1-needs-replan";
 
 export interface NextAction {
-  tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status" | "subagent";
+  tool: "charter" | "charter_record" | "charter_status" | "subagent";
   action?: string;
   hint: string;
   /**
    * Optional structured metadata for tool-specific routing. Currently used by
    * milestone-review next actions ({ milestoneId, criterionIds }) so the
-   * agent can spawn a charter-reviewer subagent with the right scope without
+   * agent can spawn a review subagent with the right scope without
    * re-parsing the hint string.
    */
   metadata?: Record<string, unknown>;
@@ -40,15 +38,7 @@ export interface Budget {
 
 export type CharterCommands = Record<string, string>;
 
-export type TriageDecision = "addFeature" | "updateFeature" | "cut";
 
-export interface CharterTriageEntry {
-  handoffPath: string;
-  itemId: string;
-  decision: TriageDecision;
-  reason: string;
-  decidedAt: string;
-}
 
 export interface CharterState {
   charterId: string;
@@ -64,22 +54,16 @@ export interface CharterState {
   createdAt: string;
   updatedAt: string;
   charterDigest?: string;
-  planDigest?: string;
   sessionId?: string;
   budget?: Budget;
   previousStatus?: CharterStatus;
-  clarificationNote?: string;
-  unansweredClarification?: boolean;
   completedAt?: string;
   terminatedAt?: string;
   completionReason?: string;
-  triage: CharterTriageEntry[];
-  planning?: CharterPlanningState;
+  /** ISO timestamp of the last pi-charter tool write to this sidecar. */
+  lastToolWriteAt?: string;
 }
 
-export interface CharterPlanningState {
-  valCeilingOverride?: boolean;
-}
 
 export interface CharterCriterion {
   id: string;
@@ -107,7 +91,7 @@ export interface CharterCriterion {
   because?: string;
 }
 
-export type ParseWarningReason = "missing-verifier" | "missing-because" | "duplicate-command" | "malformed-command";
+export type ParseWarningReason = "missing-verifier" | "invalid-verifier" | "missing-because" | "duplicate-command" | "malformed-command" | "weak-verifier-phrase-coupled";
 
 export interface ParseWarning {
   criterionId?: string;
@@ -115,11 +99,20 @@ export interface ParseWarning {
   section?: string;
   key?: string;
   line?: string;
+  /** Human-readable specifics, e.g. the validator error for invalid-verifier. */
+  detail?: string;
+}
+
+export interface CharterMilestone {
+  id: string;
+  title: string;
+  criterionIds: string[];
 }
 
 export interface ParsedCharterMarkdown {
   objective: string;
   criteria: CharterCriterion[];
+  milestones: CharterMilestone[];
   constraints: string[];
   commands: CharterCommands;
   qaSection?: string;

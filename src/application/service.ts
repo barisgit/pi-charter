@@ -1,20 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, loadParsedCharter, writeCharterState } from "../infrastructure/store";
-import { loadCriterionState, loadFeatureState, type CriterionStateFile, type CriterionStateRecord, type FeatureStateFile } from "./record-service";
-import { parseFeatureMarkdown } from "../domain/feature-md";
-import { computeDrift } from "./drift-service";
+import { appendEvent, charterDir, createCharterWorkspace, loadCharterIndex, loadCharterState, loadParsedCharter, writeCharterState, writeTextAtomic } from "../infrastructure/store";
+import { loadCriterionState, type CriterionStateFile, type CriterionStateRecord } from "./record-service";
+import { computeDrift, type DriftViews } from "./drift-service";
+import { isEvidenceStaleForSrcChange, lastSrcChangeMs } from "../domain/src-freshness";
 import { dispatchHook } from "./hooks";
+import { checkReportCompletion, extractCharterTitleFromMarkdown, renderReportScaffold } from "../domain/report-md";
 import { trustRank } from "../domain/trust-rank";
-import { TERMINAL_STATUSES, type Budget, type CharterCommands, type CharterCriterion, type CharterState, type CharterStatus, type CharterTriageEntry, type EvidenceSource, type NextAction } from "../domain/types";
-import { loadCharterConfig } from "../persistence/charter-config";
+import { TERMINAL_STATUSES, type Budget, type CharterCommands, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction, type ParseWarning } from "../domain/types";
 import { CharterToolError } from "./errors";
-import { architectureMarkdownPath, hasNonTrivialArchitecture } from "./architecture-gate";
-import { listBlockingReadinessFeatures, type ReadinessProbeResult } from "./readiness-service";
 import { logger } from "../infrastructure/logger";
-import { groupFeaturesByMilestone, readPlanFeatures, type PlanFeatureRef } from "./plan-tree";
-import { listUntriagedHandoffItems, type HandoffTriageItem } from "./handoff-query";
 
 export type { NextAction };
 
@@ -43,7 +39,6 @@ export interface BlockingForCompleteEntry {
   featureId?: string;
   outcome?: string;
   lastEvidencePath?: string;
-  probeResult?: ReadinessProbeResult;
   handoffPath?: string;
   itemId?: string;
   description?: string;
@@ -63,11 +58,10 @@ export interface CharterStatusDetails {
 
 export interface MilestoneStatusSummary {
   milestoneId: string;
-  featureCount: number;
-  fulfilledValCount: number;
+  title: string;
+  criterionIds: string[];
+  valCount: number;
   valPassCount: number;
-  qaEvidenceCount: number;
-  featureIds: string[];
 }
 
 export interface CharterStatusResult {
@@ -75,24 +69,33 @@ export interface CharterStatusResult {
   name?: string;
   schemaVersion?: CharterState["schemaVersion"];
   status: CharterStatus;
-  phase: "planning" | "active" | "review" | "terminal";
+  phase: "active" | "paused" | "terminal";
   objective: string;
   migrationHint?: string;
   budget?: Budget;
-  clarificationNote?: string;
-  architecturePresent: boolean;
-  drift: {
-    uncovered: { criterionId: string; reason: string }[];
-    stuck: { featureId: string; status: string; startedAt?: string }[];
-    stale: { criterionId: string; ageMs: number; lastTs: string }[];
-    readyNext: { featureId: string; fulfills: string[]; probeResult?: ReadinessProbeResult }[];
-  };
+  drift: DriftViews;
   milestones: MilestoneStatusSummary[];
+  /** Total VAL criteria parsed across all milestones (0 => empty register). */
+  valTotal: number;
+  /** VAL criteria with a current pass record. */
+  valPass: number;
+  /**
+   * True when an active/paused charter parsed to zero criteria — a strong
+   * signal the register was never authored or failed to parse. Never true for
+   * terminal charters.
+   */
+  registerEmpty: boolean;
   guidelines: string[];
   nextActions: NextAction[];
   details?: CharterStatusDetails;
   qaBriefs: string[];
   commands: CharterCommands;
+  /**
+   * Non-fatal criteria.md parse warnings (e.g. a `Verifier: subagent` with no
+   * Agent/Task degraded to manual). Surfaced so an author can see WHY a
+   * criterion is mis-typed instead of silently losing it.
+   */
+  parseWarnings: ParseWarning[];
 }
 
 export async function createCharter(
@@ -101,10 +104,10 @@ export async function createCharter(
 ): Promise<CharterServiceResult<CharterState>> {
   const objective = input.objective.trim();
   if (!objective) {
-    throw new CharterToolError("objective is required for charter_manage action=create; pass a non-empty objective describing the desired outcome.", {
+    throw new CharterToolError("objective is required for charter action=create; pass a non-empty objective describing the desired outcome.", {
       code: "create.empty_objective",
       nextActions: [
-        { tool: "charter_manage", action: "create", hint: "Retry with `objective: '<one-sentence desired outcome>'`." },
+        { tool: "charter", action: "create", hint: "Retry with `objective: '<one-sentence desired outcome>'`." },
         { tool: "charter_status", hint: "List active charters; resume one instead of creating a new empty charter." },
       ],
     });
@@ -116,44 +119,12 @@ export async function createCharter(
   return {
     charterId,
     status: created.state.status,
-    message: `Created charter ${charterId} in planning state.`,
+    message: `Created charter ${charterId} in active state.`,
     data: created.state,
     nextActions: nextActionsForStatus(created.state.status),
   };
 }
 
-export interface AmendCharterTriageEntry {
-  handoffPath: string;
-  itemId: string;
-  decision: "cut";
-  reason: string;
-}
-
-function normalizeAmendCharterTriage(entries: AmendCharterTriageEntry[] | undefined, now: string): CharterTriageEntry[] {
-  if (!entries) return [];
-  if (!Array.isArray(entries)) {
-    throw new CharterToolError("amend_charter triage must be an array.", {
-      code: "amend.bad_triage",
-      nextActions: [
-        { tool: "charter_manage", action: "amend_charter", hint: "Pass triage:[{handoffPath,itemId,decision:'cut',reason:'...'}] or omit triage." },
-      ],
-    });
-  }
-  return entries.map((entry) => {
-    const handoffPath = entry.handoffPath?.trim();
-    const itemId = entry.itemId?.trim();
-    const reason = entry.reason?.trim();
-    if (!handoffPath || !itemId || entry.decision !== "cut" || !reason) {
-      throw new CharterToolError("amend_charter triage entries require non-empty handoffPath, itemId, decision:'cut', and reason.", {
-        code: "amend.bad_triage",
-        nextActions: [
-          { tool: "charter_manage", action: "amend_charter", hint: "Retry with triage:[{handoffPath:'work/<feature>/handoffs/<session>.handoff.json', itemId:'...', decision:'cut', reason:'why it is out of scope'}]." },
-        ],
-      });
-    }
-    return { handoffPath, itemId, decision: "cut", reason, decidedAt: now };
-  });
-}
 
 export async function getCharterStatus(
   projectDir: string,
@@ -164,13 +135,23 @@ export async function getCharterStatus(
   const state = await loadCharterState(dir);
   const drift = await computeDrift(projectDir, { charterId });
   const blockingForComplete = await computeBlockingForCompleteSafely(dir, charterId);
-  const milestoneReviewActions = await computeMilestoneReviewNextActionsSafely(dir);
-  const milestoneQAActions = await computeMilestoneQANextActionsSafely(dir);
   const milestones = await computeMilestoneStatusSummariesSafely(dir, charterId);
   const qaBriefs = await listQaBriefs(dir);
   const commands = await loadCharterCommands(dir);
-  const architecturePresent = await hasNonTrivialArchitecture(architectureMarkdownPath(projectDir, charterId));
+  const parseWarnings = await loadCharterParseWarnings(dir);
   const migrationHint = migrationHintForState(state);
+  // Derive totals from the full parsed criteria list (the same source drift and
+  // the completion gate use), NOT from milestone summaries. A register can mix
+  // milestone-grouped criteria with ungrouped top-level `## VAL-*` criteria that
+  // belong to no milestone; summing milestone buckets would undercount those and let
+  // status read e.g. 1/1 while completion still sees 2.
+  const { valTotal, valPass } = await computeValTotals(dir, charterId);
+  // An active/paused charter whose register parses to zero criteria is almost
+  // always wrong: the scaffold itself parses to one VAL-EXAMPLE, so 0 means
+  // either the criteria were never authored or a parse failure wiped the
+  // register (e.g. a malformed verifier). Surface it loudly instead of letting
+  // 0/0 read as a healthy "nothing left to do".
+  const registerEmpty = valTotal === 0 && !isTerminal(state.status);
   return {
     charterId: state.charterId,
     name: state.name,
@@ -180,19 +161,23 @@ export async function getCharterStatus(
     objective: state.objective,
     migrationHint,
     budget: state.budget,
-    clarificationNote: state.clarificationNote,
-    architecturePresent,
     drift,
     milestones,
+    valTotal,
+    valPass,
+    registerEmpty,
     guidelines: migrationHint ? [migrationHint, ...guidelinesForStatus(state.status)] : guidelinesForStatus(state.status),
-    nextActions: migrationHint ? migrationReplanNextActions() : state.status === "awaiting-clarification" ? nextActionsForStatus(state.status) : [...nextActionsForStatus(state.status), ...milestoneReviewActions, ...milestoneQAActions],
+    nextActions: migrationHint
+      ? migrationReplanNextActions()
+      : buildActiveNextActions({ status: state.status, drift, blockingForComplete }),
     details: { blockingForComplete },
     qaBriefs,
     commands,
+    parseWarnings,
   };
 }
 
-export const V1_REPLAN_REQUIRED_HINT = "This charter has the pi-charter v1 disk shape (charter.md ## Criteria + criterion-state.json). v2 will not auto-migrate it; initiate a replan with charter_manage action=amend_charter and manually port checks using docs/v1-to-v2-migration.md, or force_complete/abandon it if it should not continue.";
+export const V1_REPLAN_REQUIRED_HINT = "This charter has the pi-charter v1 disk shape (charter.md ## Criteria + criterion-state.json). v2 will not auto-migrate it; rewrite charter.md and criteria.md manually using docs/v1-to-v2-migration.md, or call charter action=abandon if it should not continue.";
 const QA_BRIEFS_DIR = "qa-briefs";
 
 async function loadCharterCommands(dir: string): Promise<CharterCommands> {
@@ -203,15 +188,44 @@ async function loadCharterCommands(dir: string): Promise<CharterCommands> {
   }
 }
 
+async function loadCharterParseWarnings(dir: string): Promise<ParseWarning[]> {
+  try {
+    return (await loadParsedCharter(dir)).warnings ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Count every parsed VAL criterion and how many currently hold a pass record.
+ * Counts the flat `charter.criteria` list so milestone-grouped and ungrouped
+ * (ungrouped top-level `## VAL-*`) criteria are both included; milestone summaries are
+ * only a grouped VIEW and must not be the source of truth for totals.
+ */
+async function computeValTotals(dir: string, charterId: string): Promise<{ valTotal: number; valPass: number }> {
+  try {
+    const [charter, criterionState] = await Promise.all([
+      loadParsedCharter(dir),
+      loadCriterionState(dir, charterId),
+    ]);
+    const valTotal = charter.criteria.length;
+    const valPass = charter.criteria.filter(
+      (criterion) => criterionState.criteria[criterion.id]?.outcome === "pass",
+    ).length;
+    return { valTotal, valPass };
+  } catch {
+    return { valTotal: 0, valPass: 0 };
+  }
+}
+
 function migrationHintForState(state: CharterState): string | undefined {
   return state.schemaVersion === "v1-needs-replan" ? V1_REPLAN_REQUIRED_HINT : undefined;
 }
 
 export function migrationReplanNextActions(): NextAction[] {
   return [
-    { tool: "charter_manage", action: "amend_charter", hint: "Start the required v2 replan. Rewrite charter.md/plan entries manually using docs/v1-to-v2-migration.md; no automatic data migration will run." },
-    { tool: "charter_manage", action: "force_complete", hint: "Abandon or terminally close this v1-shaped charter if it should not be replanned." },
-    { tool: "charter_status", hint: "Re-read migration guidance before choosing the replan or force-complete path." },
+    { tool: "charter_status", hint: "Rewrite charter.md and criteria.md manually using docs/v1-to-v2-migration.md; no automatic data migration will run." },
+    { tool: "charter", action: "abandon", hint: "Abandon this v1-shaped charter if it should not be replanned." },
   ];
 }
 
@@ -246,24 +260,10 @@ function qaBriefNames(entries: Awaited<ReturnType<typeof readQaBriefEntries>>): 
 
 /**
  * Scan events.jsonl for `milestone_ready_for_review` events whose criterionIds
- * have not yet been fully covered by a later charter-reviewer evidence record.
+ * have not yet been fully covered by a later subagent review evidence record.
  * Append one nextAction per unreviewed milestone.
  */
-async function computeMilestoneReviewNextActionsSafely(dir: string): Promise<NextAction[]> {
-  try {
-    return await computeMilestoneReviewNextActions(dir);
-  } catch {
-    return [];
-  }
-}
 
-async function computeMilestoneQANextActionsSafely(dir: string): Promise<NextAction[]> {
-  try {
-    return await computeMilestoneQANextActions(dir);
-  } catch {
-    return [];
-  }
-}
 
 async function computeMilestoneStatusSummariesSafely(dir: string, charterId: string): Promise<MilestoneStatusSummary[]> {
   try {
@@ -281,13 +281,6 @@ export interface UnreviewedMilestone {
   readyTs: string;
 }
 
-export interface UnQAedMilestone {
-  milestoneId: string;
-  planDigest: string;
-  criterionIds: string[];
-  /** Timestamp of the originating milestone_ready_for_review event. */
-  readyTs: string;
-}
 
 interface LatestMilestoneReadyEvent {
   milestoneId: string;
@@ -342,27 +335,25 @@ async function listLatestMilestoneReadyEvents(dir: string): Promise<LatestMilest
  * Pure helper consumed by `getCharterStatus`. Reads
  * `events.jsonl` and feature evidence records, returns the set of
  * milestone_ready_for_review events whose criterionIds are not yet fully
- * covered by charter-reviewer-attributed pass evidence.
+ * covered by subagent-attributed pass evidence.
  *
  * Coverage is decided by persisted evidence records whose `recordedBy` starts
- * with `subagent:charter-reviewer:` (the authoritative identity prefix written
- * by applyHandoff), not by event payloads. This keeps the surface honest when
- * other persona subagents also write evidence.
+ * with `subagent:` and a non-empty agent/session suffix, not by event payloads.
  */
 export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedMilestone[]> {
   const readyEvents = await listLatestMilestoneReadyEvents(dir);
   if (readyEvents.length === 0) return [];
 
-  // VAL-11 contract: a milestone counts as reviewed iff every criterionId has
-  // AT LEAST ONE evidence record where `recordedBy` starts with
-  // `subagent:charter-reviewer:` and `ts >= milestone_ready_for_review.ts`.
+  // Milestone review coverage: a milestone counts as reviewed iff every
+  // criterionId has AT LEAST ONE evidence record where `recordedBy` starts
+  // with `subagent:` prefix and `ts >= milestone_ready_for_review.ts`.
   // Latest-record-in-criterion-state is not enough; a later agent:root
-  // record would otherwise clobber a valid charter-reviewer review.
-  const verifierReviewsByCriterion = await loadCharterVerifierReviewsByCriterion(dir);
+  // record would otherwise clobber a valid subagent review.
+  const subagentReviewsByCriterion = await loadSubagentReviewsByCriterion(dir);
   const unreviewed: UnreviewedMilestone[] = [];
   for (const ready of readyEvents) {
     const missing = ready.criterionIds.filter((id) => {
-      const reviews = verifierReviewsByCriterion.get(id) ?? [];
+      const reviews = subagentReviewsByCriterion.get(id) ?? [];
       return !reviews.some((review) => review.ts >= ready.ts);
     });
     if (missing.length === 0) continue;
@@ -431,11 +422,12 @@ async function loadEvidenceJson(absolutePath: string, relativePath: string): Pro
 
 /**
  * Walk work/<featureId>/evidence records and collect every pass evidence record
- * whose `recordedBy` is `subagent:charter-reviewer:*`, keyed by criterionId,
- * with the record `ts`. VAL-11 uses this to compare against milestone_ready_for_review.ts.
+ * whose `recordedBy` starts with `subagent:`, keyed by criterionId, with the
+ * record `ts`. Milestone review coverage compares these timestamps against
+ * milestone_ready_for_review.ts.
  */
-async function loadCharterVerifierReviewsByCriterion(dir: string): Promise<Map<string, { ts: string }[]>> {
-  return loadSubagentPassEvidenceByCriterion(dir, "subagent:charter-reviewer:");
+async function loadSubagentReviewsByCriterion(dir: string): Promise<Map<string, { ts: string }[]>> {
+  return loadSubagentPassEvidenceByCriterion(dir, "subagent:");
 }
 
 async function loadSubagentPassEvidenceByCriterion(dir: string, recordedByPrefix: string): Promise<Map<string, { ts: string }[]>> {
@@ -464,111 +456,47 @@ async function loadSubagentPassEvidenceByCriterion(dir: string, recordedByPrefix
 }
 
 async function computeMilestoneStatusSummaries(dir: string, charterId: string): Promise<MilestoneStatusSummary[]> {
-  const groups = groupFeaturesByMilestone(await readPlanFeatures(dir));
-  if (groups.length === 0) return [];
+  const charter = await loadParsedCharter(dir);
   const criterionState = await loadCriterionState(dir, charterId);
-  const qaEvidenceByCriterion = await loadSubagentPassEvidenceByCriterion(dir, "subagent:charter-qa:");
 
-  return groups.map((group) => {
-    const criterionIds = milestoneCriterionIds(group.features);
-    return {
-      milestoneId: group.milestoneId,
-      featureCount: group.features.length,
-      fulfilledValCount: criterionIds.length,
-      valPassCount: criterionIds.filter((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass").length,
-      qaEvidenceCount: criterionIds.filter((criterionId) => (qaEvidenceByCriterion.get(criterionId) ?? []).length > 0).length,
-      featureIds: group.features.map((feature) => feature.id),
-    };
-  });
-}
-
-function milestoneCriterionIds(features: PlanFeatureRef[]): string[] {
-  return Array.from(new Set(features.flatMap((feature) => feature.fulfills))).sort();
-}
-
-export async function listUnQAedMilestones(dir: string): Promise<UnQAedMilestone[]> {
-  const readyEvents = await listLatestMilestoneReadyEvents(dir);
-  if (readyEvents.length === 0) return [];
-
-  const groups = groupFeaturesByMilestone(await readPlanFeatures(dir));
-  const groupsById = new Map(groups.map((group) => [group.milestoneId, group]));
-  const qaEvidenceByCriterion = await loadSubagentPassEvidenceByCriterion(dir, "subagent:charter-qa:");
-  const out: UnQAedMilestone[] = [];
-
-  for (const ready of readyEvents) {
-    if (ready.criterionIds.length === 0) continue;
-    const group = groupsById.get(ready.milestoneId);
-    if (!group) continue;
-    if (!(await milestoneHasImplementationEvidence(dir, group.features))) continue;
-
-    const qaCovered = ready.criterionIds.filter((criterionId) => {
-      const records = qaEvidenceByCriterion.get(criterionId) ?? [];
-      return records.some((record) => record.ts >= ready.ts);
-    });
-    if (qaCovered.length === ready.criterionIds.length) continue;
-
-    out.push({
-      milestoneId: ready.milestoneId,
-      planDigest: ready.planDigest,
-      criterionIds: ready.criterionIds,
-      readyTs: ready.ts,
-    });
+  if (charter.milestones.length > 0) {
+    return charter.milestones.map((milestone) => ({
+      milestoneId: milestone.id,
+      title: milestone.title,
+      criterionIds: milestone.criterionIds,
+      valCount: milestone.criterionIds.length,
+      valPassCount: milestone.criterionIds.filter((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass").length,
+    }));
   }
 
-  return out;
+  if (charter.criteria.length === 0) return [];
+  const criterionIds = charter.criteria.map((criterion) => criterion.id);
+  return [{
+    milestoneId: "",
+    title: "",
+    criterionIds,
+    valCount: criterionIds.length,
+    valPassCount: criterionIds.filter((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass").length,
+  }];
 }
 
-async function milestoneHasImplementationEvidence(dir: string, features: PlanFeatureRef[]): Promise<boolean> {
-  for (const feature of features) {
-    const evidence = await loadFeatureEvidence(dir, feature.id);
-    for (const criterionId of feature.fulfills) {
-      if (!evidence.some(({ record }) => isImplementationEvidenceForCriterion(record, criterionId))) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
 
-function isImplementationEvidenceForCriterion(record: Record<string, unknown>, criterionId: string): boolean {
-  if (record.outcome !== "pass") return false;
-  if (record.criterionId !== criterionId) return false;
-  const recordedBy = typeof record.recordedBy === "string" ? record.recordedBy : "";
-  if (recordedBy.startsWith("subagent:charter-reviewer:")) return true;
-  const kind = evidenceKindFromRecord(record);
-  return kind === "command" || kind === "qa" || kind === "review";
-}
-
-function evidenceKindFromRecord(record: Record<string, unknown>): string | undefined {
-  if (typeof record.kind === "string") return record.kind;
-  const details = record.details;
-  if (!details || typeof details !== "object" || Array.isArray(details)) return undefined;
-  const detailRecord = details as Record<string, unknown>;
-  if (typeof detailRecord.kind === "string") return detailRecord.kind;
-  const typedEvidence = detailRecord.typedEvidence;
-  if (typedEvidence && typeof typedEvidence === "object" && !Array.isArray(typedEvidence)) {
-    const typedRecord = typedEvidence as Record<string, unknown>;
-    if (typeof typedRecord.kind === "string") return typedRecord.kind;
-  }
-  return undefined;
-}
 
 async function computeMilestoneReviewNextActions(dir: string): Promise<NextAction[]> {
   const unreviewed = await listUnreviewedMilestones(dir);
   return unreviewed.map((entry) => ({
     tool: "subagent" as const,
-    hint: `Delegate to charter-reviewer for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
+    hint: `Delegate a review subagent for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
     metadata: { milestoneId: entry.milestoneId, criterionIds: entry.criterionIds },
   }));
 }
 
-async function computeMilestoneQANextActions(dir: string): Promise<NextAction[]> {
-  const unqaed = await listUnQAedMilestones(dir);
-  return unqaed.map((entry) => ({
-    tool: "subagent" as const,
-    hint: `Run milestone QA with charter-qa for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
-    metadata: { milestoneId: entry.milestoneId, criterionIds: entry.criterionIds, agent: "charter-qa" },
-  }));
+async function computeMilestoneReviewNextActionsSafely(dir: string): Promise<NextAction[]> {
+  try {
+    return await computeMilestoneReviewNextActions(dir);
+  } catch {
+    return [];
+  }
 }
 
 async function computeBlockingForCompleteSafely(dir: string, charterId: string): Promise<BlockingForCompleteEntry[]> {
@@ -577,18 +505,46 @@ async function computeBlockingForCompleteSafely(dir: string, charterId: string):
     const criterionState = await loadCriterionState(dir, charterId);
     const state = await loadCharterState(dir);
     const context = await loadBlockingContext(dir, charterId, state);
-    const readinessBlocking = await listBlockingReadinessFeatures(dir);
-    return [
-      ...computeBlockingForComplete(charter.criteria, criterionState, context),
-      ...readinessBlocking.map((feature) => ({
-        criterionId: feature.fulfills[0] ?? feature.featureId,
-        featureId: feature.featureId,
-        probeResult: feature.probeResult,
-        reason: "readiness-blocking",
-      })),
-    ];
+    const valBlocking = computeBlockingForComplete(charter.criteria, criterionState, context);
+    const reportBlocking = await computeReportBlockingForComplete(dir);
+    return [...valBlocking, ...reportBlocking];
   } catch {
     return [];
+  }
+}
+
+async function computeReportBlockingForComplete(dir: string): Promise<BlockingForCompleteEntry[]> {
+  const reportPath = join(dir, "REPORT.md");
+  let markdown: string;
+  try {
+    markdown = await readFile(reportPath, "utf8");
+  } catch {
+    return [];
+  }
+  const check = checkReportCompletion(markdown);
+  return check.emptySections.map((section) => ({
+    reason: "report-empty-section",
+    description: section,
+  }));
+}
+
+async function ensureReportScaffold(
+  dir: string,
+  input: { charterId: string; charterMarkdown: string; objective: string; name?: string },
+): Promise<string> {
+  const reportPath = join(dir, "REPORT.md");
+  try {
+    return await readFile(reportPath, "utf8");
+  } catch {
+    const title = extractCharterTitleFromMarkdown(input.charterMarkdown, input.name);
+    const scaffold = renderReportScaffold({ title, objective: input.objective });
+    await writeTextAtomic(reportPath, scaffold);
+    logger.info("report scaffolded", {
+      component: "service",
+      charterId: input.charterId,
+      reportPath: "REPORT.md",
+    });
+    return scaffold;
   }
 }
 
@@ -604,7 +560,7 @@ export async function pauseCharter(
       code: "lifecycle.wrong_state",
       nextActions: [
         { tool: "charter_status", hint: "Inspect the terminal charter's status; pause is only legal on non-terminal charters." },
-        { tool: "charter_manage", action: "amend_charter", hint: "Use amend_charter to re-open the terminal charter before pausing." },
+        { tool: "charter_status", hint: "Terminal charters are read-only; edit charter.md/criteria.md directly if the contract must change." },
       ],
     });
   }
@@ -626,47 +582,20 @@ export async function pauseCharter(
   };
 }
 
+/** @deprecated v3 removed ask; pause the charter and clarify with the user directly. */
 export async function askCharter(
   projectDir: string,
   input: { charterId?: string; now?: string; note?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  if (loadCharterConfig().policy === "autonomous") {
-    throw new CharterToolError("Cannot ask for clarification when charter policy is autonomous.", {
-      code: "ask.policy_autonomous",
-      nextActions: [
-        { tool: "charter_status", hint: "Inspect the charter and continue autonomously, or change policy before asking the user." },
-      ],
-    });
-  }
-
-  const charterId = await resolveCharterId(projectDir, input.charterId);
-  const dir = charterDir(projectDir, charterId);
-  const state = await loadCharterState(dir);
-  if (state.status !== "planning") {
-    throw new CharterToolError(`Cannot ask for clarification in status ${state.status}; ask is only legal from planning.`, {
-      code: "ask.not_planning",
-      nextActions: [
-        { tool: "charter_status", hint: "Inspect current status; ask is only legal while planning." },
-        { tool: "charter_manage", action: "pause", hint: "Pause instead if an active charter is blocked or waiting on user input." },
-      ],
-    });
-  }
-
-  const now = input.now ?? new Date().toISOString();
-  const note = input.note?.trim().replace(/\s+/g, " ") || undefined;
-  state.status = "awaiting-clarification";
-  state.clarificationNote = note;
-  state.unansweredClarification = true;
-  state.updatedAt = now;
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_asked", ts: now, charterId: state.charterId, note });
-  return {
-    charterId: state.charterId,
-    status: state.status,
-    message: `Charter ${state.charterId} is awaiting clarification.`,
-    data: state,
-    nextActions: nextActionsForStatus(state.status),
-  };
+  void projectDir;
+  void input;
+  throw new CharterToolError("charter ask was removed in v3; pause the charter if blocked and clarify with the user directly.", {
+    code: "ask.removed",
+    nextActions: [
+      { tool: "charter", action: "pause", hint: "Pause if blocked or waiting on user input." },
+      { tool: "charter_status", hint: "Inspect current status before continuing." },
+    ],
+  });
 }
 
 export async function completeCharter(
@@ -677,49 +606,43 @@ export async function completeCharter(
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
   assertNotV1NeedsReplan(state);
-  if (state.status !== "active" && state.status !== "review") {
-    throw new CharterToolError(`Cannot complete charter in status ${state.status}; resume or amend first.`, {
+  if (state.status !== "active") {
+    throw new CharterToolError(`Cannot complete charter in status ${state.status}; resume first if paused.`, {
       code: "complete.wrong_state",
       nextActions: [
         { tool: "charter_status", hint: "Inspect current status before retrying complete." },
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter before completing." },
-        { tool: "charter_manage", action: "amend_charter", hint: "Amend the charter if it is terminal but needs re-opening." },
+        { tool: "charter", action: "resume", hint: "Resume the paused charter before completing." },
+        { tool: "charter_status", hint: "Terminal charters are read-only; edit charter.md/criteria.md directly if more work is required." },
       ],
     });
   }
   const charter = await loadParsedCharter(dir);
   const criterionState = await loadCriterionState(dir, charterId);
-  const context = await loadBlockingContext(dir, charterId, state);
-  const failures = checkCompletionGate(charter.criteria, criterionState, state, context);
-  const readinessBlocking = await listBlockingReadinessFeatures(dir);
+  const context = await loadBlockingContext(dir, charterId);
+  const charterMarkdown = await readFile(join(dir, "charter.md"), "utf8");
+  const reportMarkdown = await ensureReportScaffold(dir, {
+    charterId,
+    charterMarkdown,
+    objective: charter.objective,
+    name: state.name,
+  });
+  const srcChangeMs = await lastSrcChangeMs(projectDir);
+  const failures = checkCompletionGate(charter.criteria, criterionState, state, context, srcChangeMs);
+  failures.push(...checkReportCompletion(reportMarkdown).failures);
   const blocking: BlockingForCompleteEntry[] = [
     ...computeBlockingForComplete(charter.criteria, criterionState, context),
-    ...readinessBlocking.map((feature) => ({
-      criterionId: feature.fulfills[0] ?? feature.featureId,
-      featureId: feature.featureId,
-      probeResult: feature.probeResult,
-      reason: "readiness-blocking",
-    })),
+    ...(await computeReportBlockingForComplete(dir)),
   ];
-  const readinessBlocks = blocking.filter((entry) => entry.reason === "readiness-blocking");
-  const triageBlocks = blocking.filter((entry) => entry.reason === "untriaged-handoff-items");
-  const trustBlocks = blocking.filter((entry) => entry.reason !== "readiness-blocking" && entry.reason !== "val-not-pass" && entry.reason !== "untriaged-handoff-items");
+  const trustBlocks = blocking.filter((entry) => entry.reason !== "val-not-pass" && !entry.reason.startsWith("report-"));
   if (blocking.length > 0) {
     // Render `<id>(<reason>)` per VAL so identity-disjoint and
-    // requires-charter-reviewer rejections are distinguishable from generic
+    // requires-subagent-review rejections are distinguishable from generic
     // low-trust evidence in the user-facing error string. The summary line
     // keeps the legacy `low-trust evidence for N VAL(s): ...` phrasing so
     // existing tests grepping for VAL ids continue to match.
     if (trustBlocks.length > 0) {
       const idsWithReasons = trustBlocks.map((entry) => `${entry.criterionId}(${entry.reason})`).join(", ");
       failures.push(`low-trust evidence for ${trustBlocks.length} VAL(s): ${idsWithReasons}`);
-    }
-    if (readinessBlocks.length > 0) {
-      const idsWithReasons = readinessBlocks.map((entry) => `${entry.featureId ?? entry.criterionId}(${entry.reason})`).join(", ");
-      failures.push(`readiness blocking feature(s): ${idsWithReasons}`);
-    }
-    if (triageBlocks.length > 0) {
-      failures.push(formatUntriagedHandoffFailure(triageBlocks));
     }
   }
   if (failures.length > 0) {
@@ -744,19 +667,13 @@ export async function completeCharter(
       charterId,
       blockingReasons,
       valNotPass,
-      untriagedHandoffItems: triageBlocks.map((entry) => ({
-        featureId: entry.featureId,
-        handoffPath: entry.handoffPath,
-        itemId: entry.itemId,
-        severity: entry.severity,
-        kind: entry.kind,
-      })),
+
     });
     const message = [
       `Cannot complete charter:`,
       ` - ${failures.join("\n - ")}`,
       ...(trustBlocks.length > 0
-        ? ["Fix: add Because: rationale and run charter-reviewer (subagent({agent:'charter-reviewer'})) for the listed VALs."]
+        ? ["Fix: add Because: rationale and record pass evidence from a review subagent (source=subagent, recordedBy=subagent:<agent>:<sessionId>) for the listed VALs."]
         : []),
     ].join("\n");
     // Collect every failing criterion id so nextActions can name them in
@@ -767,7 +684,11 @@ export async function completeCharter(
       const m = f.match(/^(VAL-[A-Za-z0-9_-]+):/);
       if (m) failingIds.add(m[1]!);
     }
-    for (const b of blocking) if (b.reason !== "readiness-blocking" && b.reason !== "untriaged-handoff-items" && b.criterionId) failingIds.add(b.criterionId);
+    for (const b of blocking) {
+      if (b.reason !== "readiness-blocking" && b.reason !== "untriaged-handoff-items" && b.criterionId) {
+        failingIds.add(b.criterionId);
+      }
+    }
     const idList = Array.from(failingIds);
     const nextActions: NextAction[] = [];
     for (const id of idList.slice(0, 5)) {
@@ -779,33 +700,26 @@ export async function completeCharter(
       nextActions.push({
         tool: "charter_record",
         action: "evidence",
-        hint: `Record charter-reviewer-attributed pass evidence for ${id} (set recordedBy='subagent:charter-reviewer:<sessionId>').`,
+        hint: `Record subagent-attributed pass evidence for ${id} (set source='subagent', recordedBy='subagent:<agent>:<sessionId>').`,
       });
     }
-    const reviewerBlocking = blocking.filter((entry) => entry.reason !== "readiness-blocking" && entry.reason !== "val-not-pass" && entry.reason !== "untriaged-handoff-items");
+    const reviewerBlocking = blocking.filter((entry) => entry.reason !== "val-not-pass");
     if (reviewerBlocking.length > 0) {
       nextActions.push({
         tool: "subagent",
-        hint: `Delegate to charter-reviewer subagent for: ${reviewerBlocking.map((b) => b.criterionId).filter(Boolean).join(", ")}.`,
+        hint: `Delegate a review subagent for: ${reviewerBlocking.map((b) => b.criterionId).filter(Boolean).join(", ")}.`,
       });
     }
-    if (triageBlocks.length > 0) {
+
+    const reportBlockers = blocking.filter((entry) => entry.reason.startsWith("report-"));
+    if (reportBlockers.length > 0) {
       nextActions.push({
-        tool: "charter_plan",
-        action: "add_feature",
-        hint: "Add a follow-up feature whose body references the handoff filename or sessionId for each untriaged handoff item.",
-      });
-      nextActions.push({
-        tool: "charter_plan",
-        action: "update_feature",
-        hint: "Update the affected feature description to mention the handoff sessionId when the item is already absorbed by existing scope.",
-      });
-      nextActions.push({
-        tool: "charter_manage",
-        action: "amend_charter",
-        hint: "If the handoff item is intentionally cut, pass target:'planning' and triage:[{handoffPath,itemId,decision:'cut',reason:'...'}].",
+        tool: "charter",
+        action: "complete",
+        hint: "Fill every REPORT.md heading (Outcome and Notes after the first scaffold), then retry charter action=complete.",
       });
     }
+
     nextActions.push({ tool: "charter_status", hint: "Re-read drift and the blockingForComplete view after recording new evidence." });
     throw new CharterToolError(message, {
       code: "complete.gate_blocked",
@@ -820,7 +734,6 @@ export async function completeCharter(
     criteriaCount: charter.criteria.length,
     completionNote: input.completionNote?.trim() || undefined,
   });
-  const featureCount = (await readPlanFeatures(dir)).length;
   const from = state.status;
   state.status = "completed";
   state.previousStatus = undefined;
@@ -844,7 +757,6 @@ export async function completeCharter(
   logger.info("charter completed", {
     component: "service",
     charterId,
-    featureCount,
     valCount: charter.criteria.length,
   });
   return {
@@ -866,26 +778,17 @@ function formatUntriagedHandoffFailure(entries: BlockingForCompleteEntry[]): str
   return `untriaged-handoff-items: ${details}`;
 }
 
-export async function forceCompleteCharter(
+export async function abandonCharter(
   projectDir: string,
-  input: { charterId?: string; reason: string; target?: "completed" | "abandoned" | "budget_limited"; now?: string },
+  input: { charterId?: string; reason: string; now?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   const reason = input.reason?.trim();
   if (!reason) {
-    throw new CharterToolError("force_complete requires a non-empty reason.", {
-      code: "force_complete.empty_reason",
+    throw new CharterToolError("abandon requires a non-empty reason.", {
+      code: "abandon.empty_reason",
       nextActions: [
-        { tool: "charter_manage", action: "force_complete", hint: "Retry with `reason: '<why the charter is being terminated>'`." },
-        { tool: "charter_status", hint: "Inspect the charter before forcing completion." },
-      ],
-    });
-  }
-  const target = input.target ?? "abandoned";
-  if (!isTerminal(target)) {
-    throw new CharterToolError(`force_complete target must be terminal; got ${target}.`, {
-      code: "force_complete.non_terminal_target",
-      nextActions: [
-        { tool: "charter_manage", action: "force_complete", hint: "Pass `target: 'completed' | 'abandoned' | 'budget_limited'`; planning/review/paused are not legal force-complete targets." },
+        { tool: "charter", action: "abandon", hint: "Retry with `reason: '<why the charter is being abandoned>'`." },
+        { tool: "charter_status", hint: "Inspect the charter before abandoning." },
       ],
     });
   }
@@ -894,132 +797,75 @@ export async function forceCompleteCharter(
   const state = await loadCharterState(dir);
   if (isTerminal(state.status)) {
     throw new CharterToolError(`Charter ${charterId} is already terminal (${state.status}).`, {
-      code: "force_complete.already_terminal",
+      code: "abandon.already_terminal",
       nextActions: [
-        { tool: "charter_status", hint: "Inspect the terminal charter; force_complete is only legal on non-terminal charters." },
-        { tool: "charter_manage", action: "amend_charter", hint: "Use amend_charter to re-open the terminal charter if it needs more work." },
+        { tool: "charter_status", hint: "Inspect the terminal charter; abandon is only legal on non-terminal charters." },
       ],
     });
   }
   const now = input.now ?? new Date().toISOString();
-  await dispatchHook("charter:before_force_complete", {
-    type: "charter:before_force_complete",
+  await dispatchHook("charter:before_abandon", {
+    type: "charter:before_abandon",
     charterId,
     ts: now,
-    target,
     reason,
   });
   const from = state.status;
   state.previousStatus = from;
-  state.status = target;
+  state.status = "abandoned";
   state.updatedAt = now;
   state.completionReason = reason;
-  if (target === "completed") state.completedAt = now;
-  else state.terminatedAt = now;
+  state.terminatedAt = now;
   logCharterStatusTransition({ charterId, from, to: state.status, reason });
-  // Binding release deferred to next session_start (see completeCharter).
   await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_force_completed", ts: now, charterId, target, reason });
+  await appendEvent(dir, { type: "charter_abandoned", ts: now, charterId, reason });
   return {
     charterId,
     status: state.status,
-    message: `Force-completed charter ${charterId} as ${target}.`,
+    message: `Abandoned charter ${charterId}.`,
     data: state,
     nextActions: nextActionsForStatus(state.status),
   };
 }
 
+/** @deprecated Use abandonCharter. v3 abandon only transitions to `abandoned`. */
+export async function forceCompleteCharter(
+  projectDir: string,
+  input: { charterId?: string; reason: string; target?: "completed" | "abandoned" | "budget_limited"; now?: string },
+): Promise<CharterServiceResult<CharterState>> {
+  if (input.target && input.target !== "abandoned") {
+    throw new CharterToolError(`v3 abandon only supports terminal status abandoned; got ${input.target}.`, {
+      code: "abandon.non_abandoned_target",
+      nextActions: [
+        { tool: "charter", action: "complete", hint: "Use charter action=complete when evidence gates pass." },
+        { tool: "charter", action: "abandon", hint: "Pass `reason: '<why the charter is being abandoned>'` to abandon." },
+      ],
+    });
+  }
+  return abandonCharter(projectDir, input);
+}
+
+/** @deprecated amend_charter was removed; edit charter.md and criteria.md directly. */
 export async function amendCharter(
   projectDir: string,
-  input: { charterId?: string; reason: string; target?: "planning" | "review"; now?: string; triage?: AmendCharterTriageEntry[] },
+  input: { charterId?: string; reason: string; now?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  const reason = input.reason?.trim();
-  if (!reason) {
-    throw new CharterToolError("amend_charter requires a non-empty reason.", {
-      code: "amend.empty_reason",
-      nextActions: [
-        { tool: "charter_manage", action: "amend_charter", hint: "Retry with `reason: '<why the terminal charter is being re-opened>'`." },
-      ],
-    });
-  }
-  const target = input.target ?? "review";
-  if (target !== "planning" && target !== "review") {
-    throw new CharterToolError(`amend_charter target must be planning or review; got ${target}.`, {
-      code: "amend.bad_target",
-      nextActions: [
-        { tool: "charter_manage", action: "amend_charter", hint: "Pass `target: 'planning' | 'review'`; terminal/active/paused are not legal amend targets." },
-      ],
-    });
-  }
-  const charterId = await resolveCharterId(projectDir, input.charterId);
-  const dir = charterDir(projectDir, charterId);
-  const state = await loadCharterState(dir);
-  const from = state.status;
-  const allowedForPlanning: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
-    ...TERMINAL_STATUSES,
-    "active",
-    "review",
-  ]);
-  const allowedForReview = TERMINAL_STATUSES;
-  const allowed = target === "planning" ? allowedForPlanning : allowedForReview;
-  if (!allowed.has(from)) {
-    const legalSources = Array.from(allowed).join(", ");
-    throw new CharterToolError(
-      `Cannot amend charter from ${from} to ${target}; legal source states for target ${target} are: ${legalSources}.`,
-      {
-        code: "amend.invalid_source_state",
-        nextActions: [
-          { tool: "charter_status", hint: "Inspect current status before retrying amend_charter." },
-          { tool: "charter_manage", action: "amend_charter", hint: `Retry only from one of these source states for target ${target}: ${legalSources}.` },
-          { tool: "charter_plan", action: "view", hint: "If the charter is already in planning, inspect the current plan instead of amending again." },
-        ],
-      },
-    );
-  }
-  const now = input.now ?? new Date().toISOString();
-  await dispatchHook("charter:before_amend_charter", {
-    type: "charter:before_amend_charter",
-    charterId,
-    ts: now,
-    target,
-    reason,
+  void projectDir;
+  void input;
+  throw new CharterToolError("charter amend_charter was removed in v3; edit charter.md and criteria.md directly to rescope the contract.", {
+    code: "amend.removed",
+    nextActions: [
+      { tool: "charter_status", hint: "Inspect the charter and edit charter.md/criteria.md directly." },
+      { tool: "charter", action: "abandon", hint: "Abandon if the charter should not continue." },
+    ],
   });
-  state.previousStatus = from;
-  state.status = target;
-  state.updatedAt = now;
-  if (isTerminal(from)) {
-    state.completedAt = undefined;
-    state.terminatedAt = undefined;
-    state.completionReason = undefined;
-  }
-  if (state.schemaVersion === "v1-needs-replan") state.schemaVersion = "v2";
-  const triageEntries = normalizeAmendCharterTriage(input.triage, now);
-  if (triageEntries.length > 0) {
-    const existing = state.triage ?? [];
-    const next = [...existing];
-    for (const entry of triageEntries) {
-      if (next.some((current) => current.handoffPath === entry.handoffPath && current.itemId === entry.itemId && current.decision === entry.decision)) continue;
-      next.push(entry);
-    }
-    state.triage = next;
-  }
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_amended", ts: now, charterId, from, to: target, reason, triageCount: triageEntries.length });
-  return {
-    charterId,
-    status: state.status,
-    message: `Amended charter ${charterId} back into ${target}.`,
-    data: state,
-    nextActions: nextActionsForStatus(state.status),
-  };
 }
 
 /**
  * Extra inputs used by `computeBlockingForComplete` to evaluate the
- * `requireReviewSubagent` auto-default (VAL-12) and the identity-disjoint
- * predicate (VAL-13). When omitted, the function behaves as it did before
- * m4: only the trust gate applies and `requireReviewSubagent` defaults to
- * the criterion's declared (or undefined-as-false) value.
+ * explicit review-subagent gate and the identity-disjoint predicate. When
+ * omitted, only the trust gate applies and `requireReviewSubagent` defaults
+ * to the criterion's declared (or undefined-as-false) value.
  */
 export interface BlockingContext {
   /** Union of criterionIds across every milestone_ready_for_review event. */
@@ -1028,37 +874,27 @@ export interface BlockingContext {
   implementerSessionByCriterion: Map<string, string>;
   /** Map criterionId -> every pass evidence record's recordedBy on disk. */
   passRecordedByCriterion: Map<string, string[]>;
-  /** Handoff output items that still need an explicit keep/cut/follow-up decision. */
-  untriagedHandoffItems: HandoffTriageItem[];
 }
 
 /**
- * Resolve the effective `requireReviewSubagent` flag for a criterion.
- *
- * Tri-state rule (VAL-12):
- *   - explicit `true`  → true (declared by author)
- *   - explicit `false` → false (author opted out; honored even when the
- *     criterion is covered by a milestone_ready_for_review event)
- *   - omitted (undefined) → auto-default to true when the criterion id is
- *     in any milestone_ready_for_review event's criterionIds; otherwise
- *     false.
+ * Only an explicit `RequireReviewSubagent: true` in criteria.md enables the
+ * review subagent gate. Legacy milestone_ready_for_review auto-default is not
+ * applied.
  */
 export function effectiveRequireReviewSubagent(
   criterion: CharterCriterion,
-  milestoneCriterionIds: ReadonlySet<string>,
+  _milestoneCriterionIds?: ReadonlySet<string>,
 ): boolean {
-  if (criterion.requireReviewSubagent === true) return true;
-  if (criterion.requireReviewSubagent === false) return false;
-  return milestoneCriterionIds.has(criterion.id);
+  return criterion.requireReviewSubagent === true;
 }
 
 /**
  * Shared trust-gate computation used by both `completeCharter` (to block) and
  * `getCharterStatus` (to surface). A criterion shows up here when:
  *   - it has pass evidence AND that evidence is low-trust (manual or
- *     manual+because) AND the writer isn't a charter-reviewer subagent; OR
+ *     manual+because) AND the writer isn't a review subagent; OR
  *   - effective `requireReviewSubagent` is true and no pass evidence has a
- *     `subagent:charter-reviewer:` writer; OR
+ *     a subagent review writer; OR
  *   - effective `requireReviewSubagent` is true and every pass evidence
  *     shares its session id with the implementing feature
  *     (`implementer-only-reviewer`).
@@ -1091,14 +927,14 @@ export function computeBlockingForComplete(
     const effectiveReview = effectiveRequireReviewSubagent(criterion, milestoneIds);
     if (effectiveReview && context) {
       const allPass = context.passRecordedByCriterion.get(criterion.id) ?? [];
-      const reviewerRecords = allPass.filter((rb) => rb.startsWith("subagent:charter-reviewer:"));
-      if (reviewerRecords.length === 0) {
-        blocking.push({ criterionId: criterion.id, reason: "requires-charter-reviewer" });
+      const subagentRecords = allPass.filter((rb) => isSubagentRecordedBy(rb));
+      if (subagentRecords.length === 0) {
+        blocking.push({ criterionId: criterion.id, reason: "requires-subagent-review" });
         continue;
       }
       const implementerSession = context.implementerSessionByCriterion.get(criterion.id);
       if (implementerSession) {
-        const allShareImplementer = reviewerRecords.every((rb) =>
+        const allShareImplementer = subagentRecords.every((rb) =>
           extractSessionId(rb) === implementerSession,
         );
         if (allShareImplementer) {
@@ -1113,17 +949,6 @@ export function computeBlockingForComplete(
     }
     if (trustReason) blocking.push({ criterionId: criterion.id, reason: trustReason });
   }
-  for (const item of context?.untriagedHandoffItems ?? []) {
-    blocking.push({
-      reason: "untriaged-handoff-items",
-      featureId: item.featureId,
-      handoffPath: item.handoffPath,
-      itemId: item.itemId,
-      description: item.description,
-      severity: item.severity,
-      kind: item.kind,
-    });
-  }
   return blocking;
 }
 
@@ -1136,20 +961,23 @@ function extractSessionId(recordedBy: string): string | undefined {
   if (!recordedBy.startsWith("subagent:")) return undefined;
   const parts = recordedBy.split(":");
   if (parts.length < 3) return undefined;
-  return parts.slice(2).join(":");
+  const sessionId = parts.slice(2).join(":");
+  return sessionId.trim() ? sessionId : undefined;
+}
+
+export function isSubagentRecordedBy(recordedBy: string): boolean {
+  return extractSessionId(recordedBy) !== undefined;
 }
 
 function blockingReason(record: CriterionStateRecord): string | undefined {
   const recordedBy = record.recordedBy ?? "agent:root";
-  // A charter-reviewer subagent always clears the trust gate, regardless of
-  // declared source. The string-prefix match keeps the persona name authoritative.
-  if (recordedBy.startsWith("subagent:charter-reviewer:")) return undefined;
+  if (isSubagentRecordedBy(recordedBy)) return undefined;
   const source: EvidenceSource = record.source ?? "manual";
   const hasBecause = Boolean(record.because && record.because.trim());
   const rank = trustRank({ recordedBy, source, hasBecause });
   if (rank > 1) return undefined;
   if (source !== "manual") {
-    // High-trust source (verifier/hook/subagent) recorded by a non-charter-reviewer
+    // High-trust source (verifier/hook/subagent) recorded by a non-subagent writer
     // writer is rare but still passes the gate; only manual lands here.
     return undefined;
   }
@@ -1160,11 +988,17 @@ function checkCompletionGate(
   criteria: CharterCriterion[],
   criterionState: { criteria: Record<string, { outcome: string; lastTs: string; source?: string; lastFeatureId?: string }> },
   state: CharterState,
-  context?: BlockingContext,
+  context: BlockingContext | undefined,
+  srcChangeMs: number | undefined,
 ): string[] {
   const failures: string[] = [];
-  const freshnessWindowMs = 24 * 60 * 60 * 1000;
-  const lockTs = state.updatedAt;
+  // Guard against vacuous completion: a charter with zero parsed criteria would
+  // otherwise pass this gate trivially (the loop runs zero times). An empty
+  // register means the criteria were never authored or failed to parse, so a
+  // "0/0 complete" is never a real success.
+  if (criteria.length === 0) {
+    failures.push("register-empty: no VAL criteria parsed from criteria.md; author criteria (and fix any parse-warnings) before completing");
+  }
   const milestoneIds = context?.milestoneCriterionIds ?? new Set<string>();
   for (const criterion of criteria) {
     const record = criterionState.criteria[criterion.id];
@@ -1176,17 +1010,9 @@ function checkCompletionGate(
       failures.push(`${criterion.id}: val-not-pass (latest outcome=${record.outcome}; record pass evidence before completing)`);
       continue;
     }
-    if (criterion.requireFreshEvidence) {
-      const ageMs = Date.now() - Date.parse(record.lastTs);
-      const lockedAgeMs = Date.parse(record.lastTs) - Date.parse(lockTs);
-      if (lockedAgeMs < 0) {
-        failures.push(`${criterion.id}: evidence predates plan lock`);
-        continue;
-      }
-      if (Number.isFinite(ageMs) && ageMs > freshnessWindowMs) {
-        failures.push(`${criterion.id}: evidence older than ${Math.round(freshnessWindowMs / 3600000)}h freshness window`);
-        continue;
-      }
+    if (criterion.requireFreshEvidence && isEvidenceStaleForSrcChange(record.lastTs, srcChangeMs)) {
+      failures.push(`${criterion.id}: evidence predates last src/ change; re-run verifier or record fresh evidence`);
+      continue;
     }
     if (effectiveRequireReviewSubagent(criterion, milestoneIds)) {
       const source = (record as { source?: string }).source;
@@ -1201,23 +1027,15 @@ function checkCompletionGate(
 /**
  * Read events.jsonl, feature-state.json, plan/*.md, and the work/ evidence
  * tree to assemble the inputs `computeBlockingForComplete` needs to evaluate
- * the requireReviewSubagent auto-default (VAL-12) and identity-disjoint
- * predicate (VAL-13). Returns empty maps on missing/unreadable inputs so
- * callers can safely fall back to the trust-gate-only behaviour.
+ * the explicit review-subagent gate and identity-disjoint predicate. Returns
+ * empty maps on missing/unreadable inputs so callers can safely fall back to
+ * the trust-gate-only behaviour.
  */
 export async function loadBlockingContext(dir: string, charterId: string, state?: CharterState): Promise<BlockingContext> {
   const milestoneCriterionIds = await loadMilestoneReadyCriterionIds(dir);
-  const featureForCriterion = await loadFeatureForCriterion(dir);
-  const featureState = await loadFeatureStateSafe(dir, charterId);
   const implementerSessionByCriterion = new Map<string, string>();
-  for (const [criterionId, featureId] of featureForCriterion) {
-    const sessionId = featureState.features[featureId]?.lastWorkerSessionId;
-    if (sessionId) implementerSessionByCriterion.set(criterionId, sessionId);
-  }
   const passRecordedByCriterion = await loadPassRecordedByCriterion(dir);
-  const charterState = state ?? await loadCharterState(dir);
-  const untriagedHandoffItems = await listUntriagedHandoffItems(dir, charterState.triage);
-  return { milestoneCriterionIds, implementerSessionByCriterion, passRecordedByCriterion, untriagedHandoffItems };
+  return { milestoneCriterionIds, implementerSessionByCriterion, passRecordedByCriterion };
 }
 
 async function loadMilestoneReadyCriterionIds(dir: string): Promise<Set<string>> {
@@ -1239,39 +1057,6 @@ async function loadMilestoneReadyCriterionIds(dir: string): Promise<Set<string>>
   return ids;
 }
 
-async function loadFeatureForCriterion(dir: string): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
-  let entries: string[];
-  try {
-    entries = await readdir(join(dir, "plan"));
-  } catch {
-    return map;
-  }
-  for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
-    try {
-      const feature = parseFeatureMarkdown(await readFile(join(dir, "plan", entry), "utf8"));
-      for (const criterionId of feature.fulfills) {
-        // First feature that claims a criterion wins. Multi-feature
-        // coverage is rare; identity-disjoint check only fires when a
-        // single implementer covers every reviewer record, so picking one
-        // representative implementer is sufficient for the predicate.
-        if (!map.has(criterionId)) map.set(criterionId, feature.id);
-      }
-    } catch {
-      // ignore malformed feature files
-    }
-  }
-  return map;
-}
-
-async function loadFeatureStateSafe(dir: string, charterId: string): Promise<FeatureStateFile> {
-  try {
-    return await loadFeatureState(dir, charterId);
-  } catch {
-    return { charterId, features: {} };
-  }
-}
 
 /**
  * Walk work/<featureId>/evidence run directories and collect every pass
@@ -1304,33 +1089,23 @@ async function loadPassRecordedByCriterion(dir: string): Promise<Map<string, str
 
 export async function resumeCharter(
   projectDir: string,
-  input: { charterId?: string; now?: string; acknowledgeClarification?: boolean },
+  input: { charterId?: string; now?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   const charterId = await resolveCharterId(projectDir, input.charterId);
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
-  const resumeTo = state.status === "awaiting-clarification"
-    ? "planning"
-    : state.status === "planning"
-      ? "planning"
-    : state.previousStatus && !isTerminal(state.previousStatus) ? state.previousStatus : "active";
-  const acknowledgingInPlanning = state.status === "planning" && state.unansweredClarification === true && input.acknowledgeClarification === true;
-  if (state.status !== "paused" && state.status !== "awaiting-clarification" && !acknowledgingInPlanning) {
+  if (state.status !== "paused") {
     throw new CharterToolError(`Cannot resume charter in status ${state.status}`, {
       code: "lifecycle.wrong_state",
       nextActions: [
-        { tool: "charter_status", hint: "Inspect current status; resume is only legal from `paused` or `awaiting-clarification`." },
-        { tool: "charter_manage", action: "pause", hint: "Pause the charter first if you want to later resume it." },
+        { tool: "charter_status", hint: "Inspect current status; resume is only legal from `paused`." },
+        { tool: "charter", action: "pause", hint: "Pause the charter first if you want to later resume it." },
       ],
     });
   }
   const from = state.status;
-  state.status = resumeTo;
+  state.status = "active";
   state.previousStatus = undefined;
-  if (input.acknowledgeClarification) {
-    state.clarificationNote = undefined;
-    state.unansweredClarification = false;
-  }
   state.updatedAt = input.now ?? new Date().toISOString();
   logCharterStatusTransition({ charterId: state.charterId, from, to: state.status });
   await writeCharterState(dir, state);
@@ -1338,7 +1113,6 @@ export async function resumeCharter(
     type: "charter_resumed",
     ts: state.updatedAt,
     charterId: state.charterId,
-    acknowledgeClarification: input.acknowledgeClarification === true,
   });
   return {
     charterId: state.charterId,
@@ -1349,40 +1123,67 @@ export async function resumeCharter(
   };
 }
 
+/**
+ * v3 status nextActions: base FSM hints plus drift-driven advisory rows.
+ * Legacy milestone_ready_for_review review prompts are not emitted.
+ */
+export function buildActiveNextActions(opts: {
+  status: CharterStatus;
+  drift: DriftViews;
+  blockingForComplete: BlockingForCompleteEntry[];
+}): NextAction[] {
+  const base = nextActionsForStatus(opts.status);
+  if (opts.status !== "active") return base;
+
+  const extras: NextAction[] = [];
+  const ready = opts.drift.readyNext[0];
+  if (ready) {
+    const milestoneSuffix = ready.milestoneId ? ` (milestone ${ready.milestoneId})` : "";
+    extras.push({
+      tool: "charter_record",
+      action: "verify",
+      hint: `Advisory next VAL: ${ready.criterionId}${milestoneSuffix}.`,
+      metadata: { criterionId: ready.criterionId, milestoneId: ready.milestoneId },
+    });
+  }
+
+  const reviewBlockers = new Set(
+    opts.blockingForComplete
+      .filter((entry) => entry.reason === "requires-subagent-review" && entry.criterionId)
+      .map((entry) => entry.criterionId!),
+  );
+  for (const criterionId of reviewBlockers) {
+    extras.push({
+      tool: "subagent",
+      hint: `Delegate a review subagent for ${criterionId} (RequireReviewSubagent).`,
+      metadata: { criterionId },
+    });
+  }
+
+  return [...base, ...extras];
+}
+
 export function nextActionsForStatus(status: CharterStatus): NextAction[] {
   switch (status) {
-    case "planning":
-      return [
-        { tool: "charter_plan", action: "view", hint: "Inspect charter coverage and draft feature DAG." },
-        { tool: "charter_plan", action: "lock_plan", hint: "Run planner checks and lock the plan when charter.md and plan/*.md are ready." },
-        { tool: "charter_manage", action: "pause", hint: "Pause if planning is blocked." },
-      ];
     case "active":
       return [
         { tool: "charter_status", hint: "Read drift views before choosing the next move." },
         { tool: "charter_record", action: "evidence", hint: "Record evidence after running a check." },
-        { tool: "charter_record", action: "verify", hint: "Run configured verifiers for criteria or a feature." },
-        { tool: "charter_manage", action: "pause", hint: "Pause if blocked or waiting on user input." },
-      ];
-    case "review":
-      return [
-        { tool: "charter_status", hint: "Inspect evidence summary before final completion." },
-        { tool: "charter_manage", action: "complete", hint: "Complete only if evidence and hooks pass." },
-        { tool: "charter_manage", action: "amend_charter", hint: "Amend if review reveals missing criteria." },
+        { tool: "charter_record", action: "verify", hint: "Run configured command verifiers for criteria." },
+        { tool: "charter", action: "pause", hint: "Pause if blocked or waiting on user input." },
+        { tool: "charter", action: "complete", hint: "Complete only if evidence gates pass and REPORT.md sections are filled." },
+        { tool: "charter", action: "abandon", hint: "Abandon with a non-empty reason if the charter should not continue." },
       ];
     case "paused":
       return [
-        { tool: "charter_manage", action: "resume", hint: "Resume the paused charter." },
+        { tool: "charter", action: "resume", hint: "Resume the paused charter." },
         { tool: "charter_status", hint: "Inspect current charter state." },
+        { tool: "charter", action: "abandon", hint: "Abandon with a non-empty reason if the charter should not continue." },
       ];
-    case "awaiting-clarification":
-      return [
-        { tool: "charter_manage", action: "resume", hint: "Resume after the user provides clarification." },
-      ];
-    default:
+    case "completed":
+    case "abandoned":
       return [
         { tool: "charter_status", hint: "Inspect terminal charter result." },
-        { tool: "charter_manage", action: "amend_charter", hint: "Amend if the charter must be re-opened." },
       ];
   }
 }
@@ -1397,29 +1198,21 @@ async function resolveCharterId(projectDir: string, explicit?: string): Promise<
 }
 
 function phaseForStatus(status: CharterStatus): CharterStatusResult["phase"] {
-  if (status === "planning" || status === "awaiting-clarification") return "planning";
-  if (status === "active" || status === "paused") return "active";
-  if (status === "review") return "review";
+  if (status === "paused") return "paused";
+  if (status === "active") return "active";
   return "terminal";
 }
 
 function guidelinesForStatus(status: CharterStatus): string[] {
-  if (status === "planning") return [
-    "Edit criteria.md inside .pi/charters/<id>/ to add VAL-* criteria; the initial template includes a worked example. Format is `## VAL-<ID> <title>` headings with `Verifier:`/`Command:` field lines beneath — bullet lists are ignored. Do NOT create a repo-root charter.md.",
-    "Use charter_plan action=add_feature for each feature; do NOT write plan/<featureId>.md at the repo root — the tool writes to .pi/charters/<id>/plan/.",
-    "Run subagent({agent:'charter-planner-critic'}) before charter_plan action=lock_plan; resolve every BLOCK finding it returns. After lock_plan you implement end-to-end.",
-    "Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in subagent({action:'list'}) — invoke them by name directly; the call works. Full workflow in skill: skills/pi-charter/SKILL.md.",
-  ];
   if (status === "active") return [
-    "Charter is locked: implement every feature end to end without stopping. Do not ask 'should I keep going?' — the locked plan is your authorization.",
-    "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification to subagent({agent:'charter-reviewer', metadata:{'pi-charter.charterId':<id>,'pi-charter.featureId':<id>,'pi-charter.criterionId':'VAL-...','pi-charter.projectDir':<cwd>}}); delegate read-only recon to subagent({agent:'explorer', ...}).",
-    "PREFER ASYNC: spawn implementation and verification with subagent({async:true, ...}) wherever the next step does not depend on the result. While async runs, main stays free so the user can prompt fixes — the charter progresses itself. Only stay sync when you must read the subagent's output to choose the next move.",
-    "Bundled charter personas (charter-planner-critic, charter-reviewer, charter-qa, charter-readiness-probe) are scope:internal and will NOT appear in subagent({action:'list'}) — invoke them by name directly; the call works. Full workflow in skill: skills/pi-charter/SKILL.md.",
+    "Active charter: drive every VAL to pass evidence end-to-end without stopping for permission.",
+    "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification and critique to user-owned subagents (`subagent({agent:'<name>', metadata:{'pi-charter.charterId':<id>, 'pi-charter.criterionId':'VAL-...', 'pi-charter.projectDir':<cwd>}, ...})`); delegate read-only recon to `subagent({agent:'explorer', ...})`.",
+    "SYNC vs ASYNC: a sync subagent call blocks main entirely until the child finishes — main cannot read files, spawn more work, or receive messages/reminders in the meantime. That is fine when the next move depends on the child's output. An `async:true` call returns immediately with a run id; the child runs in the background while main is free to read, edit, spawn more subagents, or hand control back to the user. The subagent runtime wakes main when any child finishes or needs attention, so explicit sleeping/polling is usually unnecessary.",
+    "PREFER ASYNC when the next step does not depend on the child's output, when you want to fan out multiple independent runs, or when the user should be able to prompt fixes while work progresses. Stay sync when you genuinely need the result before choosing the next move and have nothing else to do in parallel.",
+    "requireReviewSubagent is satisfied by any pass evidence with source=subagent and non-empty recordedBy (e.g. subagent:<agent>:<sessionId>); use your own review subagents.",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
   ];
-  if (status === "review") return ["Inspect evidence before completing."];
-  if (status === "paused") return ["Resume before recording new evidence or changing plan state."];
-  if (status === "awaiting-clarification") return ["Awaiting user clarification. Do not take further charter action until the user responds, then call charter_manage action=resume."];
+  if (status === "paused") return ["Resume before recording new evidence or changing contract files."];
   return ["Terminal charters are read-only except explicit follow-up/new charter actions."];
 }
 
@@ -1451,11 +1244,8 @@ export interface CharterListEntry {
 }
 
 const NON_TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
-  "planning",
   "active",
-  "review",
   "paused",
-  "awaiting-clarification",
 ]);
 
 /**

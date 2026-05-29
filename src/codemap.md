@@ -156,7 +156,7 @@ After every evidence record or handoff:
 1. `projectFeatureCompletionFromEvidence` — flips `feature-state.<id>.status → "completed"` when all fulfilled VALs have pass evidence
 2. `projectMilestoneReadyForReview` — if all features in a milestone are completed (none failed), emits one `milestone_ready_for_review` event per `(milestoneId, planDigest)` tuple (idempotent)
 
-The `milestone_ready_for_review` event is the trigger for VAL-11's review subagent gate: a criterion counts as reviewed only when there is charter-reviewer evidence with `ts >= milestone_ready_for_review.ts`.
+The `milestone_ready_for_review` event is the trigger for the review subagent gate: a criterion counts as reviewed only when there is charter-reviewer evidence with `ts >= milestone_ready_for_review.ts`.
 
 ### 10. Completion Gate Trust Model (`domain/trust-rank.ts` + `service.ts`)
 
@@ -165,7 +165,7 @@ Evidence trust rank: `subagent (3) > command|hook (2) > manual+because (1) > man
 A criterion is **blocking for complete** when:
 - It has pass evidence but the writer is `agent:root` with no `because` (rank 0), or
 - `requireReviewSubagent` is effective `true` (explicit or auto-defaulted from milestone coverage) and no pass evidence has a `subagent:charter-reviewer:*` writer, or
-- The implementer and reviewer share the same session id (VAL-13 identity-disjoint rule)
+- The implementer and reviewer share the same session id (identity-disjoint review rule)
 
 ---
 
@@ -176,13 +176,13 @@ A criterion is **blocking for complete** when:
 ```
 /charter <objective>
   → pi.sendUserMessage (objective text)
-  → agent calls charter_manage(action=create)
+  → agent calls charter(action=create)
     → service.createCharter(projectDir, {objective, ...})
       → store.createCharterWorkspace()
           mkdir .pi/charters/<id>/plan/
           write charter.md (initial template)
-          write state.json {status: "planning"}
-          write plan.json, feature-state.json, criterion-state.json (empty)
+          write state.json {status: "active"}
+          write criterion-state.json (empty)
           appendEvent("charter_created")
           updateIndex(index.json)
       → binding.bindCharterToSession(sessionId, charterId)
@@ -190,27 +190,18 @@ A criterion is **blocking for complete** when:
     → tool returns CharterServiceResult {nextActions}
 ```
 
-### Planning Flow
+### Contract Authoring Flow
 
 ```
-charter_manage(action=create) → status=planning
-  → charter_plan(action=add_feature) × N
-      → plan-service.addFeatureBatch() (atomic, temp-rename commit)
-        appendEvent("feature_added") × N
-  → charter_plan(action=view) → drift view (uncovered criteria, orphan features)
-  → charter_plan(action=lock_plan)
-      → viewPlan() reads charter.md + plan/*.md
-      → validation: no uncovered, no orphans, no precondition cycles, weak verifier BLOCK
-      → dispatchHook("charter:before_lock_plan") ← veto point
-      → state.status → "active" + planDigest
-      → appendEvent("plan_locked")
-      → reminders.upsertCharterReminder()
+charter(action=create) → status=active
+  → agent edits criteria.md and charter.md directly (file tools)
+  → charter_status → drift view (uncovered criteria, remaining VAL gaps)
 ```
 
 ### Active Execution Flow
 
 ```
-charter_manage(action=lock_plan) → status=active
+charter(action=create) → status=active
   → agent delegates to subagent({async:true, metadata:{pi-charter.*}})
       → subagent:async-started event fires
         → async-bridge.handleAsyncStarted()
@@ -229,12 +220,10 @@ charter_manage(action=lock_plan) → status=active
           projectFeatureCompletionFromEvidence() → feature-state update
           projectMilestoneReadyForReview() → milestone_ready_for_review event (when applicable)
           reminders.upsertCharterReminder()
-      → agent calls charter_record(action=handoff_apply) [from charter-reviewer subagent]
-        → record-service.applyHandoff()
-          write handoffs/<stamp>__<featureId>__<sessionId>.json
-          recordEvidence() for each completed criterion (source="subagent", recordedBy="subagent:charter-reviewer:<sessionId>")
-          update feature-state.json (lastWorkerSessionId, status=completed)
-          appendEvent("handoff_applied")
+      → agent calls charter action=complete when every criterion has pass evidence
+        → service.completeCharter()
+          appendEvent("charter_completed")
+          tryRemoveCharterReminder()
 ```
 
 ### Widget Refresh Flow
@@ -271,7 +260,7 @@ tryRemoveCharterReminder (called on complete/force_complete)
 
 ### With `@earendil-works/pi-coding-agent` (ExtensionAPI)
 
-- `pi.registerTool()` — registers `charter_manage`, `charter_plan`, `charter_record`, `charter_status`
+- `pi.registerTool()` — registers `charter`, `charter_record`, `charter_status`
 - `pi.registerCommand()` — registers `/charter` and `/charters` slash commands
 - `pi.registerFlag()` — registers `--charter-objective` and `--charter-resume` session-start flags
 - `pi.on("session_start", fn)` — reconcile session binding, resume/create charter, register personas

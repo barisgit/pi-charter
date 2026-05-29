@@ -12,7 +12,7 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { CharterStatus } from "../domain/types";
-import type { CharterWidgetVM, FeatureRowVM, PlanningStep, PlanningVM, ValState } from "./widget-state";
+import type { CharterWidgetVM, PlanningStep, PlanningVM, ValState } from "./widget-state";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
@@ -84,14 +84,6 @@ export function renderCharterWidget(opts: RenderOptions): string[] {
   lines.push(renderHeader(width, displayName, headerTail, opts.theme, "accent"));
   lines.push(renderBarLine(width, opts.vm.bar, opts.theme));
   lines.push(renderEmptyBoxLine(width, opts.theme));
-  const featureLines = renderFeatureRows({
-    width,
-    theme: opts.theme,
-    rows: opts.vm.rows,
-    overflow: opts.vm.overflow,
-    frame: opts.frame ?? 0,
-  });
-  for (const line of featureLines) lines.push(line);
   lines.push(renderFooter(width, opts.theme));
   return lines.map((line) => truncateToWidth(line, width));
 }
@@ -99,7 +91,7 @@ export function renderCharterWidget(opts: RenderOptions): string[] {
 function statusColor(status: CharterStatus): string {
   if (status === "completed") return "success";
   if (status === "abandoned") return "error";
-  if (status === "paused" || status === "budget_limited") return "warning";
+  if (status === "paused") return "warning";
   return "accent";
 }
 
@@ -215,59 +207,6 @@ function wrapInBox(innerText: string, visibleLen: number, width: number, theme: 
   return `${v}${innerText}${" ".repeat(padCount)}${v}`;
 }
 
-function renderFeatureRows(opts: {
-  width: number;
-  theme: ThemeLike;
-  rows: FeatureRowVM[];
-  overflow: CharterWidgetVM["overflow"];
-  frame: number;
-}): string[] {
-  if (opts.rows.length === 0 && opts.overflow.hidden === 0 && opts.overflow.done === 0) {
-    return [];
-  }
-  const idColumnWidth = Math.max(0, ...opts.rows.map((row) => row.id.length));
-  const lines: string[] = [];
-  for (const row of opts.rows) {
-    lines.push(renderFeatureRow(row, opts.theme, opts.width, idColumnWidth, opts.frame));
-  }
-  const overflowLine = renderOverflow(opts.overflow, opts.theme, opts.width);
-  if (overflowLine) lines.push(overflowLine);
-  return lines;
-}
-
-function renderFeatureRow(row: FeatureRowVM, theme: ThemeLike, width: number, idColumnWidth: number, frame: number): string {
-  const isRunning = row.state === "running";
-  const glyphRaw = isRunning ? (SPINNER[frame % SPINNER.length] ?? "●") : row.state === "idle_ready" ? "●" : "○";
-  const glyph = isRunning ? theme.fg("accent", glyphRaw)
-    : row.state === "idle_ready" ? theme.fg("accent", glyphRaw)
-    : theme.fg("dim", glyphRaw);
-  const idPlain = row.id.padEnd(idColumnWidth, " ");
-  const id = isRunning ? theme.fg("accent", idPlain) : row.state === "idle_blocked" ? theme.fg("dim", idPlain) : idPlain;
-
-  // Right tail (subagent + elapsed) only for running rows.
-  let tailPlain = "";
-  let tailRendered = "";
-  if (isRunning && row.subagentName) {
-    const elapsed = row.elapsedMs !== undefined ? formatDuration(row.elapsedMs) : "";
-    tailPlain = elapsed ? `${row.subagentName}  ${elapsed}` : row.subagentName;
-    tailRendered = elapsed
-      ? `${theme.fg("accent", row.subagentName)}  ${theme.fg("dim", elapsed)}`
-      : theme.fg("accent", row.subagentName);
-  }
-
-  // Bead budget: width - 2 borders - 1 (leading space) - 2 (glyph+space) - idColumnWidth - 3 (spaces around beads) - tailPlain.length - 1 (trailing space)
-  const fixedCost = 2 /*borders*/ + 1 /*lead space*/ + 1 /*glyph*/ + 1 /*space*/ + idColumnWidth + 3 /*spaces around beads*/ + tailPlain.length + 1 /*trailing*/;
-  const beadBudget = Math.max(0, width - fixedCost);
-  const beadResult = renderBeads(row.fulfills.length, row.valStates, beadBudget, theme);
-  const beadPlainLen = beadResult.plainLen;
-
-  // Compose: " <glyph> <id>   <beads>   <tail> "
-  const innerParts = [` ${glyph} ${id}   ${beadResult.rendered}`];
-  if (tailRendered) innerParts.push(`   ${tailRendered}`);
-  const visibleLen = 1 + 1 + 1 + idColumnWidth + 3 + beadPlainLen + (tailPlain ? 3 + tailPlain.length : 0);
-  return wrapInBox(innerParts.join(""), visibleLen, width, theme);
-}
-
 function renderBeads(n: number, valStates: ValState[], budget: number, theme: ThemeLike): { rendered: string; plainLen: number } {
   if (n === 0) return { rendered: "", plainLen: 0 };
   if (budget < BEAD_MIN_BUDGET) {
@@ -303,16 +242,6 @@ function glyphForState(state: ValState, theme: ThemeLike): string {
   if (state === "pass") return theme.fg("success", BEAD_GLYPHS.pass);
   if (state === "running") return theme.fg("accent", BEAD_GLYPHS.running);
   return theme.fg("dim", BEAD_GLYPHS.pending);
-}
-
-function renderOverflow(overflow: CharterWidgetVM["overflow"], theme: ThemeLike, width: number): string | undefined {
-  if (overflow.hidden === 0 && overflow.done === 0) return undefined;
-  const parts: string[] = [];
-  if (overflow.hidden > 0) parts.push(`+${overflow.hidden} more`);
-  if (overflow.done > 0) parts.push(`· ${overflow.done} done`);
-  const plain = parts.join(" ");
-  const inner = ` ${theme.fg("dim", plain)}`;
-  return wrapInBox(inner, 1 + plain.length, width, theme);
 }
 
 function statusLabel(status: CharterStatus): string {
@@ -393,7 +322,7 @@ export class CharterWidget {
   }
 
   private hasRunning(vm: CharterWidgetVM): boolean {
-    return vm.rows.some((row) => row.state === "running");
+    return vm.bar.running > 0;
   }
 
   private collapseHidesWidget(_vm: CharterWidgetVM): boolean {

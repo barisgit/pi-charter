@@ -1,12 +1,12 @@
 /**
- * f2-slash-command-prompt verifier:
+ * /charter slash-command prompt verifier:
  *   VAL-CMD-001 — /charter <objective> sends a sendUserMessage payload
  *                  containing the new recon/clarify/kebab-case steps and
  *                  the SKILL.md §2a pointer.
  *   VAL-CMD-002 — bare /charter notifies a hint mentioning that pi-charter
  *                  will read referenced material.
  *   VAL-CMD-003 — the captured payload does NOT contain the old literal
- *                  `1. Call charter_manage action=create`.
+ *                  `1. Call charter action=create`.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -67,8 +67,8 @@ function makeCtx(): { ctx: FakeCommandCtx; notifications: Array<{ message: strin
   };
 }
 
-describe("/charter slash-command prompt (f2-slash-command-prompt)", () => {
-  test("VAL-CMD-001: handler payload carries recon/clarify/kebab-case instructions", async () => {
+describe("/charter slash-command prompt", () => {
+  test("handler payload carries recon/clarify/kebab-case instructions", async () => {
     const pi = makeFakePi();
     registerCharterCommands(pi as never);
     const charter = pi.commands.get("charter");
@@ -87,7 +87,7 @@ describe("/charter slash-command prompt (f2-slash-command-prompt)", () => {
     expect(message).toContain("Extract the real objective");
   });
 
-  test("VAL-CMD-002: bare invocation notifies a hint about reading referenced material", async () => {
+  test("bare invocation notifies a hint about reading referenced material", async () => {
     const pi = makeFakePi();
     registerCharterCommands(pi as never);
     const charter = pi.commands.get("charter")!;
@@ -102,7 +102,7 @@ describe("/charter slash-command prompt (f2-slash-command-prompt)", () => {
     expect(hint).toContain("reference");
   });
 
-  test("VAL-CMD-002 (whitespace-only): also notifies hint about reading referenced material", async () => {
+  test("whitespace-only invocation notifies a hint about reading referenced material", async () => {
     const pi = makeFakePi();
     registerCharterCommands(pi as never);
     const charter = pi.commands.get("charter")!;
@@ -117,7 +117,7 @@ describe("/charter slash-command prompt (f2-slash-command-prompt)", () => {
     expect(hint).toContain("reference");
   });
 
-  test("VAL-CMD-003: payload does NOT contain the old '1. Call charter_manage action=create' literal", async () => {
+  test("payload does NOT contain the old '1. Call charter action=create' literal", async () => {
     const pi = makeFakePi();
     registerCharterCommands(pi as never);
     const charter = pi.commands.get("charter")!;
@@ -127,6 +127,6 @@ describe("/charter slash-command prompt (f2-slash-command-prompt)", () => {
 
     expect(pi.sentUserMessages).toHaveLength(1);
     const message = pi.sentUserMessages[0]!;
-    expect(message).not.toContain("1. Call charter_manage action=create");
+    expect(message).not.toContain("1. Call charter action=create");
   });
 });

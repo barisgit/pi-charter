@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCharter, completeCharter, forceCompleteCharter, amendCharter } from "../src/application/service";
-import { lockPlan } from "../src/application/plan-service";
+import { abandonCharter, completeCharter } from "../src/application/service";
+import { amendCharter } from "../src/application/service";
 import { recordEvidence } from "../src/application/record-service";
 import { loadCharterState } from "../src/infrastructure/store";
+import { makeActiveCharter, seedReportReadyForCompletion } from "./helpers/charter-fixtures";
 
 async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promise<T> {
   const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-complete-"));
@@ -16,83 +17,69 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
   }
 }
 
-const VALIDATION_MD = [
-  "## Validation",
-  "",
-  "### Happy",
-  "- check: smoke-happy",
-  "  command: true",
-  "",
-  "### Edge",
-  "- check: smoke-edge",
-  "  command: true",
-  "",
-].join("\n");
+const CHARTER_ID = "cha-complete-1";
 
-async function makeActiveCharter(projectDir: string, charterId = "cha-complete-1") {
-  const charterMd = [
-    "# Charter cha-complete-1",
-    "",
-    "## Objective",
-    "Ship the OAuth callback flow.",
-    "",
-    "## Criteria",
-    "",
-    "### VAL-AUTH-001 — Callback exchanges code for tokens",
-    "Verifier: manual",
-    "Because: code-path is too short for a CI verifier; reviewed by hand each time",
-    "",
-    "### VAL-AUTH-002 — Tokens persisted to keychain",
-    "Verifier: manual",
-    "Because: keychain prompt cannot be exercised headlessly",
-    "",
-    "## Scope and constraints",
-    "",
-    "- Stay within auth module.",
-    "",
-  ].join("\n");
-  const featureMd = (id: string, fulfills: string[]) =>
-    [
-      "---",
-      `id: ${id}`,
-      "milestone: m1-oauth",
-      "order: 1",
-      `fulfills: [${fulfills.join(", ")}]`,
-      "preconditions: []",
-      "---",
-      "",
-      `# Feature ${id}`,
-      "",
-      VALIDATION_MD,
-    ].join("\n");
-  await createCharter(projectDir, { objective: "Ship OAuth callback", charterId, now: "2026-05-15T00:00:00.000Z" });
-  const charterDir = join(projectDir, ".pi", "charters", charterId);
-  await writeFile(join(charterDir, "charter.md"), charterMd, "utf8");
-  await mkdir(join(charterDir, "plan"), { recursive: true });
-  await writeFile(join(charterDir, "plan", "f1-callback.md"), featureMd("f1-callback", ["VAL-AUTH-001"]), "utf8");
-  await writeFile(join(charterDir, "plan", "f2-tokens.md"), featureMd("f2-tokens", ["VAL-AUTH-002"]), "utf8");
-  await lockPlan(projectDir, { charterId, now: "2026-05-15T01:00:00.000Z" });
+async function seedCompleteCharter(projectDir: string): Promise<void> {
+  await makeActiveCharter({
+    projectDir,
+    charterId: CHARTER_ID,
+    objective: "Ship the OAuth callback flow.",
+    now: "2026-05-15T00:00:00.000Z",
+    milestones: [{
+      id: "m1-oauth",
+      criteria: [
+        {
+          id: "VAL-AUTH-001",
+          title: "Callback exchanges code for tokens",
+          because: "code-path is too short for a CI verifier; reviewed by hand each time",
+        },
+        {
+          id: "VAL-AUTH-002",
+          title: "Tokens persisted to keychain",
+          because: "keychain prompt cannot be exercised headlessly",
+        },
+      ],
+    }],
+  });
 }
 
-describe("charter_manage complete", () => {
+describe("charter complete", () => {
   test("rejects completion when criteria lack pass evidence", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await expect(
-        completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T02:00:00.000Z" }),
+        completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T02:00:00.000Z" }),
       ).rejects.toThrow(/VAL-AUTH-001|VAL-AUTH-002|no pass evidence/i);
-      const state = await loadCharterState(join(projectDir, ".pi", "charters", "cha-complete-1"));
+      const state = await loadCharterState(join(projectDir, ".pi", "charters", CHARTER_ID));
+      expect(state.status).toBe("active");
+    });
+  });
+
+  test("rejects vacuous completion when the register parsed to zero criteria", async () => {
+    await withTempProject(async (projectDir) => {
+      // No criteria authored => 0 parsed => must not complete as a trivial 0/0.
+      await makeActiveCharter({
+        projectDir,
+        charterId: CHARTER_ID,
+        objective: "Charter with an empty register must not complete.",
+        now: "2026-05-15T00:00:00.000Z",
+        criteria: [],
+      });
+      await seedReportReadyForCompletion(join(projectDir, ".pi", "charters", CHARTER_ID));
+      await expect(
+        completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T02:00:00.000Z" }),
+      ).rejects.toThrow(/register-empty|no VAL criteria/i);
+      const state = await loadCharterState(join(projectDir, ".pi", "charters", CHARTER_ID));
       expect(state.status).toBe("active");
     });
   });
 
   test("completes when all criteria have pass evidence from a charter-reviewer subagent", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-001",
-        featureId: "f1-callback",
         outcome: "pass",
         summary: "callback works",
         source: "subagent",
@@ -100,21 +87,21 @@ describe("charter_manage complete", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-002",
-        featureId: "f2-tokens",
         outcome: "pass",
         summary: "tokens persisted",
         source: "subagent",
         recordedBy: "subagent:charter-reviewer:sess-2",
         now: "2026-05-15T02:30:00.000Z",
       });
-      const result = await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
+      await seedReportReadyForCompletion(join(projectDir, ".pi", "charters", CHARTER_ID));
+      const result = await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
       expect(result.status).toBe("completed");
-      const state = await loadCharterState(join(projectDir, ".pi", "charters", "cha-complete-1"));
+      const state = await loadCharterState(join(projectDir, ".pi", "charters", CHARTER_ID));
       expect(state.status).toBe("completed");
       expect(state.completedAt).toBe("2026-05-15T03:00:00.000Z");
-      const events = (await readFile(join(projectDir, ".pi", "charters", "cha-complete-1", "events.jsonl"), "utf8"))
+      const events = (await readFile(join(projectDir, ".pi", "charters", CHARTER_ID, "events.jsonl"), "utf8"))
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
@@ -124,66 +111,51 @@ describe("charter_manage complete", () => {
 
   test("rejects completion of a paused charter without explicit resume", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
-      // Force into paused via direct state edit not allowed; use pauseCharter via service indirectly.
+      await seedCompleteCharter(projectDir);
       const { pauseCharter } = await import("../src/application/service");
-      await pauseCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T02:00:00.000Z" });
+      await pauseCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T02:00:00.000Z" });
       await expect(
-        completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T02:30:00.000Z" }),
+        completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T02:30:00.000Z" }),
       ).rejects.toThrow(/paused|status/i);
     });
   });
 });
 
-describe("charter_manage force_complete", () => {
+describe("charter abandon", () => {
   test("requires reason and transitions to abandoned by default", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await expect(
-        forceCompleteCharter(projectDir, { charterId: "cha-complete-1", reason: "", now: "2026-05-15T02:00:00.000Z" }),
+        abandonCharter(projectDir, { charterId: CHARTER_ID, reason: "", now: "2026-05-15T02:00:00.000Z" }),
       ).rejects.toThrow(/reason/i);
-      const result = await forceCompleteCharter(projectDir, {
-        charterId: "cha-complete-1",
+      const result = await abandonCharter(projectDir, {
+        charterId: CHARTER_ID,
         reason: "Out of scope; superseded by another charter.",
         now: "2026-05-15T02:00:00.000Z",
       });
       expect(result.status).toBe("abandoned");
-      const state = await loadCharterState(join(projectDir, ".pi", "charters", "cha-complete-1"));
+      const state = await loadCharterState(join(projectDir, ".pi", "charters", CHARTER_ID));
       expect(state.status).toBe("abandoned");
     });
   });
 
-  test("can force into completed status when asked explicitly", async () => {
-    await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
-      const result = await forceCompleteCharter(projectDir, {
-        charterId: "cha-complete-1",
-        reason: "Manually verified by user; skipping evidence.",
-        target: "completed",
-        now: "2026-05-15T02:00:00.000Z",
-      });
-      expect(result.status).toBe("completed");
-    });
-  });
 });
 
-describe("charter_manage complete (trust gate)", () => {
+describe("charter complete (trust gate)", () => {
   test("rejects when all VALs have only manual+because evidence from agent:root; error lists every VAL and a fix-it", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-001",
-        featureId: "f1-callback",
         outcome: "pass",
         summary: "callback works",
         because: "manual review of callback flow",
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-002",
-        featureId: "f2-tokens",
         outcome: "pass",
         summary: "tokens persisted",
         because: "verified token persistence by hand",
@@ -191,7 +163,7 @@ describe("charter_manage complete (trust gate)", () => {
       });
       let caught: unknown;
       try {
-        await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
+        await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
       } catch (error) {
         caught = error;
       }
@@ -199,20 +171,19 @@ describe("charter_manage complete (trust gate)", () => {
       const message = (caught as Error).message;
       expect(message).toContain("VAL-AUTH-001");
       expect(message).toContain("VAL-AUTH-002");
-      expect(message.toLowerCase()).toContain("charter-reviewer");
+      expect(message.toLowerCase()).toContain("review subagent");
       expect(message.toLowerCase()).toContain("because");
-      const state = await loadCharterState(join(projectDir, ".pi", "charters", "cha-complete-1"));
+      const state = await loadCharterState(join(projectDir, ".pi", "charters", CHARTER_ID));
       expect(state.status).toBe("active");
     });
   });
 
   test("a charter-reviewer-sourced record clears that VAL from the blocking list", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-001",
-        featureId: "f1-callback",
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
@@ -220,9 +191,8 @@ describe("charter_manage complete (trust gate)", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-002",
-        featureId: "f2-tokens",
         outcome: "pass",
         summary: "manual self-record",
         because: "low-trust",
@@ -230,7 +200,7 @@ describe("charter_manage complete (trust gate)", () => {
       });
       let caught: unknown;
       try {
-        await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
+        await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
       } catch (error) {
         caught = error;
       }
@@ -243,11 +213,10 @@ describe("charter_manage complete (trust gate)", () => {
 
   test("completes when every VAL has a charter-reviewer-sourced record", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-001",
-        featureId: "f1-callback",
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
@@ -255,67 +224,32 @@ describe("charter_manage complete (trust gate)", () => {
         now: "2026-05-15T02:00:00.000Z",
       });
       await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
+        charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-002",
-        featureId: "f2-tokens",
         outcome: "pass",
         summary: "reviewed by subagent",
         source: "subagent",
         recordedBy: "subagent:charter-reviewer:sess-2",
         now: "2026-05-15T02:30:00.000Z",
       });
-      const result = await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
+      await seedReportReadyForCompletion(join(projectDir, ".pi", "charters", CHARTER_ID));
+      const result = await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
       expect(result.status).toBe("completed");
     });
   });
 });
 
-describe("charter_manage amend_charter", () => {
-  test("reopens a completed charter into review", async () => {
+describe("removed amend action", () => {
+  test("amend_charter throws amend.removed", async () => {
     await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
-      await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
-        criterionId: "VAL-AUTH-001",
-        featureId: "f1-callback",
-        outcome: "pass",
-        summary: "callback works",
-        source: "subagent",
-        recordedBy: "subagent:charter-reviewer:sess-1",
-        now: "2026-05-15T02:00:00.000Z",
-      });
-      await recordEvidence(projectDir, {
-        charterId: "cha-complete-1",
-        criterionId: "VAL-AUTH-002",
-        featureId: "f2-tokens",
-        outcome: "pass",
-        summary: "tokens persisted",
-        source: "subagent",
-        recordedBy: "subagent:charter-reviewer:sess-2",
-        now: "2026-05-15T02:30:00.000Z",
-      });
-      await completeCharter(projectDir, { charterId: "cha-complete-1", now: "2026-05-15T03:00:00.000Z" });
-      const result = await amendCharter(projectDir, {
-        charterId: "cha-complete-1",
-        reason: "Discovered VAL-AUTH-003 must be added.",
-        now: "2026-05-15T04:00:00.000Z",
-      });
-      expect(result.status).toBe("review");
-      const state = await loadCharterState(join(projectDir, ".pi", "charters", "cha-complete-1"));
-      expect(state.status).toBe("review");
-    });
-  });
-
-  test("rejects amending an active charter", async () => {
-    await withTempProject(async (projectDir) => {
-      await makeActiveCharter(projectDir);
+      await seedCompleteCharter(projectDir);
       await expect(
         amendCharter(projectDir, {
-          charterId: "cha-complete-1",
+          charterId: CHARTER_ID,
           reason: "any reason",
           now: "2026-05-15T02:00:00.000Z",
         }),
-      ).rejects.toThrow(/active|terminal/i);
+      ).rejects.toThrow(/amend_charter was removed|amend\.removed/i);
     });
   });
 });

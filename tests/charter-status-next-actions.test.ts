@@ -1,0 +1,86 @@
+import { describe, expect, test } from "bun:test";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import {
+  buildActiveNextActions,
+  getCharterStatus,
+  nextActionsForStatus,
+} from "../src/application/service";
+import { makeActiveCharter } from "./helpers/charter-fixtures";
+
+async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promise<T> {
+  const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-nextactions-"));
+  try {
+    return await fn(projectDir);
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
+}
+
+describe("charter_status nextActions", () => {
+  test("active base hints are criteria-only (no feature/plan/lock_plan)", () => {
+    const hints = nextActionsForStatus("active").map((action) => action.hint ?? "");
+    const blob = hints.join("\n");
+    expect(blob).not.toMatch(/feature|lock_plan|charter_plan|charter_manage/);
+    expect(blob).toContain("command verifiers for criteria");
+  });
+
+  test("buildActiveNextActions adds advisory readyNext verify row", () => {
+    const actions = buildActiveNextActions({
+      status: "active",
+      drift: {
+        uncovered: [{ criterionId: "VAL-NEXT", reason: "no-evidence" }],
+        stale: [],
+        readyNext: [{ criterionId: "VAL-NEXT", milestoneId: "m4-report" }],
+        sidecarDrift: [],
+        milestoneArtifacts: [],
+      },
+      blockingForComplete: [],
+    });
+    expect(actions.some((a) => a.hint?.includes("Advisory next VAL: VAL-NEXT"))).toBe(true);
+    expect(actions.some((a) => a.hint?.includes("milestone m1-lifecycle"))).toBe(false);
+  });
+
+  test("getCharterStatus does not emit legacy milestone_ready_for_review review prompts", async () => {
+    const charterId = "nextactions-no-legacy-review";
+    await withTempProject(async (projectDir) => {
+      await makeActiveCharter({
+        projectDir,
+        charterId,
+        objective: "NextActions cleanup probe",
+        criteria: [
+          { id: "VAL-A", title: "Done", command: "true" },
+          { id: "VAL-B", title: "Next", command: "true" },
+        ],
+      });
+      const dir = join(projectDir, ".pi", "charters", charterId);
+      await appendFile(
+        join(dir, "events.jsonl"),
+        `${JSON.stringify({
+          type: "milestone_ready_for_review",
+          ts: "2026-05-27T17:58:55.176Z",
+          charterId,
+          milestoneId: "m1-lifecycle",
+          planDigest: "sha256:deadbeef",
+          criterionIds: ["VAL-A"],
+        })}\n`,
+        "utf8",
+      );
+
+      const status = await getCharterStatus(projectDir, { charterId });
+      const hints = status.nextActions.map((a) => a.hint ?? "").join("\n");
+      expect(hints).not.toMatch(/Delegate a review subagent for milestone/);
+      expect(status.nextActions.some((a) => a.hint?.includes("Advisory next VAL: VAL-A"))).toBe(true);
+    });
+  });
+
+  test("buildActiveNextActions surfaces RequireReviewSubagent blockers only when explicit", () => {
+    const actions = buildActiveNextActions({
+      status: "active",
+      drift: { uncovered: [], stale: [], readyNext: [], sidecarDrift: [], milestoneArtifacts: [] },
+      blockingForComplete: [{ criterionId: "VAL-REV", reason: "requires-subagent-review" }],
+    });
+    expect(actions.some((a) => a.tool === "subagent" && a.hint?.includes("VAL-REV"))).toBe(true);
+  });
+});

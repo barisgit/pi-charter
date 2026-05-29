@@ -3,7 +3,6 @@ import type { CharterStatus } from "../domain/types";
 export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "completed",
   "abandoned",
-  "budget_limited",
 ]);
 
 // Shared legend lives in the left pane's third section. Only the keys that work

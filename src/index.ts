@@ -3,7 +3,6 @@ import {
   registerCharterAsyncBridge,
   registerCharterCommands,
   registerCharterFlags,
-  registerCharterPersonas,
   registerCharterRalphLoop,
   registerCharterRalphMessageRenderer,
   registerCharterSubagentBridge,
@@ -48,5 +47,4 @@ export default function charterExtension(pi: ExtensionAPI): void {
   // unconditionally while the bound charter is non-terminal.
   registerCharterRalphLoop(pi);
   registerCharterRalphMessageRenderer(pi);
-  registerCharterPersonas(pi);
 }
