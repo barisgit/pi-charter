@@ -17,7 +17,7 @@ Status: started.
 Definition of done:
 
 - `CharterState` / `CharterStatus` types exist.
-- `charter_manage({action:'create'})` creates `<project>/.pi/charters/<uuid>/`.
+- `charter({action:'create'})` creates `<project>/.pi/charters/<uuid>/`.
 - Atomic write helpers exist.
 - `charter.md` template is written or detected.
 - `state.json`, `events.jsonl`, and `index.json` update correctly.
@@ -31,16 +31,13 @@ Lift from v1:
 - text result helper;
 - slash command parsing pattern.
 
-## M2 — planning and plan sidecars
+## M2 — criteria register (planning/plan sidecars removed)
 
 Definition of done:
 
-- `plan/<featureId>.md` parser/writer exists.
-- `plan.json` recomputes from frontmatter.
-- `criterion-state.json` initializes from `charter.md §Criteria`.
-- Planner-critic checks uncovered criteria, orphan features, and cycles.
-- `charter_plan({action:'view'})` returns coverage and drift.
-- `charter:before_lock_plan` hook is emitted before active transition.
+- Removed per ADR-0011/0012: the feature DAG, `plan/<featureId>.md`, `plan.json`, the planner-critic, and the `charter_plan` tool. There is no lock-plan flow; charters are created `active`.
+- `criterion-state.json` initializes from `criteria.md` (Objective → Milestone → VAL).
+- `charter:before_lock_plan` hook type remains defined but has no live emitter (lock-plan flow removed).
 
 ## M3 — evidence and verification
 
@@ -48,10 +45,10 @@ Definition of done:
 
 - `charter_record({action:'evidence'})` appends evidence records.
 - `criterion-state.json` and `feature-state.json` recompute from evidence.
-- Command verifier works.
-- Manual evidence works with explicit weak marker.
-- Completion is blocked without required evidence.
-- `requireFreshEvidence` and `requireReviewSubagent` predicates are enforced.
+- Removed per ADR-0013: charter-run command checks; commands are run by the agent and recorded as evidence.
+- Manual evidence works with required `because`.
+- Completion is blocked without required recorded evidence.
+- `requireFreshEvidence` is enforced; `requireReviewSubagent` is display-only.
 
 ## M4 — smart-Ralph status and Ralph reprompting
 
@@ -66,8 +63,8 @@ Definition of done:
 
 Definition of done:
 
-- `charter-verifier` and `charter-planner-critic` persona docs exist.
-- Subagent metadata passthrough conventions are implemented or documented against pi-subagents.
+- Removed per ADR-0013: bundled verifier/planner personas are not shipped.
+- Subagent metadata passthrough conventions are documented for user-owned subagents.
 - `handoff_apply` ingests handoff envelopes.
 
 ## M6 — TUI and polish
@@ -75,7 +72,7 @@ Definition of done:
 Definition of done:
 
 - `/charter` opens status/settings/TUI surface.
-- Optional TUI approver subscribes to `charter:before_lock_plan`.
+- Optional TUI approver subscribes to `charter:before_complete`.
 - Docs and README match shipped behavior.
 - Dogfood on one real project task.
 
@@ -84,7 +81,7 @@ Definition of done:
 Build M1 + a thin M2 status path first:
 
 1. Types and filesystem helpers.
-2. `charter_manage(create|pause|resume)`.
+2. `charter(create|pause|resume)`.
 3. `charter_status` with placeholder drift and real binding resolution.
 4. `/charter <objective>` shortcut.
 5. One smoke test creating a charter in a temp project.

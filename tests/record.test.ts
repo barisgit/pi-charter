@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pauseCharter } from "../src/application/service";
-import { recordEvidence, verifyCriterion } from "../src/application/record-service";
+import { recordEvidence } from "../src/application/record-service";
 import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -110,84 +110,6 @@ describe("charter_record evidence", () => {
           because: "probe",
         }),
       ).rejects.toThrow(/paused|status/i);
-    });
-  });
-});
-
-describe("charter_record verify (command verifier)", () => {
-  test("records pass evidence when command exits 0", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "00000000-0000-4000-8000-000000000401";
-      const dir = await makeActiveCharter({
-        projectDir,
-        charterId,
-        objective: "verify",
-        now: "2026-05-15T02:00:00.000Z",
-        criteria: [{
-          id: "VAL-CMD-001",
-          title: "Command runs",
-          body: "cmd.",
-          verifier: "command",
-          command: "echo hello",
-        }],
-      });
-      const result = await verifyCriterion(projectDir, {
-        charterId,
-        criterionId: "VAL-CMD-001",
-        now: "2026-05-15T03:00:00.000Z",
-      });
-      expect(result.outcome).toBe("pass");
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout.trim()).toBe("hello");
-      const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
-      expect(stored.details.exitCode).toBe(0);
-      expect(stored.source).toBe("verifier");
-    });
-  });
-
-  test("records fail evidence when command exits non-zero", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "00000000-0000-4000-8000-000000000402";
-      await makeActiveCharter({
-        projectDir,
-        charterId,
-        objective: "verify",
-        now: "2026-05-15T02:00:00.000Z",
-        criteria: [{
-          id: "VAL-CMD-001",
-          title: "Command runs",
-          verifier: "command",
-          command: "sh -c 'echo boom 1>&2; exit 2'",
-        }],
-      });
-      const result = await verifyCriterion(projectDir, {
-        charterId,
-        criterionId: "VAL-CMD-001",
-        now: "2026-05-15T03:00:00.000Z",
-      });
-      expect(result.outcome).toBe("fail");
-      expect(result.exitCode).toBe(2);
-      expect(result.stderr).toContain("boom");
-    });
-  });
-
-  test("rejects criteria without a command", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "00000000-0000-4000-8000-000000000403";
-      await makeActiveCharter({
-        projectDir,
-        charterId,
-        objective: "verify",
-        now: "2026-05-15T02:00:00.000Z",
-        criteria: [{
-          id: "VAL-CMD-001",
-          title: "Manual",
-          verifier: "manual",
-        }],
-      });
-      await expect(
-        verifyCriterion(projectDir, { charterId, criterionId: "VAL-CMD-001" }),
-      ).rejects.toThrow(/not implemented|command verifier/i);
     });
   });
 });

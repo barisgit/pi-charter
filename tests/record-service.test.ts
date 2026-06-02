@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordEvidence, verifyCriterion } from "../src/application/record-service";
+import { recordEvidence } from "../src/application/record-service";
 import { makeActiveCharter } from "./helpers/charter-fixtures";
 
 async function withTempProject<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -85,30 +85,6 @@ describe("recordEvidence — because + recordedBy identity", () => {
       );
       expect(criterionState.criteria["VAL-MAN-001"].recordedBy).toBe("agent:root");
       expect(criterionState.criteria["VAL-MAN-001"].because).toBe("stable rationale");
-    });
-  });
-
-  test("verifyCriterion writes recordedBy='agent:root' on the synthesized command-result record", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "00000000-0000-4000-8000-000000000903";
-      const dir = await makeActiveCharter({
-        projectDir,
-        charterId,
-        objective: "Trust ordering probe",
-        now: "2026-05-15T02:00:00.000Z",
-        criteria: [{ id: "VAL-CMD-001", title: "Command criterion", verifier: "command", command: "echo trust" }],
-      });
-
-      const result = await verifyCriterion(projectDir, {
-        charterId,
-        criterionId: "VAL-CMD-001",
-        now: "2026-05-15T03:00:00.000Z",
-      });
-
-      expect(result.outcome).toBe("pass");
-      const stored = JSON.parse(await readFile(join(dir, result.path), "utf8"));
-      expect(stored.recordedBy).toBe("agent:root");
-      expect(stored.source).toBe("verifier");
     });
   });
 });

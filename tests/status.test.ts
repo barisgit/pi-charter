@@ -3,7 +3,6 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCharterStatus } from "../src/application/service";
-import { recordEvidence } from "../src/application/record-service";
 import { formatCharterStatusText } from "../src/application/registration";
 import { makeActiveCharter } from "./helpers/charter-fixtures";
 
@@ -17,7 +16,7 @@ async function withTempProject<T>(fn: (projectDir: string) => Promise<T>): Promi
 }
 
 describe("getCharterStatus.details.blockingForComplete", () => {
-  test("includes every VAL with low-trust evidence; renders single line", async () => {
+  test("includes only manual pass evidence without because; renders single line", async () => {
     await withTempProject(async (projectDir) => {
       const charterId = "cha-status-1";
       await makeActiveCharter({
@@ -30,41 +29,44 @@ describe("getCharterStatus.details.blockingForComplete", () => {
           { id: "VAL-S-002", title: "Second criterion", because: "author rationale 2" },
         ],
       });
-      await recordEvidence(projectDir, {
+      const charterDir = join(projectDir, ".pi", "charters", charterId);
+      await writeFile(join(charterDir, "criterion-state.json"), `${JSON.stringify({
         charterId,
-        criterionId: "VAL-S-001",
-        outcome: "pass",
-        summary: "did it",
-        because: "low-trust manual record",
-        now: "2026-05-15T02:00:00.000Z",
-      });
-      await recordEvidence(projectDir, {
-        charterId,
-        criterionId: "VAL-S-002",
-        outcome: "pass",
-        summary: "did it too",
-        because: "another low-trust manual record",
-        now: "2026-05-15T02:01:00.000Z",
-      });
+        criteria: {
+          "VAL-S-001": {
+            outcome: "pass",
+            lastEvidencePath: "work/manual/evidence/no-because.json",
+            lastTs: "2026-05-15T02:00:00.000Z",
+            lastSummary: "manual without because",
+            source: "manual",
+            recordedBy: "agent:root",
+          },
+          "VAL-S-002": {
+            outcome: "pass",
+            lastEvidencePath: "work/manual/evidence/with-because.json",
+            lastTs: "2026-05-15T02:01:00.000Z",
+            lastSummary: "manual with because",
+            source: "manual",
+            recordedBy: "agent:root",
+            because: "manual rationale is present",
+          },
+        },
+      }, null, 2)}\n`, "utf8");
 
       const status = await getCharterStatus(projectDir, { charterId });
       expect(status.details).toBeDefined();
       expect(Array.isArray(status.details?.blockingForComplete)).toBe(true);
-      expect(status.details!.blockingForComplete).toHaveLength(2);
-      const ids = status.details!.blockingForComplete.map((row) => row.criterionId).sort();
-      expect(ids).toEqual(["VAL-S-001", "VAL-S-002"]);
-      for (const row of status.details!.blockingForComplete) {
-        expect(typeof row.reason).toBe("string");
-        expect(row.reason.length).toBeGreaterThan(0);
-      }
+      expect(status.details!.blockingForComplete).toHaveLength(1);
+      expect(status.details!.blockingForComplete[0]?.criterionId).toBe("VAL-S-001");
+      expect(status.details!.blockingForComplete[0]?.reason).toBe("manual");
 
       const text = formatCharterStatusText(status);
       const matchingLines = text.split("\n").filter((line) => line.includes("blocking-for-complete:"));
       expect(matchingLines).toHaveLength(1);
       const line = matchingLines[0];
-      expect(line).toContain("blocking-for-complete: 2 VAL(s):");
-      expect(line).toContain("VAL-S-001(");
-      expect(line).toContain("VAL-S-002(");
+      expect(line).toContain("blocking-for-complete: 1 VAL(s):");
+      expect(line).toContain("VAL-S-001(manual)");
+      expect(line).not.toContain("VAL-S-002");
     });
   });
 

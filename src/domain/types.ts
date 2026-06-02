@@ -21,12 +21,7 @@ export interface NextAction {
   tool: "charter" | "charter_record" | "charter_status" | "subagent";
   action?: string;
   hint: string;
-  /**
-   * Optional structured metadata for tool-specific routing. Currently used by
-   * milestone-review next actions ({ milestoneId, criterionIds }) so the
-   * agent can spawn a review subagent with the right scope without
-   * re-parsing the hint string.
-   */
+  /** Optional structured metadata for tool-specific routing. */
   metadata?: Record<string, unknown>;
 }
 
@@ -75,11 +70,8 @@ export interface CharterCriterion {
   requireFreshEvidence: boolean;
   /**
    * Tri-state: `true`/`false` when the charter.md criterion explicitly sets
-   * `Review subagent required:`, `undefined` when the line is omitted. The
-   * completion gate uses the explicit-vs-omitted distinction to auto-default
-   * the flag to true for VALs covered by a `milestone_ready_for_review`
-   * event (see `effectiveRequireReviewSubagent` in service.ts). Authors who
-   * want to opt OUT of the auto-default must write `Review subagent required: false`.
+   * `Review subagent required:`, `undefined` when the line is omitted. This is
+   * a display-only authoring annotation; it does not block completion.
    */
   requireReviewSubagent: boolean | undefined;
   /**
@@ -122,9 +114,8 @@ export interface ParsedCharterMarkdown {
 
 /**
  * Identity of the actor that produced an evidence record. Distinguishing the
- * root agent from a delegated subagent (or a human) is what lets the
- * completion gate enforce identity-disjoint review without re-deriving the
- * writer from event history.
+ * root agent from a delegated subagent (or a human) is surfaced for display and
+ * audit; per ADR-0013 it is not a completion gate (no identity-disjoint review).
  */
 export type RecordedBy = `agent:root` | `subagent:${string}:${string}` | `user`;
 
@@ -139,7 +130,7 @@ export interface EvidenceRecord {
   artifacts: string[];
   details: Record<string, unknown>;
   source: EvidenceSource;
-  /** Required: who wrote this record. Populated at every recordEvidence/verifyCriterion/applyHandoff call site. */
+  /** Required: who wrote this record. Populated at every recordEvidence/recordEvidenceFromFile call site. */
   recordedBy: RecordedBy;
   /** Optional rationale; REQUIRED when source === 'manual'. */
   because?: string;

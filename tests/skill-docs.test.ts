@@ -31,13 +31,10 @@ describe("pi-charter skill documentation", () => {
     expect(contents).toContain("behavior level");
     expect(contents).toContain("file");
     expect(contents).toContain("glob");
-    // The brittle single-title form is explicitly discouraged and named as the
-    // warning the engine emits.
-    expect(contents).toContain("bun test -t");
+    // Command execution is owned by the agent; charter stores evidence only.
+    expect(contents).toContain("charter never executes them");
+    expect(contents).toContain("records the command string plus real output");
     expect(contents).toContain("weak-verifier-phrase-coupled");
-    // The helper survives only as a niche suite-guard, not the default path.
-    expect(contents).toContain("scripts/charter-named-test.sh");
-    expect(contents).toContain("niche");
   });
 
   test("SKILL.md documents optional markdown companions", async () => {

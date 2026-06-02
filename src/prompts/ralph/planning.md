@@ -23,6 +23,6 @@ Runtime-owned next step:
 Planning fidelity:
 - Use uncovered VAL-* criteria, plan coverage, and verifier details from the current status surfaces to decide what to author next.
 - Do not write repo-root `charter.md` or `plan/*.md` files yourself; use the charter tools and paths surfaced by the current legal action.
-- A feature is "covered" only when at least one VAL-* it claims to fulfill has a verifier the agent will actually run.
+- A feature is "covered" only when at least one VAL-* it claims to fulfill has a descriptive verifier/evidence annotation that explains what good evidence should demonstrate.
 
 Ralph is only a reprompt. It never changes charter status; lifecycle moves must come from current legal actions and explicit charter tool calls.

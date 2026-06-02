@@ -1,14 +1,16 @@
 # NEXT — morning handoff
 
+> **Superseded historical snapshot.** This is a point-in-time handoff from an early (v1/v2-era) session. It describes a tool surface and layout that no longer exist — `charter_manage`/`charter_plan`, `force_complete`/`amend_charter`/`handoff_apply`, the `planning` state, `plan/<featureId>.md`/`plan.json`/`feature-state.json`, a four-event hook bus, `registerCharterPersonas`, and the "53 tests" count. For current (v3) behavior see `CONTEXT.md`, `docs/v3-handoff-brief.md`, and `docs/implementation/{architecture,lifecycle,tool-contracts,filesystem-layout}.md`. Kept only for narrative history.
+
 ## What shipped this session
 
 pi-charter is a fully tested standalone extension wired to pi-subagents. 53 tests / 162 assertions green; `bun run check-types` clean; ~2640 LOC under `src/`.
 
 ### Tools (all four LLM-callable surfaces wired)
 
-- `charter_manage` — `create | pause | resume | complete | force_complete | amend_charter`. Completion gate enforces every criterion has `pass` evidence; `requireFreshEvidence` and `requireReviewSubagent` flags read from `charter.md` Criteria.
+- `charter_manage` — `create | pause | resume | complete | force_complete | amend_charter`. Completion gate enforces every criterion has recorded `pass` evidence; `requireFreshEvidence` is a hard gate and `requireReviewSubagent` is displayed from Criteria.
 - `charter_plan` — `view | add_feature | update_feature | lock_plan`. `lock_plan` runs the planner-critic checks (empty/uncovered/orphan/unknown-ref/precondition-cycle), computes a `planDigest` (sha256), transitions `planning → active`, appends `plan_locked` event.
-- `charter_record` — `evidence | verify | handoff_apply`. `verify` runs command verifiers via `/bin/sh -c` with 120s default timeout and 64KB stdout/stderr capture. `handoff_apply` consumes returned subagent handoff envelopes (featureId + completedCriteria + subagentSessionId) and translates them into evidence + criterion-state updates.
+- `charter_record` — `evidence | handoff_apply`. Commands are run by the agent or a user-owned subagent and their output is recorded as evidence. `handoff_apply` consumes returned subagent handoff envelopes (featureId + completedCriteria + subagentSessionId) and translates them into evidence + criterion-state updates.
 - `charter_status` — drift views (uncovered, stuck, stale, readyNext) plus legal `nextActions[]`.
 
 ### Lifecycle infrastructure
@@ -18,11 +20,11 @@ pi-charter is a fully tested standalone extension wired to pi-subagents. 53 test
 - Session binding (forward + reverse): `state.json.sessionId` + `~/.pi/agent/sessions/<sessionId>/charter.json`. `--charter-resume <id>` and `--charter-objective` CLI flags wire through `session_start`. Reconcile-on-start restores forward pointer from reverse if missing.
 - Slash command: `/charter` (bare = status; `/charter <text>` = create shortcut).
 
-### Bundled personas
+### Personas
 
-- `agents/charter-verifier.md` — read-only contract-aware verifier. `scope: internal`. Tool allowlist: `read, grep, find, ls, bash, charter_record, charter_status`. Records exactly one `charter_record action=evidence` entry per run.
-- `agents/charter-planner-critic.md` — read-only adversarial plan critic. `scope: internal`. Runs the same checks the in-process `lock_plan` runs plus milestone hygiene, order field sanity, verifier coverage, and scope/constraint violation checks. Emits a structured `PASS | BLOCK | ADVISORY` verdict.
-- Both use `anthropic/claude-sonnet-4-6`.
+pi-charter ships zero bundled personas. Users may bring their own review, QA, or
+planning subagents; charter records their evidence provenance when they report
+through `charter_record action=evidence`.
 
 ## pi-subagents bridge — wired
 
@@ -38,7 +40,7 @@ Spec lives in `docs/research/2026-05-14-pi-charter-design/orchestration-layering
 
 ### Metadata convention (host-agent contract)
 
-When the host LLM delegates via `subagent({agent: 'charter-verifier' | 'charter-planner-critic', ..., metadata: {...}})`, it must pass the canonical keys:
+When the host LLM delegates to a user-owned subagent with charter metadata, it must pass the canonical keys:
 
 - `pi-charter.projectDir` — absolute project path (required for the async bridge to locate the charter; no `ctx.cwd` reachable in `pi.events.on` handlers).
 - `pi-charter.charterId` — required.

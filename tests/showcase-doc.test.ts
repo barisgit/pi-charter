@@ -13,7 +13,7 @@ describe("showcase documentation", () => {
     expect(text).toContain("work/&lt;featureId&gt;/evidence/&lt;ts&gt;/evidence.json");
     expect(text).toContain("auto-injection was removed in v2.2");
     expect(text).toContain("subagent");
-    expect(text).toContain("evidence-exists");
+    expect(text).toContain("Charter stores the recorded command output; it does not execute the command.");
     expect(text).toContain("## Commands");
   });
 
@@ -25,13 +25,13 @@ describe("showcase documentation", () => {
     expect(text).toContain("evidence.json");
   });
 
-  test("showcase shows new verifier kinds subagent and evidence-exists", async () => {
+  test("showcase shows descriptive evidence categories", async () => {
     const text = await readShowcase();
 
-    for (const kind of ["command", "hook", "manual", "prompt-judge", "subagent", "evidence-exists"]) {
-      expect(text).toContain(`<h3>${kind}</h3>`);
+    for (const heading of ["Command", "Hook / service", "Manual / review"]) {
+      expect(text).toContain(`<h3>${heading}</h3>`);
     }
-    expect(text).toContain("All 6 verifier kinds");
+    expect(text).toContain("Annotations describe what good evidence looks like; recorded evidence decides completion.");
   });
 
   test("showcase includes Commands section example", async () => {

@@ -1,179 +1,53 @@
-# Domain Layer Codemap
+# src/domain/
 
-Source: `src/domain/` — pure TypeScript, no I/O, no external dependencies except shared `types.ts`.
+## Responsibility
+Pure-ish domain model and markdown/schema parsing layer for pi-charter's current v3 runtime shape. This folder defines shared TypeScript types, parses authored `charter.md`/`criteria.md` content into Objective → Milestone → VAL criterion structures, validates descriptive verifier/evidence JSON shapes, renders/parses completion reports, extracts feature validation checks, and computes source-freshness timestamps. It does not register tools, run verifiers, mutate charter state, or implement a feature DAG planner.
 
----
+| File | Current responsibility |
+|---|---|
+| `types.ts` | Shared interfaces/unions: `CharterState`, 4-state `CharterStatus`, legacy-status compatibility type, criteria, milestones, evidence records, next actions, events. |
+| `charter-md.ts` | Renders initial `charter.md` and `criteria.md`; parses Objective/Scope/Commands plus milestone/VAL criteria markdown; emits parser warnings and phrase-coupled test-command warnings. |
+| `verifier.ts` | TypeBox schemas and validation for descriptive verifier specs: `manual`, `command`, `hook`, `prompt`, `subagent`, `evidence-exists`. No verifier execution. |
+| `evidence-schemas.ts` | TypeBox validation for v3 flat evidence rows; rejects legacy typed evidence `kind` values; ensures `narrativePath` is relative. |
+| `feature-validation.ts` | Parses a feature markdown `## Validation` block into happy/edge check IDs and command strings. |
+| `report-md.ts` | Renders, parses, and completeness-checks `REPORT.md` sections: Title, Objective, Outcome, Notes. |
+| `src-freshness.ts` | Walks `<project>/src` for latest file mtime and compares evidence timestamps against that source-change baseline. |
 
-## Files
+## Design
+- `types.ts` is the central contract module. `CharterStatus` is exactly `"active" | "paused" | "completed" | "abandoned"`; `LegacyCharterStatus` only names old persisted states (`planning`, `review`, `awaiting-clarification`, `budget_limited`) for back-compat normalization outside this folder. `TERMINAL_STATUSES` contains only `completed` and `abandoned`.
+- The domain model is Objective → Milestone → VAL criterion: `ParsedCharterMarkdown` carries `objective`, `criteria`, `milestones`, `constraints`, `commands`, optional `qaSection`/`readinessSection`, and parser `warnings`. There is no live `FeatureDefinition`, feature DAG, `planDigest`, or `parseFeatureMarkdown` in this folder.
+- `charter-md.ts` uses line-oriented markdown parsing rather than a markdown AST. H2 sections are normalized into maps; criteria are discovered from `##` milestone headings containing `### VAL-*` leaves, with flat legacy VAL headings still accepted.
+- Verifiers are schemas/specifications only. `charter-md.ts` parses `Verifier:` lines into a `verifierSpec`; `verifier.ts` validates shape. The domain layer never executes commands, hooks, prompts, subagents, or `evidence-exists` checks.
+- Parser warnings are data, not gates. Current warning reasons are `missing-verifier`, `invalid-verifier`, `missing-because`, `duplicate-command`, `malformed-command`, and `weak-verifier-phrase-coupled`; application code decides what blocks.
+- `requireReviewSubagent` is a tri-state authoring/display annotation (`true`, `false`, or omitted/`undefined`) on `CharterCriterion`; this folder does not enforce it as a completion gate.
+- Evidence validation is split from runtime evidence state: `evidence-schemas.ts` validates a flat evidence file shape, while `types.ts` defines the richer in-memory/persisted `EvidenceRecord` shape used by application services.
 
-| File | Responsibility |
-|------|---------------|
-| `types.ts` | Shared type definitions and algebraic data types for the entire domain. |
-| `charter-md.ts` | Parse and render `charter.md` (authoring template + H2/H3 parser). |
-| `feature-md.ts` | Parse feature plan markdown (YAML frontmatter extractor). |
-| `trust-rank.ts` | Evidence trustworthiness ranking consumed by the completion gate. |
+## Flow
+1. Creation/scaffolding callers render files with `renderInitialCharterMarkdown(objective, name)` and `renderInitialCriteriaMarkdown(name)`.
+2. Loading callers pass `charter.md` and optionally sibling criteria markdown to `parseCharterMarkdown(markdown, { criteriaMarkdown })`.
+3. `parseCharterMarkdown` extracts:
+   - `objective` from `## Objective`, stripping comments/blank lines;
+   - `constraints` from bullets under `## Scope and constraints`;
+   - `commands` from `key: value` lines under `## Commands`, warning on malformed/duplicate keys;
+   - `criteria`/`milestones` from criteria markdown when provided, otherwise legacy `## Criteria` content in `charter.md`.
+4. Each `VAL-*` criterion body is parsed into fields: description, verifier kind/spec, command, `RequireFreshEvidence`, `RequireReviewSubagent`, and author-time `Because`.
+5. `parseVerifier` validates the descriptive verifier object. Unknown or malformed verifier specs degrade to `manual` and add `invalid-verifier` warnings instead of throwing away the whole criteria register.
+6. `isPhraseCoupledTestCommand` conservatively flags test commands that use title filters (`-t`, `--grep`, etc.) without a positional file/glob, producing `weak-verifier-phrase-coupled` warnings.
+7. Evidence-file import callers use `validateEvidenceFile`/`parseEvidence` for flat evidence JSON. Legacy typed evidence kinds (`command`, `review`, `qa`, `readiness`) are rejected by this schema module.
+8. Report callers use `renderReportScaffold`/`renderReportMarkdown`, `parseReportMarkdown`, and `checkReportCompletion` to keep `REPORT.md` title/objective/outcome/notes present.
+9. Freshness callers use `lastSrcChangeMs(projectDir)` plus `isEvidenceStaleForSrcChange(lastTs, srcChangeMs)` to mark evidence stale when source files changed after the evidence timestamp.
 
----
+## Integration
+- Consumed by `src/application/` services and registration handlers for the currently registered tool surface: `charter`, `charter_record`, and `charter_status`.
+- `types.ts` exports response/action contracts (`NextAction`, `CharterState`, `CharterCriterion`, `EvidenceRecord`, `CharterEvent`) and re-exports verifier types from `verifier.ts`.
+- `charter-md.ts` depends on `verifier.ts` for verifier shape validation and on `types.ts` for parsed charter/milestone/criterion types.
+- `evidence-schemas.ts` and `verifier.ts` depend on `typebox`/`typebox/value`; most other domain files only use built-in TypeScript/Node APIs.
+- `src-freshness.ts` is the only file here with filesystem reads (`node:fs/promises`, `node:path`), and it only computes timestamps; it does not write sidecars.
+- Current sidecar concepts represented by these types/parsers include `charter.md`, sibling criteria markdown, `criterion-state.json`/evidence records, flat evidence JSON rows, and `REPORT.md`. `feature-state.json` is not a live sidecar in this folder.
 
-## Design Patterns
-
-### Algebraic data types (ADTs) via TypeScript discriminated unions
-
-`types.ts` defines several strict unions used throughout the service layer:
-
-- `CharterStatus` — 8-state lifecycle FSM: `planning | active | review | paused | completed | budget_limited | abandoned`.
-- `VerifierKind` — 4-enum closed set: `command | hook | prompt | manual`.
-- `RecordedBy` — template-literal tagged union: `` `agent:root` | `subagent:${string}:${string}` | `user` ``.
-- `EvidenceSource` — 4-enum set parallel to `RecordedBy` but scoped to evidence provenance.
-- `ParseWarningReason` — 2-variant warning discriminant: `missing-verifier | missing-because`.
-
-The `CharterCriterion.requireReviewSubagent` field is intentionally **tri-state** (`boolean | undefined`) to distinguish three author intents: explicitly `true`, explicitly `false`, and completely omitted. The completion gate uses the omitted state to auto-default to `true` when a `milestone_ready_for_review` event fires.
-
-### Two-pass section parser
-
-`charter-md.ts` uses a **streaming line-buffer split** pattern:
-1. First pass (`splitH2Sections`) accumulates lines into a `Map<sectionName, rawContent>`. Section boundaries are detected by `^##\s+(.+?)\s*$` regex; headings are normalized (`toLowerCase`, whitespace collapsed) for case-insensitive key lookup.
-2. Second pass (`parseCriteria`) re-splits each section by H3 headings (`^###\s+(.+?)\s*$`), buffering body lines until the next heading flushes.
-
-This avoids full DOM/AST parsing; the markdown is treated as a line-oriented structured format, not rich prose.
-
-### Field-value map pattern
-
-Both `charter-md.ts` and `feature-md.ts` use a `Map<string, string | string[]>` intermediate representation after regex-parsing field-value lines. This decouples the raw input format from the final typed object and makes field normalization reusable.
-
-### Trust ranking as pure function
-
-`trust-rank.ts` exports a single pure function `trustRank(input: TrustRankInput): number`. No side effects, no I/O. The ranking is consumed by the completion gate to enforce identity-disjoint review: higher rank = more trustworthy evidence, less human review required.
-
----
-
-## Data / Control Flow
-
-### Charter markdown lifecycle
-
-```
-author (LLM or human)
-  │
-  ▼
-renderInitialCharterMarkdown(objective) → string (template charter.md)
-  │
-  ▼
-user edits charter.md
-  │
-  ▼
-parseCharterMarkdown(markdown) → ParsedCharterMarkdown
-  │
-  ├── { objective: string }
-  ├── { constraints: string[] }      ← bullet-list extractor
-  ├── { criteria: CharterCriterion[] } ← H3 heading parser + field-value map
-  └── { warnings: ParseWarning[] }  ← advisory: missing-verifier, missing-because
-```
-
-### Feature markdown lifecycle
-
-```
-plan author (LLM)
-  │
-  ▼
-charter_plan action=add_feature → YAML-frontmatter markdown written to .pi/charters/<id>/plan/<featureId>.md
-  │
-  ▼
-parseFeatureMarkdown(markdown) → FeatureDefinition
-  │
-  ├── { id, milestone, order, fulfills: string[], preconditions: string[], body }
-  └── used by service layer to build plan DAG
-```
-
-### Evidence / completion gate flow
-
-```
-EvidenceRecord created (manual, verifier, hook, or subagent source)
-  │
-  ▼
-trustRank({ recordedBy, source, hasBecause }) → 0 | 1 | 2 | 3
-  │
-  ▼
-completion gate reads criterion.requireReviewSubagent + trustRank + RecordedBy
-  └── enforces identity-disjoint review: subagent record must come from a different RecordedBy than charter author
-```
-
----
-
-## Integration Points
-
-### Consumed by service layer (`src/service/`)
-- `parseCharterMarkdown` — called at charter creation and lock time to populate `CharterState`.
-- `parseFeatureMarkdown` — called when loading feature plan entries.
-- `trustRank` — called by the completion gate logic.
-- All exported types from `types.ts` — used as method signatures in service.
-
-### Consumed by tools (`src/tools/`)
-- `charter_manage`, `charter_plan`, `charter_record` use `ParsedCharterMarkdown`, `CharterCriterion`, `EvidenceRecord` as request/response shapes.
-- `charter_plan` `add_feature` internally produces markdown that `parseFeatureMarkdown` must round-trip.
-
-- Reads `CharterState`, `CharterCriterion`, and `EvidenceRecord` to compute criterion bitmap and completion readiness.
-
-### Consumed by the status widget
-- `CharterStatus` union displayed in the widget header.
-
-### Tri-state `requireReviewSubagent` propagation
-
-```
-charter.md:  Review subagent required: <true|false|omitted>
-  │
-  ▼
-parseCriterion() → CharterCriterion.requireReviewSubagent: boolean | undefined
-  │
-  ▼
-effectiveRequireReviewSubagent (service.ts) handles the auto-default:
-  - if criterion.requireReviewSubagent === true  → require subagent
-  - if criterion.requireReviewSubagent === false → opt-out explicit
-  - if criterion.requireReviewSubagent === undefined AND milestone_ready_for_review event fired
-      → auto-default to true
-```
-
-### Warning taxonomy
-
-`ParseWarning` is advisory only; the service layer decides whether to **block** or **warn** based on the `reason` discriminant:
-- `missing-verifier` — always emitted, severity decided by caller.
-- `missing-because` — emitted only when `verifier === "manual"` and no `because` field. Used by `lock_plan` to block weak-verifier charters unless `legacy: true` is set.
-
----
-
-## Key Type Relationships
-
-```
-CharterState
-  ├── status: CharterStatus
-  ├── budget?: Budget
-  └── charterDigest?, planDigest? (content-addressed idempotency)
-
-CharterCriterion
-  ├── verifier: VerifierKind
-  ├── requireReviewSubagent: boolean | undefined  ← tri-state
-  ├── because?: string                            ← author-time rationale
-  └── command?: string                            ← shell command for VerifierKind="command"
-
-EvidenceRecord
-  ├── source: EvidenceSource                      ← manual|verifier|hook|subagent
-  ├── recordedBy: RecordedBy                     ← agent:root|subagent:…|user
-  ├── because?: string                            ← per-evidence rationale (required for manual)
-  ├── outcome: "pass" | "fail" | "partial"
-  └── artifacts: string[]                         ← output paths, URLs, etc.
-
-TrustRankInput → trustRank() → number
-  source=subagent     → 3
-  source=verifier|hook → 2
-  source=manual+because → 1
-  source=manual         → 0
-```
-
----
-
-## Parsing Invariants
-
-1. `charter-md.ts` ignores bullet lists entirely. Only `### VAL-*` H3 headings are parsed as criteria. This was a deliberate design decision to force structured authoring and prevent ambiguity.
-2. `charter-md.ts` normalizes section headings case-insensitively and collapses internal whitespace, so `## Objective`, `## objective`, `##  Objective  ` all resolve to `"objective"`.
-3. `feature-md.ts` requires YAML frontmatter (`---` delimiters) at the top of every feature markdown file. Throws if absent.
-4. `parseOptionalBoolean` returns `undefined` for empty strings and unrecognized values, distinguishing "author wrote nothing" from "author wrote `false`".
-5. The `parseCharterMarkdown` `legacy` option is a **marker only**: the parser always emits the same warning set; the caller (`lock_plan`) reads the flag to decide whether `missing-because` on a manual verifier is a block or a warning.
+## Vestigial / tech-debt
+- `charter-md.ts:269-270` and `types.ts:78-81` comments still mention `lock_plan`; the lock-plan/plan flow is gone, but the manual-without-`Because` warning data still exists.
+- `charter-md.ts:539-541` comments mention auto-defaulting omitted `RequireReviewSubagent` from a `milestone_ready_for_review` event; this is residual commentary only in this folder, not an emitted/enforced domain behavior.
+- `charter-md.ts` still accepts older un-nested criteria shapes and superseded verifier aliases (`review`, `qa`, `readiness` → `evidence-exists`) for parsing/display compatibility.
+- `feature-validation.ts` parses validation commands from feature markdown, but there is no `feature-md.ts` parser or feature DAG planning primitive in `src/domain/`.
+- Deleted/stale concepts removed from this map: `trust-rank.ts`, `feature-md.ts`, trust ranking/completion-gate trust model, `parseFeatureMarkdown`, `planDigest`, and an 8-state charter FSM.

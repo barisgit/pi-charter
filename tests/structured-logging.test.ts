@@ -3,11 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { clearHookSubscribers } from "../src/application/hooks";
-import { recordEvidence, verifyCriterion } from "../src/application/record-service";
+import { recordEvidence } from "../src/application/record-service";
 import { abandonCharter, completeCharter, pauseCharter, resumeCharter } from "../src/application/service";
-import { __resetSubagentApiForTests, setSubagentApiForBridge } from "../src/application/subagent-api";
+import { __resetSubagentApiForTests } from "../src/application/subagent-api";
 import { logger, type LogContext } from "../src/infrastructure/logger";
-import type { SpawnRawInput, SubagentExposedAPI } from "../src/infrastructure/subagent-bridge";
 import { makeActiveCharter, seedReportReadyForCompletion } from "./helpers/charter-fixtures";
 
 interface InfoLog {
@@ -47,18 +46,6 @@ function info(message: string): InfoLog {
   const entry = infoLogs.find((log) => log.message === message);
   expect(entry).toBeDefined();
   return entry!;
-}
-
-function installSubagentStub(): void {
-  const api: SubagentExposedAPI = {
-    async spawnRaw(_input: SpawnRawInput) {
-      return { content: [{ type: "text", text: "stub verifier completed" }] };
-    },
-    list() {
-      return [{ name: "charter-reviewer", description: "stub" }];
-    },
-  };
-  setSubagentApiForBridge(api);
 }
 
 async function recordTrustedPass(projectDir: string, charterId: string, now = "2026-05-27T12:10:00.000Z"): Promise<void> {
@@ -136,48 +123,6 @@ describe("structured info logging", () => {
         { component: "service", charterId, from: "paused", to: "active", reason: undefined },
         { component: "service", charterId, from: "active", to: "abandoned", reason: "superseded" },
       ]);
-    });
-  });
-
-  test("subagent verifier dispatch emits pre and post logs", async () => {
-    await withTempProject(async (projectDir) => {
-      const charterId = "structured-verifier-dispatch";
-      await makeActiveCharter({
-        projectDir,
-        charterId,
-        objective: "Structured logging probe",
-        now: "2026-05-27T12:00:00.000Z",
-        criteria: [{
-          id: "VAL-LOG-001",
-          title: "Subagent verifier",
-          verifier: "subagent",
-          agent: "charter-reviewer",
-          task: "Review {charterId} {criterionId} into {evidenceDir}.",
-        }],
-      });
-      installSubagentStub();
-      infoLogs = [];
-
-      await verifyCriterion(projectDir, {
-        charterId,
-        criterionId: "VAL-LOG-001",
-        featureId: "_charter",
-        now: "2026-05-27T12:30:00.000Z",
-      });
-
-      expect(info("verifier dispatch").context).toMatchObject({
-        component: "subagent-dispatch",
-        charterId,
-        criterionId: "VAL-LOG-001",
-        persona: "charter-reviewer",
-      });
-      expect(info("verifier dispatch completed").context).toMatchObject({
-        component: "subagent-dispatch",
-        charterId,
-        criterionId: "VAL-LOG-001",
-        persona: "charter-reviewer",
-        exitCode: 0,
-      });
     });
   });
 });

@@ -2,77 +2,43 @@
 
 ## Project Responsibility
 
-Pi extension for durable charter-bound agent work. Provides: objective/criteria/evidence lifecycle, macro feature plans with milestone gates, deterministic Ralph reprompting, and a terminal widget. Successor to pi-goals v1.
+Pi extension for durable charter-bound agent work in the partial v3 migration. Current runtime centers on Objective → Milestone → VAL criteria, evidence recording, completion/status projection, deterministic Ralph continuation, session binding, subagent event attribution, and terminal UI surfaces. Code is source of truth; ADRs and older v1/v2 references may describe removed planning primitives.
 
 ## System Entry Points
 
 | File | Role |
 |---|---|
-| `src/index.ts` | Extension registration entry point. Wires tools, commands, flags, Ralph reprompting, and UI surfaces to the pi-coding-agent host. |
-| `src/application/registration.ts` | Tool surface composition. No business logic — pure wiring of all service instances. |
-| `package.json` | Dependency manifest, build scripts, `pi-package` config. |
+| `src/index.ts` | Extension entrypoint. Registers flags, the three tools, commands, subagent bridges, widget, Ralph loop, and Ralph message renderer. Imports but currently does not call `registerCharterRemindersBridge()`. Exports `CharterToolError`, `getPackageVersion`, and evidence schemas. |
+| `src/application/registration.ts` | Main host composition surface for tools, commands, flags, widget, Ralph, and subagent bridges. Registered tools are exactly `charter`, `charter_record`, and `charter_status`. |
+| `package.json` | Package `pi-charter` version `0.0.0`; Pi manifest is the `pi` field with extension `./src/index.ts` and skills `./skills`. Scripts: `test` = `bun test`, `check-types` = `tsc --noEmit`, `ci` = both. |
 
 ## Directory Map (Aggregated)
 
 | Directory | Responsibility Summary | Detailed Map |
 |---|---|---|
-| `src/application/` | Tool surface & orchestration: charter lifecycle state machine, evidence recording, plan CRUD, drift views, hooks, async bridge, Ralph, reminders bridge. | [View Map](src/application/codemap.md) |
-| `src/domain/` | Pure business rules: `charter-md.ts` (charter/feature/criterion parsing), `feature-md.ts` (plan feature parsing), `trust-rank.ts` (4-level trust model), `types.ts` (all shared types/entities). Zero I/O, zero side effects. | [View Map](src/domain/codemap.md) |
-| `src/infrastructure/` | Persistence & communication: `store.ts` (atomic tmp-rename writes, path mutex), `subagent-bridge.ts` (pi.events bus bridge to pi-subagents). No domain logic. | [View Map](src/infrastructure/codemap.md) |
-| `src/ui/` | Pure string rendering for terminal TUI: charter picker, selection widget, multi-charter widget, widget host, widget state reducer, widget service. | [View Map](src/ui/codemap.md) |
+| `src/` | Source-root orientation map. Currently contains stale historical details in places; reconcile against the folder maps below and live code. It is a separate source-root map, not a duplicate folder-level map issue. | [View Map](src/codemap.md) |
+| `src/application/` | Application layer for the partial v3 runtime: wires the Pi host to lifecycle services, session binding, evidence recording, status/drift projections, Ralph continuation, widgets, reminders, and subagent event bridges. Live surface: `charter` actions `create`/`pause`/`resume`/`complete`/`abandon`, `charter_record` evidence-only, and `charter_status`; no `charter_manage`, `charter_plan`, or verify action. | [View Map](src/application/codemap.md) |
+| `src/domain/` | Pure-ish domain model and markdown/schema parsing layer. Defines shared types, parses `charter.md`/`criteria.md` into Objective → Milestone → VAL structures, validates descriptive verifier/evidence JSON shapes, renders/parses `REPORT.md`, extracts validation checks, and computes source freshness. No verifier execution, state mutation, feature DAG planner, or trust-rank model. | [View Map](src/domain/codemap.md) |
+| `src/infrastructure/` | Filesystem and integration support: charter workspace persistence under `.pi/charters/`, atomic JSON/text writes, event append/index maintenance, file logging, and local pi-subagents event/metadata type declarations. No registered tools, verification execution, evidence scoring, or planning logic. | [View Map](src/infrastructure/codemap.md) |
+| `src/ui/` | Terminal UI projection for v3 charters: compact above-editor widget, interactive `/charters` picker, and session-local charter selection. UI derives from `state.json`, parsed charter/criteria markdown, `criterion-state.json`, running-subagent metadata, and evidence files; no live feature DAG or `feature-state.json` reader. | [View Map](src/ui/codemap.md) |
+| `src/persistence/` | Persistence-adjacent global user config loader. `charter-config.ts` reads `<agentDir>/charter-config.json`, validates/normalizes persona override, QA dir, and policy settings; currently unwired from runtime source and covered by config-loader tests. | [View Map](src/persistence/codemap.md) |
 
-## Key Design Patterns
+## Root Files and Runtime Surface
 
-1. **Atomic tmp-rename writes** — All store mutations write to a temp file then rename atomically. In-process path mutex prevents concurrent writes to the same path.
-2. **Evidence sidecar** — Each feature's evidence goes into `work/<featureId>/evidence/<criterionId>__<timestamp>.json`; `criterion-state.json` is the runtime bitmap.
-3. **Trust-ranked completion gate** — `service.ts` blocks completion unless the 4-level `trustRank` reaches required thresholds. Subagent-attributed evidence gets rank 0; manual non-review evidence gets rank 3.
-4. **Veto hook bus** — `hooks.ts` exposes `before_lock_plan`, `before_complete`, `before_amend_charter`, `before_force_complete` for in-process extension customization.
-5. **Milestone `ready_for_review` projection** — `record-service.ts` synthesizes this tri-state field from per-criterion `requireReviewSubagent` flags; propagates through feature state → charter state.
-6. **Pi-subagents async bridge** — `async-bridge-service.ts` subscribes to `pi.events` for charter subagent completions and appends attributed events to `events.jsonl`.
-7. **Session↔charter dual binding** — `binding-service.ts` maintains bidirectional pointers; reconciles after unexpected process restarts.
-8. **Pure reducer → ViewModel** — UI layer is stateless string rendering: `loadCharterSnapshot` → reducer → `buildViewModel` → renderer.
+- `package.json`: private package `pi-charter@0.0.0`; no separate plugin manifest file is present in the repo root, so the package `pi` field is the manifest source.
+- Tool surface: exactly three registered tools.
+  - `charter`: lifecycle actions `create`, `pause`, `resume`, `complete`, `abandon`.
+  - `charter_record`: `action: "evidence"` only, from `entries` or `evidenceFile`.
+  - `charter_status`: reads/projections only.
+- Runtime status model: `active | paused | completed | abandoned`. Legacy persisted statuses are normalized for compatibility, but no live planning/review/budget-limited FSM exists.
+- Completion blockers are VAL pass/freshness/report checks plus manual evidence requiring `because`. `blockingReason` blocks only `source: manual` evidence without `because`; provenance/trust rank is not a gate.
+- `requireReviewSubagent` is parsed/displayed only, not a completion gate.
+- Test suite ground truth: 275 pass / 0 fail. Standard checks are `bun test` and `bun run check-types`.
 
-## Layer Dependency Graph
+## Known tech-debt / vestigial remnants
 
-```
-pi-coding-agent host
-  └─ src/index.ts (registration)
-       ├─ application/registration.ts (wires tools/commands/hooks)
-       │    ├─ application/service.ts (lifecycle FSM + completion gate)
-       │    ├─ application/plan-service.ts (plan CRUD + lock)
-       │    ├─ application/record-service.ts (evidence + verifiers + handoffs)
-       │    ├─ application/drift-service.ts (stale/stuck/ready views)
-       │    ├─ application/binding-service.ts (session binding)
-       │    ├─ application/hooks.ts (veto event bus)
-       │    ├─ application/async-bridge-service.ts (subagent events)
-       │    └─ application/reminders-bridge.ts (reminder events)
-       ├─ domain/ (pure, zero I/O)
-       │    ├─ types.ts (entity types)
-       │    ├─ charter-md.ts (charter/feature/criterion parsers)
-       │    ├─ feature-md.ts (plan feature parsers)
-       │    └─ trust-rank.ts (trust ranking function)
-       ├─ infrastructure/
-       │    ├─ store.ts (atomic persistence)
-       │    └─ subagent-bridge.ts (pi.events bus)
-       └─ ui/ (pure string rendering)
-            ├─ charter-picker.ts
-            ├─ charter-selection.ts
-            ├─ multi-charter-widget.ts
-            ├─ widget.ts
-            ├─ widget-state.ts (reducer + buildViewModel)
-            └─ widget-service.ts
-```
-
-## Root-level Non-code Files
-
-| File | Purpose |
-|---|---|
-| `AGENTS.md` | Agent instructions and read order. |
-| `CONTEXT.md` | Canonical domain language and boundaries. |
-| `docs/adr/` | Architecture Decision Records (1–6). |
-| `docs/implementation/` | Architecture, lifecycle, tool contracts, and verifier specs. |
-| `docs/reference/v1-pi-goals/` | v1 reference implementation (read-only). |
-| `agents/` | Bundled agent personas: `charter-planner-critic.md`, `charter-verifier.md`. |
-| `skills/pi-charter/SKILL.md` | pi-charter skill for end-to-end workflow. |
-| `scripts/dogfood-render.ts` | Self-check rendering script. |
-| `.pi/` | Runtime charter state, events, evidence, handoffs (runtime artifacts, not source). |
+- `forceCompleteCharter()` and `amendCharter()` are still exported from `src/application/service.ts` but unwired to tool actions; force-complete delegates to abandon, and amend throws `amend.removed`.
+- `charter:before_lock_plan` plus `planDigest` fields remain in `src/application/hooks.ts`, but there is no live emitter or `plan-service.ts`.
+- `feature-state.json` appears only in comments/protected-file lists, not as a live reader/writer sidecar.
+- `milestone_ready_for_review` is residual event-read compatibility only.
+- Deleted/absent concepts that should not be reintroduced in this atlas: `plan-service.ts`, `evaluator-service.ts`, `feature-md.ts`, `trust-rank.ts`, `multi-charter-widget.ts`, bundled charter personas, feature DAG planning, `charter_manage`, `charter_plan`, and `action=verify`.

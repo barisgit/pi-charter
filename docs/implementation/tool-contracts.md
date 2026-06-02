@@ -1,6 +1,6 @@
 # Tool contracts
 
-pi-charter uses four grouped tools. Schemas should be strict and action-specific; every result should include `nextActions[]`.
+pi-charter registers three LLM-callable tools. Schemas are strict and action-specific; lifecycle and status results include `nextActions[]` so agents can follow legal transitions without memorizing the FSM.
 
 ## Common result envelope
 
@@ -11,14 +11,16 @@ interface CharterToolResult<T = unknown> {
   message: string;
   data?: T;
   nextActions: Array<{
-    tool: "charter_manage" | "charter_plan" | "charter_record" | "charter_status";
+    tool: "charter" | "charter_record" | "charter_status";
     action?: string;
     hint: string;
   }>;
 }
 ```
 
-## `charter_manage`
+`CharterStatus` is the four-state runtime FSM: `"active" | "paused" | "completed" | "abandoned"`. Charters are created `active`; there is no planning, review, or budget-limited live state. Legacy persisted state names are normalized for compatibility only.
+
+## `charter`
 
 Lifecycle FSM and charter-level mutations.
 
@@ -26,58 +28,70 @@ Actions:
 
 | Action | Required payload | Notes |
 |---|---|---|
-| `create` | `objective` | Optional `budget`, `idempotencyKey`. Creates `state.json`; planning still authors `charter.md`. |
-| `pause` | optional `reason` | Non-terminal interruption. |
-| `resume` | optional `charterId` | Rebinds current session when needed. |
-| `amend_charter` | `rationale`, `patch` or `replacementSections` | Runs `charter:before_amend_charter`; invalidates stale evidence where needed. |
-| `complete` | optional `completionNote` | Only succeeds after criteria/evidence/hooks pass. |
-| `force_complete` | `reason` | Escape hatch; runs `charter:before_force_complete`. |
+| `create` | `objective` | Optional `name`, `budget`, `idempotencyKey`. Creates the charter workspace in `active` state and writes initial `charter.md`, `criteria.md`, sidecars, and index entries. |
+| `pause` | none | Non-terminal interruption; optional `reason` is accepted. |
+| `resume` | optional `charterId` | Only legal from `paused`; rebinds the current session when available. |
+| `complete` | optional `completionNote` | Only legal from `active`; succeeds after completion gates and `charter:before_complete` pass. |
+| `abandon` | `reason` | Legal from non-terminal states; requires a non-empty reason and runs `charter:before_abandon`. |
 
 Create signature:
 
 ```ts
-charter_manage({
+charter({
   action: "create",
   objective: string,
+  name?: string,
   budget?: { tokens?: number; wallclockMs?: number; turns?: number },
   idempotencyKey?: string,
 })
 ```
 
-Explicitly absent: `contractPath`, `charterPath`, `specPath`, `autoApprovePlan`, `completionMode`, `planDraft`, `contractDraft`.
-
-## `charter_plan`
-
-Planning and macro-DAG operations.
-
-Actions:
-
-| Action | Required payload | Notes |
-|---|---|---|
-| `view` | optional `charterId` | Returns current plan, coverage, and drift. |
-| `add_feature` | `id`, `milestone`, `order`, `fulfills`, `body` | Writes `plan/<featureId>.md`; no runtime status in frontmatter. |
-| `update_feature` | `id`, patch fields | Use for body/frontmatter edits, not status flips. |
-| `lock_plan` | none | Runs planner-critic checks then `charter:before_lock_plan`. |
-
-Recommended first implementation may omit `add_feature`/`update_feature` as separate actions if the agent writes markdown directly and `charter_plan({action:'view'})` recomputes `plan.json`; keep the names reserved.
+Explicitly absent: `contractPath`, `charterPath`, `specPath`, `autoApprovePlan`, `completionMode`, `planDraft`, `contractDraft`, `amend_charter`, and `force_complete`. `forceCompleteCharter()` and `amendCharter()` still exist as deprecated service exports, but they are unwired vestiges and are not tool actions.
 
 ## `charter_record`
 
-Execution-time writes.
+Append-only execution writes. Charter records evidence produced by the agent or a subagent; it does not execute commands, run verifier personas, or dispatch subagents.
 
 Actions:
 
 | Action | Required payload | Notes |
 |---|---|---|
-| `evidence` | `criterionId`, `kind`, `verdict`, `observation` | Appends evidence file and recomputes criterion/feature state. |
-| `verify` | optional `criterionIds`, `featureId` | Runs configured verifiers where possible. |
-| `handoff_apply` | `handoff` or `handoffPath` | Applies subagent handoff envelope and extracted evidence. |
+| `evidence` | exactly one of `entries` or `evidenceFile` | Appends flat evidence rows under `work/<feature-or-_charter>/evidence/<stamp>/evidence.json` and recomputes `criterion-state.json`. |
 
-Evidence should never be edited in place. Corrections are new records.
+Batch signature:
+
+```ts
+charter_record({
+  action: "evidence",
+  charterId?: string,
+  entries: Array<{
+    criterionId: string,
+    featureId?: string,
+    outcome: "pass" | "fail" | "partial",
+    summary: string,
+    source?: "manual" | "verifier" | "subagent", // omitted defaults to manual
+    because?: string, // required when source is manual
+    artifacts?: string[],
+    details?: Record<string, unknown>, // e.g. { command, exitCode, stdout }
+  }>,
+})
+```
+
+File-import signature:
+
+```ts
+charter_record({
+  action: "evidence",
+  charterId?: string,
+  evidenceFile: string,
+})
+```
+
+Imported files use the same flat evidence shape plus `ts` and optional display/import fields such as `recordedBy`, `narrativePath`, and `verifier`. Legacy typed evidence with `kind: "command" | "review" | "qa" | "readiness"` is rejected. Evidence is never edited in place; corrections are new records.
 
 ## `charter_status`
 
-Read-only tool.
+Read-only status and guidance tool.
 
 ```ts
 charter_status({ verbose?: boolean, charterId?: string })
@@ -88,35 +102,52 @@ Return shape:
 ```ts
 {
   charterId: string;
-  status: CharterStatus;
-  phase: "planning" | "active" | "review" | "terminal";
+  name?: string;
+  status: "active" | "paused" | "completed" | "abandoned";
   objective: string;
-  budget?: BudgetState;
+  budget?: Budget;
   drift: {
-    uncovered: unknown[];
-    stuck: unknown[];
-    stale: unknown[];
-    readyNext: unknown[];
-    milestoneDebt?: unknown[];
+    uncovered: Array<{ criterionId: string; reason: "no-evidence" | "non-pass" }>;
+    stale: Array<{ criterionId: string; reason: "src-change" | "age-window"; lastTs: string; ageMs: number }>;
+    readyNext: Array<{ criterionId: string; milestoneId: string }>;
+    sidecarDrift?: Array<{ path: string; lastToolWriteAt: string; fileMtimeMs: number }>;
+    milestoneArtifacts?: Array<{ milestoneId: string; reason: "no-artifact-capture" }>;
   };
+  milestones: Array<{ milestoneId: string; title: string; criterionIds: string[]; valCount: number; valPassCount: number }>;
+  valTotal: number;
+  valPass: number;
+  registerEmpty: boolean;
   guidelines: string[];
-  nextActions: Array<{ tool: string; action?: string; hint: string }>;
+  details?: { blockingForComplete: Array<{ criterionId?: string; reason: string; outcome?: string; lastEvidencePath?: string }> };
+  qaBriefs: string[];
+  commands: Record<string, string>;
+  parseWarnings: unknown[];
+  nextActions: Array<{ tool: "charter" | "charter_record" | "charter_status"; action?: string; hint: string }>;
 }
 ```
 
+`drift.uncovered` names VALs without pass evidence, `drift.stale` names `requireFreshEvidence` VALs whose pass evidence predates the latest `src/` change, and `drift.readyNext` is the first non-pass VAL advisory in declaration order. There is no feature-level `stuck` or `milestoneDebt` drift.
+
+## Completion gate
+
+`charter action=complete` passes only when every parsed VAL has pass evidence, `requireFreshEvidence` VALs have fresh pass evidence, `REPORT.md` has non-empty content under every required heading, and `charter:before_complete` allows the transition. `blockingForComplete` blocks on latest non-pass evidence and on `source: manual` pass evidence without `because`; `source`, `recordedBy`, and `requireReviewSubagent` are otherwise display/provenance fields, not trust-rank or identity-disjoint gates.
+
 ## `nextActions[]` rule
 
-The tool result is the lifecycle guide. If status is `planning`, suggest planning/lock actions; if `active`, suggest implement/record/verify/status; if `review`, suggest complete or amend; if terminal, suggest status/resume/new only where valid.
+The tool result is the lifecycle guide. For `active`, suggest status, evidence recording, pause, complete, and abandon as appropriate. For `paused`, suggest resume, status, or abandon. For terminal `completed`/`abandoned`, suggest status inspection only. Do not emit planning, lock-plan, review, amend, force-complete, or verify actions.
 
 ## Slash command surface
 
-- `/charter` — open widget/TUI/status.
-- `/charter <objective>` — shortcut to create.
-- `/charter status`
-- `/charter ls`
-- `/charter resume <id>`
-- `/charter pause`
-- `/charter force-complete`
+- `/charter` — prints a usage hint; it does not open or mutate a charter directly.
+- `/charter <objective>` — sends the objective to the agent with instructions to read referenced material, create a charter via the `charter` tool, author `charter.md`/`criteria.md`, record evidence, and complete when gates pass.
+- `/charters` — opens the charter picker when UI is available, or lists active charter ids.
+- `/charters list`
+- `/charters status`
+- `/charters pause`
+- `/charters resume`
+- `/charters select <charterId|none>`
+
+There is no `/charter force-complete` command.
 
 ## CLI flags
 

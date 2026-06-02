@@ -1,64 +1,82 @@
 # src/ Codemap
 
+Source-root orientation and cross-cutting map for the current pi-charter runtime. Code is source of truth; use the per-folder codemaps for module-level detail.
+
 ## Directory Overview
 
 ```
 src/
-├── index.ts                   — Extension entrypoint; orchestrates registration order
-├── application/               — Tool surface, service orchestration, event hooks
-│   ├── registration.ts         — All register*() wiring (tools, commands, Ralph,
-│   │                            subagent bridges, widget, personas, reminders)
-│   ├── service.ts             — Charter lifecycle FSM (create/pause/resume/complete/
-│   │                            force_complete/amend_charter) + status computation
-│   ├── binding-service.ts     — Bidirectional session↔charter binding + reconciliation
-│   ├── async-bridge-service.ts — Translates subagent:async-* events into MissionEvents
-│   ├── plan-service.ts        — Feature DAG management (add/update/lock/view plan)
-│   ├── record-service.ts      — Evidence recording, command verification, handoff apply
-│   ├── hooks.ts               — In-process veto bus (before_lock_plan, before_complete, etc.)
-│   └── reminders-bridge.ts   — pi-reminders event emitter for persistent charter reminders
-├── domain/                     — Pure domain models; no I/O, no dependencies on application
-│   ├── types.ts               — Shared TypeScript interfaces: CharterState, CharterCriterion,
-│   │                            CharterEvent, RecordedBy, EvidenceSource, etc.
-│   ├── charter-md.ts          — charter.md parser (H3 VAL-* headings + field lines) + template
-│   ├── feature-md.ts          — plan/<id>.md parser (YAML frontmatter)
-│   └── trust-rank.ts          — Integer trust ranking for evidence completion gate
-├── infrastructure/             — Disk I/O, external event bus integration
-│   ├── store.ts               — Atomic writes (tmp-rename), write queue (path mutex),
-│   │                            charter workspace creation, event append, index management
-│   └── subagent-bridge.ts     — Event constants + payload shapes shared with pi-subagents
-│                                (local redeclarations; no direct import)
-└── ui/                         — TUI widget rendering; pure string composition
-    ├── widget.ts               — Single-charter widget: VAL progress bar + feature rows
-    ├── multi-charter-widget.ts  — Multi-charter summary widget (one row per active charter)
-    ├── widget-state.ts         — Pure reducer: ReducerInput → CharterWidgetVM (no I/O)
-    ├── widget-service.ts       — loadCharterSnapshot() + RunningSubagentRegistry
-    ├── charter-picker.ts       — pi-tui Component: master-detail picker overlay (TUI)
+├── index.ts                    — Extension entrypoint; calls live register* functions in order
+├── application/                — Tool surface, lifecycle orchestration, session binding, hooks,
+│   │                             Ralph, subagent bridges, status/drift projections
+│   ├── registration.ts          — Registers tools, commands, flags, widget, Ralph loop/renderer,
+│   │                             and subagent event bridges
+│   ├── service.ts               — Lifecycle actions create/pause/resume/complete/abandon,
+│   │                             completion gate, status projection, active-charter listing
+│   ├── record-service.ts        — Evidence-only writer/importer; owns criterion-state.json
+│   ├── binding-service.ts       — Bidirectional session↔charter binding and reconciliation
+│   ├── async-bridge-service.ts  — Maps attributed subagent async events to events.jsonl
+│   ├── drift-service.ts         — Uncovered/stale/ready-next/artifact/sidecar drift views
+│   ├── sidecar-drift.ts         — Detects out-of-band edits to state.json and criterion-state.json
+│   ├── ralph-service.ts         — Deterministic continuation prompt/status-summary builder
+│   ├── subagent-api.ts          — Captures pi-subagents exposed API handle
+│   ├── subagent-bootstrap.ts    — Renders child prompts and charter command snippets
+│   ├── subagent-write-audit.ts  — Detects forbidden child writes to managed charter files
+│   ├── architecture-writer.ts   — Exported helpers for optional architecture.md writes
+│   ├── hooks.ts                 — Veto bus for before_lock_plan/before_complete/before_abandon
+│   ├── reminders-bridge.ts      — Best-effort reminder upsert/remove emitters; registration no-op
+│   ├── errors.ts                — CharterToolError with code and legal nextActions
+│   └── version.ts               — package.json version reader
+├── domain/                     — Shared types plus pure-ish markdown/schema parsing
+│   ├── types.ts                — 4-state CharterStatus, criteria/milestone/evidence/event types
+│   ├── charter-md.ts           — charter.md + criteria.md renderer/parser and command warnings
+│   ├── evidence-schemas.ts     — Flat evidence-file schema; rejects legacy typed evidence kinds
+│   ├── feature-validation.ts   — Legacy feature validation-block parser; no feature DAG runtime
+│   ├── report-md.ts            — REPORT.md scaffold/parser/completeness check
+│   ├── src-freshness.ts        — src/ mtime freshness helpers for evidence staleness
+│   └── verifier.ts             — Descriptive verifier schemas; no verifier execution
+├── infrastructure/             — Filesystem persistence, logging, shared event contracts
+│   ├── store.ts                — Workspace creation/loading, atomic writes, events.jsonl, index.json
+│   ├── logger.ts               — File logger that never writes stdout/stderr
+│   └── subagent-bridge.ts      — Local pi-subagents event/metadata payload declarations
+├── persistence/                — Global user config loader, currently unwired from runtime
+│   └── charter-config.ts       — <agentDir>/charter-config.json schema/defaults
+└── ui/                         — Terminal widget, picker, and selection state
+    ├── widget.ts               — Above-editor single-charter widget host/rendering
+    ├── widget-state.ts         — Pure ReducerInput → CharterWidgetVM projection
+    ├── widget-service.ts       — Snapshot loader + RunningSubagentRegistry
+    ├── charter-picker.ts       — pi-tui /charters master-detail overlay
+    ├── charter-picker-constants.ts — Picker layout/key/legend constants
+    ├── picker-snapshot.ts      — Picker data loader from charter sidecars/evidence
     └── charter-selection.ts    — Tri-value selection singleton + refresh callback
 ```
+
+Folder detail lives in:
+- [`src/application/codemap.md`](application/codemap.md)
+- [`src/domain/codemap.md`](domain/codemap.md)
+- [`src/infrastructure/codemap.md`](infrastructure/codemap.md)
+- [`src/persistence/codemap.md`](persistence/codemap.md)
+- [`src/ui/codemap.md`](ui/codemap.md)
 
 ---
 
 ## Responsibility
 
-### `application/` — Tool Surface and Service Layer
+`src/` implements a Pi extension for durable charter-bound work in the current partial v3 runtime. The live model is Objective → Milestone → VAL criteria, with evidence recorded separately from authored markdown and completion gated by current disk state.
 
-The application layer owns the **tool surface**, the **charter lifecycle FSM**, and **cross-cutting bridges**. It translates every inbound tool call or Pi event into a sequence of domain operations and infrastructure writes. It contains zero domain logic — only orchestration, validation, and wiring.
+- `application/` is the orchestration layer: registered tool/command/flag handlers, lifecycle services, evidence recording, status/drift projections, session binding, subagent event attribution, Ralph continuation, and UI wiring.
+- `domain/` owns shared contracts and pure-ish parsing/validation: `CharterStatus`, parsed charter/criteria markdown, flat evidence files, verifier specs, report markdown, and source freshness checks.
+- `infrastructure/` owns mutable filesystem boundaries, event-log append/index maintenance, file logging, and shared pi-subagents bus declarations.
+- `ui/` derives terminal projections from state/criteria/evidence and exposes the above-editor widget plus `/charters` picker.
+- `persistence/` currently contains only a global config loader; runtime code does not import it.
 
-### `domain/` — Pure Domain Models
+### Current runtime surface
 
-Domain files own all **business rules** with zero side effects. They define:
-- The **charter lifecycle state machine** (`planning → active → review → completed/abandoned/budget_limited`, plus `paused` and `amend_charter` transitions).
-- The **completion gate**: what counts as sufficient evidence for each VAL criterion, including the trust-rank and review-subagent rules.
-- The **drift views**: uncovered criteria, stale evidence, stuck features, and ready-to-start features.
-- **Parsing** of the two on-disk markdown formats (`charter.md`, `plan/<id>.md`) that define a charter's criteria and feature DAG.
-
-### `infrastructure/` — Disk I/O and External Integrations
-
-Infrastructure owns all **mutable side effects**: reading and writing files, emitting or subscribing to events on the shared `pi.events` bus, and managing the path-based mutex queue that prevents concurrent writes to the same file.
-
-### `ui/` — TUI Widget Rendering
-
-UI owns **what the user sees**. All rendering functions are pure string-in / string-array-out. No I/O, no global state, no timers inside the render functions (timers live in the `CharterWidget` host class in `widget.ts`).
+- Registered tools: exactly `charter`, `charter_record`, and `charter_status`.
+- `charter` actions: `create`, `pause`, `resume`, `complete`, `abandon`.
+- `charter_record` action: `evidence` only, from `entries` or `evidenceFile`.
+- Runtime status model: `active | paused | completed | abandoned`. Legacy persisted statuses (`planning`, `review`, `awaiting-clarification`, `budget_limited`) are normalized on read for compatibility; there is no live planning/review/budget-limited FSM.
+- Charters are created directly in `active` state.
 
 ---
 
@@ -66,106 +84,121 @@ UI owns **what the user sees**. All rendering functions are pure string-in / str
 
 ### 1. Extension Entrypoint Orchestration (`index.ts`)
 
-`charterExtension()` calls each `register*` function in a specific order, documented with comments explaining each dependency:
+`charterExtension()` calls the live registration functions in this order:
 
 ```
-1. registerCharterFlags          — session_start listener must register first
-2. registerCharterTools          — tool definitions (no event dependencies)
-3. registerCharterCommands      — slash command handlers
-4. registerCharterSubagentBridge — surface 2: capture exposed API (must precede persona-dir registration)
-5. registerCharterAsyncBridge   — surface 3: async-started/async-complete → MissionEvent
-6. registerCharterWidget        — AFTER async bridge so event handlers fire after bridge writes
-7. registerCharterRemindersBridge — pi-reminders emitter
-8. registerCharterRalphLoop      — deterministic idle reprompt listener
-9. registerCharterRalphMessageRenderer — renders Ralph steer messages
-10. registerCharterPersonas      — surface 1: register bundled persona dirs
+1. registerCharterFlags              — session_start binding/resume/objective flag handling
+2. registerCharterTools              — charter, charter_record, charter_status
+3. registerCharterCommands           — /charter and /charters
+4. registerCharterSubagentBridge     — captures subagent:expose-api and lineage bindings
+5. registerCharterAsyncBridge        — async-started/complete → events + running registry
+6. registerCharterWidget             — after async bridge so widget sees updated async state
+7. registerCharterRalphLoop          — deterministic all-idle continuation steer
+8. registerCharterRalphMessageRenderer — renders Ralph steer messages
 ```
 
-### 2. Atomic Write Pattern (`infrastructure/store.ts`)
+`index.ts` imports `registerCharterRemindersBridge()` but intentionally does not call it; the call is commented out while Ralph is the sole active reprompt path. There is no `registerCharterPersonas()` and this repo ships zero bundled personas.
 
-Every mutating write uses a **tmp-rename sequence**:
+### 2. Atomic Filesystem Boundary (`infrastructure/store.ts`)
+
+All text/JSON writes go through a temp-file + rename pattern, with random temp suffixes to avoid parallel-writer collisions:
 
 ```
-writeFile(<path>.<pid>.<now>.<rand>.tmp, data)
-rename(<path>.tmp, <path>)
+write <path>.<pid>.<now>.<random6hex>.tmp
+rename temp → <path>
 ```
 
-A **path-based promise queue** (`withPathLock`) prevents concurrent writers on the same file from racing — all writes for a given absolute path are serialized through one promise chain. This allows parallel tool calls within a single turn without losing writes.
+`withPathLock(path, fn)` serializes read-modify-write operations per absolute path; `appendEvent()` and `updateIndex()` both do their reads inside that lock. `withCharterLock(charterDir, fn)` serializes broader per-charter mutations.
 
-### 3. Session↔Charter Binding (`application/binding-service.ts`)
+### 3. Authored Markdown + Mutable Sidecars
 
-Bidirectional pointer between a Pi session and a charter:
+Authored contract text lives in `charter.md` and `criteria.md`. Mutable runtime state stays in JSON sidecars and append-only evidence/event files:
 
-- **Forward**: `state.json.sessionId` lives in `<project>/.pi/charters/<id>/state.json`
-- **Reverse**: `<homeDir>/.pi/agent/sessions/<sid>/charter.json` → `{ sessionId, charterId, projectDir, boundAt }`
+- `state.json`: lifecycle/session metadata and `lastToolWriteAt`.
+- `criterion-state.json`: latest evidence pointer/outcome per VAL.
+- `events.jsonl`: lifecycle, evidence, and subagent async history.
+- `work/<feature-or-_charter>/evidence/<stamp>/evidence.json`: append-only evidence rows.
+- `REPORT.md`: completion report scaffold/readiness gate.
 
-`reconcileSessionBinding(sessionId)` restores the forward pointer from the reverse pointer after a process restart. Both pointers are written atomically.
+Domain parsers treat `criteria.md` as the current criteria source when present, while still accepting older inline criteria for compatibility.
 
-`NoCharterBoundError` extends `Error` with a stable `code = "NO_CHARTER_BOUND"` and a `hint` field so callers can read it programmatically without string-parsing.
+### 4. Session↔Charter Binding (`application/binding-service.ts`)
 
-### 4. MissionEvent Append-Only Log (`infrastructure/store.ts` → `events.jsonl`)
+Binding is bidirectional:
 
-All charter lifecycle events are appended (never mutated) to `events.jsonl`:
-`charter_created`, `plan_locked`, `feature_added`, `feature_started`, `feature_completed`, `feature_failed`, `evidence_recorded`, `handoff_applied`, `milestone_ready_for_review`, `charter_paused`, `charter_resumed`, `charter_completed`, `charter_force_completed`, `charter_amended`.
+- Forward pointer: `<project>/.pi/charters/<id>/state.json.sessionId`.
+- Reverse pointer: `<homeDir>/.pi/agent/sessions/<sid>/charter.json`.
 
-The event log is the **authoritative history** for the widget's running-subagent attribution and milestone review detection.
+`resolveCharterId()` prefers an explicit tool argument, then the bound session. `reconcileSessionBinding()` repairs stale/missing forward pointers from the reverse pointer. Child sessions are auto-bound from `subagent:lineage` when the root session is bound to a non-terminal charter.
 
-### 5. Pure Reducer → ViewModel (`ui/widget-state.ts`)
+### 5. Append-Only Event Log (`events.jsonl`)
 
-`buildViewModel(ReducerInput): CharterWidgetVM` is the single pure function that projects raw charter state into the render-friendly view model. It is:
-- Fully deterministic (injectable `now` for tests)
-- Has zero I/O or UI dependencies
-- Produces both the capped feature-row list (`rows[]`) for rendering and the full audit list (`featureRows[]`) for callers that need it
+Live emitted event types are:
+
+- `charter_created`
+- `charter_paused`
+- `charter_resumed`
+- `charter_completed`
+- `charter_abandoned`
+- `evidence_recorded`
+- `feature_started`
+- `feature_completed`
+- `feature_failed`
+
+`feature_started`, `feature_completed`, and `feature_failed` are still emitted by `async-bridge-service.ts` for attributed subagent runs, even though feature-DAG planning files are gone.
+
+Not live-emitted in the current runtime: `plan_locked`, `feature_added`, `handoff_applied`, `charter_force_completed`, and `charter_amended`. `milestone_ready_for_review` is residual read compatibility in `service.ts`, not a current emitter.
 
 ### 6. Evidence Sidecar Pattern (`application/record-service.ts`)
 
-Evidence records are **append-only sidecars**:
+Evidence is a flat record, not a typed `kind` envelope. The user-facing source enum is `manual | verifier | subagent`; `recordedBy` is auto-populated by call sites and used for display/audit only.
 
 ```
-work/<featureId>/evidence/<stamp>/evidence.json      ← one per run
-criterion-state.json                                  ← latest per criterion
+work/<featureId-or-_charter>/evidence/<stamp>/evidence.json
+criterion-state.json
 ```
 
-`criterion-state.json` is the running summary (latest outcome per VAL). Individual evidence files are preserved for audit, handoff reconstruction, and the identity-disjoint review predicate.
+`recordEvidenceBatch()` validates all entries before writing, writes per-entry evidence files, updates `criterion-state.json` once, and appends one `evidence_recorded` event per entry. `recordEvidenceFromFile()` imports the same flat row shape and rejects legacy typed evidence kinds `command`, `review`, `qa`, and `readiness`.
 
-### 7. Hook Bus (`application/hooks.ts`)
+### 7. Completion Gate (`application/service.ts`)
 
-An in-process pub/sub registry for **vetoable pre-transition hooks**:
+Completion is evidence-gated but does not execute verifiers. A charter can complete only from `active` and must pass:
+
+- at least one parsed VAL exists;
+- every in-scope VAL's latest evidence outcome is `pass`;
+- `RequireFreshEvidence` VALs have pass evidence newer than the latest `src/` change;
+- `REPORT.md` is complete under its required headings;
+- `computeBlockingForComplete()` finds no `val-not-pass` blockers and no `source: "manual"` pass evidence missing non-empty `because`.
+
+`source`, `recordedBy`, and `RequireReviewSubagent` are display/provenance annotations only. There is no identity-disjoint review gate and no trust-rank model.
+
+### 8. Hook Bus (`application/hooks.ts`)
+
+The live hook types are:
+
 - `charter:before_lock_plan`
 - `charter:before_complete`
-- `charter:before_amend_charter`
-- `charter:before_force_complete`
+- `charter:before_abandon`
 
-Subscribers return `{decision: "block", reason}` or `{decision: "allow"}`. A single veto throws, stopping the transition.
+Subscribers return `{ decision: "allow" }` or `{ decision: "block", reason }`; the first block throws. `before_complete` and `before_abandon` are dispatched by lifecycle code. `before_lock_plan` remains defined with `planDigest`/`featureCount` payload fields but has no live emitter because the lock-plan flow is gone. There is no `before_amend_charter` or `before_force_complete` hook.
 
-### 8. Three-Layer pi-subagents Bridge (`infrastructure/subagent-bridge.ts` + `registration.ts`)
+### 9. pi-subagents Bridge
 
-pi-charter and pi-subagents communicate over the shared `pi.events` bus. pi-charter defines three surfaces:
+Current pi-subagents integration uses the shared `pi.events` bus:
 
-| Surface | Direction | Event | Effect |
-|---|---|---|---|
-| 1 | emit | `subagent:register-persona-dir` | pi-subagents loads bundled charter personas |
-| 2 | receive | `subagent:expose-api` | Captures `spawnRaw` API for programmatic subagent spawns |
-| 3 | receive | `subagent:async-started/complete` | `async-bridge-service.ts` attributes runs → `events.jsonl` |
+| Direction | Event | Effect |
+|---|---|---|
+| receive | `subagent:expose-api` | `subagent-api.ts` caches the exposed API handle for future programmatic use. |
+| receive | `subagent:lineage` | Child session gets a reverse binding when root session is charter-bound. |
+| receive | `subagent:async-started` | Attributed run starts widget tracking and appends `feature_started`. |
+| receive | `subagent:async-complete` | Attributed run stops widget tracking and appends `feature_completed` or `feature_failed`. |
+| receive | `subagent:all-idle` | Ralph loop may send a continuation steer for the bound charter. |
 
-Metadata keys (`pi-charter.projectDir`, `pi-charter.charterId`, `pi-charter.featureId`, `pi-charter.criterionId`) stamp every charter-tagged subagent spawn; the async bridge reads these keys back to route events.
+Metadata keys include `pi-charter.projectDir`, `pi-charter.charterId`, `pi-charter.featureId`, and `pi-charter.criterionId`. The exposed API capture and async attribution are live. Persona-dir registration constants still exist in `infrastructure/subagent-bridge.ts`, but there is no bundled persona directory registration in current runtime.
 
-### 9. Milestone Ready-for-Review Projection (`application/record-service.ts`)
+### 10. Pure Projection to UI
 
-After every evidence record or handoff:
-1. `projectFeatureCompletionFromEvidence` — flips `feature-state.<id>.status → "completed"` when all fulfilled VALs have pass evidence
-2. `projectMilestoneReadyForReview` — if all features in a milestone are completed (none failed), emits one `milestone_ready_for_review` event per `(milestoneId, planDigest)` tuple (idempotent)
-
-The `milestone_ready_for_review` event is the trigger for the review subagent gate: a criterion counts as reviewed only when there is charter-reviewer evidence with `ts >= milestone_ready_for_review.ts`.
-
-### 10. Completion Gate Trust Model (`domain/trust-rank.ts` + `service.ts`)
-
-Evidence trust rank: `subagent (3) > command|hook (2) > manual+because (1) > manual (0)`.
-
-A criterion is **blocking for complete** when:
-- It has pass evidence but the writer is `agent:root` with no `because` (rank 0), or
-- `requireReviewSubagent` is effective `true` (explicit or auto-defaulted from milestone coverage) and no pass evidence has a `subagent:charter-reviewer:*` writer, or
-- The implementer and reviewer share the same session id (identity-disjoint review rule)
+`ui/widget-state.ts` is the pure reducer from loaded state/criteria/outcomes/running-subagents to `CharterWidgetVM`. I/O lives in `widget-service.ts` and host/timer/render integration lives in `widget.ts`. The picker has a separate snapshot path in `picker-snapshot.ts`, loading charter rows, parsed criteria, blockers, and recent evidence for `charter-picker.ts`.
 
 ---
 
@@ -175,163 +208,166 @@ A criterion is **blocking for complete** when:
 
 ```
 /charter <objective>
-  → pi.sendUserMessage (objective text)
-  → agent calls charter(action=create)
-    → service.createCharter(projectDir, {objective, ...})
-      → store.createCharterWorkspace()
-          mkdir .pi/charters/<id>/plan/
-          write charter.md (initial template)
-          write state.json {status: "active"}
-          write criterion-state.json (empty)
-          appendEvent("charter_created")
-          updateIndex(index.json)
-      → binding.bindCharterToSession(sessionId, charterId)
-      → reminders.upsertCharterReminder()
-    → tool returns CharterServiceResult {nextActions}
+  → command sends an instruction message to the agent
+  → agent calls charter(action="create", objective)
+    → registration.ts execute handler
+      → service.createCharter(projectDir, { objective, name?, budget?, idempotencyKey?, sessionId? })
+        → store.createCharterWorkspace()
+            mkdir .pi/charters/<id>/work/
+            write charter.md
+            write criteria.md
+            write state.json { status: "active", ... }
+            write criterion-state.json { criteria: {}, ... }
+            appendEvent("charter_created")
+            update .pi/charters/index.json
+      → bindCharterToSession() when a sessionId is available
+      → tool result includes legal nextActions
 ```
 
-### Contract Authoring Flow
+### Active Authoring / Execution Flow
 
 ```
-charter(action=create) → status=active
-  → agent edits criteria.md and charter.md directly (file tools)
-  → charter_status → drift view (uncovered criteria, remaining VAL gaps)
+charter created active
+  → agent edits charter.md and criteria.md directly
+  → charter_status
+      → service.getCharterStatus()
+      → load state + parsed charter + criterion-state + REPORT/drift/blockers
+      → return objective, VAL totals, drift, parse warnings, blockers, nextActions
+  → agent/subagents do work and run checks outside pi-charter
+  → charter_record(action="evidence")
+      → record-service writes flat evidence JSON
+      → update criterion-state.json
+      → append evidence_recorded
 ```
 
-### Active Execution Flow
+`charter_record` does not run commands, execute verifiers, apply handoffs, or update feature lifecycle sidecars.
+
+### Async Subagent Attribution Flow
 
 ```
-charter(action=create) → status=active
-  → agent delegates to subagent({async:true, metadata:{pi-charter.*}})
-      → subagent:async-started event fires
-        → async-bridge.handleAsyncStarted()
-          → RunningSubagentRegistry.start(runId, ...)
-          → appendEvent("feature_started")
-      → async work proceeds
-      → subagent:async-complete event fires
-        → async-bridge.handleAsyncComplete()
-          → RunningSubagentRegistry.complete(runId)
-          → appendEvent("feature_completed" | "feature_failed")
-      → agent calls charter_record(action=evidence) OR charter_record(action=verify)
-        → record-service.recordEvidence() OR record-service.verifyCriterion()
-          write work/<featureId>/evidence/<stamp>/evidence.json
-          update criterion-state.json
-          appendEvent("evidence_recorded")
-          projectFeatureCompletionFromEvidence() → feature-state update
-          projectMilestoneReadyForReview() → milestone_ready_for_review event (when applicable)
-          reminders.upsertCharterReminder()
-      → agent calls charter action=complete when every criterion has pass evidence
-        → service.completeCharter()
-          appendEvent("charter_completed")
-          tryRemoveCharterReminder()
+subagent spawn/run includes pi-charter metadata
+  → subagent:async-started
+      → handleAsyncStarted()
+      → RunningSubagentRegistry.start(...)
+      → append feature_started
+  → subagent:async-complete
+      → handleAsyncComplete()
+      → RunningSubagentRegistry.complete(...)
+      → append feature_completed or feature_failed
 ```
 
-### Widget Refresh Flow
+The event names are legacy-compatible (`feature_*`) but the current UI/status model is VAL/milestone based rather than a feature DAG.
+
+### Completion Flow
 
 ```
-Events that trigger widget refresh:
-  session_start      → registerCharterWidget's session_start handler
-  turn_end           → registerCharterWidget's turn_end handler
-  charter_* tool calls → implicit (next turn_end covers them)
-  subagent:async-started/complete → RunningSubagentRegistry updated
-
-refresh():
-  → ctx.sessionManager.getSessionId()
-  → reconcileSessionBinding({sessionId, homeDir})
-  → loadCharterSnapshot() for the bound charter (reads state, charter.md, plan/*.md, criterion-state.json, feature-state.json)
-  → buildViewModel(ReducerInput) → CharterWidgetVM
-  → ui.setWidget("charter-detail", factory) ← when session binding resolves to a snapshot
+charter(action="complete")
+  → resolve explicit/bound charter id
+  → require state.status === "active"
+  → parse charter/criteria and criterion-state
+  → run completion gate + blocking checks + REPORT.md completeness
+  → dispatchHook("charter:before_complete")
+  → write state.status = "completed"
+  → append charter_completed
 ```
 
-### Reminders Flow
+### Widget / Picker / Ralph Flow
 
 ```
-tryUpsertCharterReminder / trySyncCharterReminder (called after every lifecycle tool)
-  → reminders-bridge.upsertCharterReminder(pi, projectDir, charterId)
-      → pi.events.emit("reminder:upsert", {id, label, priority:10, ttl:"persistent", repeatEveryTurns:8, text, metadata})
+session_start / turn_end / selection refresh / async updates
+  → reconcile binding
+  → loadCharterSnapshot()
+      reads state.json, parsed charter/criteria, criterion-state.json, running subagents
+  → buildViewModel()
+  → ui.setWidget("pi-charter", factory, { placement: "aboveEditor" })
 
-tryRemoveCharterReminder (called on complete/force_complete)
-  → pi.events.emit("reminder:remove", {id, source:"pi-charter"})
+/charters
+  → buildPickerSnapshot()
+      reads state, parsed markdown, criterion-state, blockers, recent evidence
+  → CharterPickerComponent custom TUI overlay
+
+subagent:all-idle
+  → registerCharterRalphLoop debounce/min-interval
+  → buildRalphPromptForCharter()
+  → pi.sendMessage({ customType: "charter-ralph-continue", deliverAs: "steer", triggerTurn: true })
 ```
+
+Ralph prompt case selection currently maps every non-skipped status to `active`; `src/prompts/ralph/planning.md` is therefore orphaned while `RalphCase` only has `active`.
+
+### Reminder Flow
+
+`reminders-bridge.ts` can emit `reminder:upsert` and `reminder:remove`, but `index.ts` does not call `registerCharterRemindersBridge()`, and its registration function currently registers no handlers. Treat reminders as helper/event-bus remnants, not part of the active entrypoint registration sequence.
 
 ---
 
 ## Integration Points
 
-### With `@earendil-works/pi-coding-agent` (ExtensionAPI)
+### With `@earendil-works/pi-coding-agent`
 
-- `pi.registerTool()` — registers `charter`, `charter_record`, `charter_status`
-- `pi.registerCommand()` — registers `/charter` and `/charters` slash commands
-- `pi.registerFlag()` — registers `--charter-objective` and `--charter-resume` session-start flags
-- `pi.on("session_start", fn)` — reconcile session binding, resume/create charter, register personas
-- `pi.on("turn_end", fn)` — widget refresh
-- `pi.on("session_shutdown", fn)` — unregister personas, reset selection state
-- `pi.sendUserMessage()` — bootstrap new charters from `/charter` and `--charter-objective`
-- `pi.sendMessage({customType, deliverAs:"steer"})` — Ralph steer injection
-- `pi.events.on/emit()` — all pi-subagents and pi-reminders bridge communication
+- `pi.registerTool()` registers `charter`, `charter_record`, `charter_status`.
+- `pi.registerCommand()` registers `/charter` and `/charters`.
+- `pi.registerFlag()` registers `--charter-objective` and `--charter-resume`.
+- `pi.on("session_start", fn)` reconciles bindings, clears stale terminal bindings, handles resume/objective startup flows, and refreshes UI.
+- `pi.on("turn_end", fn)` refreshes the widget.
+- `pi.on("session_shutdown", fn)` clears selection/widget-local state.
+- `pi.sendUserMessage()` is used by `/charter` and `--charter-objective` bootstrapping.
+- `pi.sendMessage({ customType, deliverAs: "steer" })` injects Ralph continuation messages.
+- `pi.events.on/emit()` handles pi-subagents and reminder-bus communication.
 
-### With `pi-subagents` (via `pi.events` bus)
+### With `pi-subagents`
 
-- **Incoming events consumed**: `subagent:expose-api`, `subagent:register-persona-dir-error`, `subagent:async-started`, `subagent:async-complete`
-- **Outgoing events emitted**: `subagent:register-persona-dir`, `subagent:unregister-persona-dir`
-- **Bundled personas**: `src/../agents/` directory registered as `scope: "internal"` persona directory
+- Incoming live events: `subagent:expose-api`, `subagent:lineage`, `subagent:async-started`, `subagent:async-complete`, `subagent:all-idle`.
+- Outgoing persona-dir registration events are not emitted by current runtime. There are zero bundled charter personas.
+- Async attribution depends on metadata keys in `infrastructure/subagent-bridge.ts`.
 
-### With `pi-reminders` (via `pi.events` bus)
+### With `pi-tui`
 
-- **Outgoing events emitted**: `reminder:upsert`, `reminder:remove`
-- Both are best-effort (no subscribers → no-op); lifecycle tools do not depend on reminder success
-
-### With `pi-tui` (widget rendering)
-
-- `ctx.ui.setWidget(key, factory, {placement})` — registers widget factories
-- `tui.requestRender()` — triggers re-render (spinner animation, elapsed timer)
-- `ctx.ui.custom(factory, options)` — opens picker overlay (`/charters` bare invocation)
-- `CharterPickerComponent` implements `Component` from `@earendil-works/pi-tui` with `render(width)` and `handleInput(data)`
-- `truncateToWidth()`, `visibleWidth()`, `matchesKey()` from `@earendil-works/pi-tui`
+- `ctx.ui.setWidget("pi-charter", factory, { placement: "aboveEditor" })` hosts the compact widget.
+- `ctx.ui.custom(factory, options)` opens the `/charters` picker overlay.
+- `CharterPickerComponent` implements `Component` with `render(width)` and `handleInput(data)`.
+- `truncateToWidth()`, `visibleWidth()`, and `matchesKey()` support terminal layout/input handling.
 
 ### On-Disk State Layout
 
 ```
-<project>/
-├── .pi/
-│   └── charters/
-│       └── <charterId>/
-│           ├── state.json               ← CharterState (mutable)
-│           ├── charter.md               ← parsed: VAL criteria, scope/constraints
-│           ├── plan.json                ← cached plan drift snapshot
-│           ├── plan/
-│           │   └── <featureId>.md      ← FeatureDefinition YAML frontmatter
-│           ├── work/
-│           │   └── <featureId>/
-│           │       └── evidence/
-│           │           └── <stamp>/
-│           │               └── evidence.json  ← EvidenceRecord (append-only)
-│           ├── handoffs/
-│           │   └── <stamp>__<featureId>__<sessionId>.json  ← HandoffEnvelope
-│           ├── criterion-state.json     ← latest EvidenceRecord per VAL
-│           ├── feature-state.json      ← feature lifecycle state
-│           └── events.jsonl            ← append-only charter event log
+<project>/.pi/charters/
+├── index.json
+└── <charterId>/
+    ├── charter.md
+    ├── criteria.md
+    ├── state.json
+    ├── criterion-state.json
+    ├── REPORT.md
+    ├── events.jsonl
+    ├── architecture.md                    # optional
+    ├── prompts/
+    │   └── ralph/
+    │       └── <case>.md                  # optional override; active is the live case
+    ├── qa-briefs/
+    │   └── *.md                           # optional status display inputs
+    └── work/
+        └── <feature-or-_charter>/
+            └── evidence/
+                └── <stamp>/
+                    └── evidence.json
 
-<homeDir>/
-└── .pi/
-    └── agent/
-        └── sessions/
-            └── <sessionId>/
-                └── charter.json         ← reverse binding (session → charter)
+<homeDir>/.pi/agent/sessions/<sessionId>/charter.json
 ```
 
-### With `pi-charter` Skill System
+`store.createCharterWorkspace()` creates `charter.md`, `criteria.md`, `state.json`, `criterion-state.json`, `events.jsonl`, and `work/`. It does not create `plan.json`, `plan/`, `handoffs/`, or `feature-state.json`.
 
-- `/charter <objective>` injects a prompt referencing the `pi-charter` skill
-- Agents are expected to read the skill for workflow guidance before acting on a charter
-- The skill file at `~/.pi/agent/skills/pi-charter/SKILL.md` defines the canonical end-to-end procedure
+### With the `pi-charter` Skill
 
-### With `charter-planner-critic` and `charter-reviewer` Personas
+The extension's `/charter` command and startup flag flows instruct the agent to use the `pi-charter` skill for workflow guidance. The skill drives agent behavior; the runtime itself stays small and deterministic.
 
-- **charter-planner-critic**: spawned during planning phase before `lock_plan`; stress-tests VAL coverage
-- **charter-reviewer**: spawned with `pi-charter.charterId`, `pi-charter.featureId`, `pi-charter.criterionId` metadata; records `subagent`-sourced evidence with `recordedBy = "subagent:charter-reviewer:<sessionId>"`; applies handoffs
+---
 
-### Test Seams (`options.homeDir`)
+## Vestigial / Tech Debt to Preserve Honestly
 
-Every `register*` function that reads `~/.pi` accepts an `options` object with test-only overrides:
-- `homeDir?: string` — overrides `$HOME` for all path resolution
+- `forceCompleteCharter()` and `amendCharter()` remain exported from `application/service.ts` but are not wired to registered tool actions. `forceCompleteCharter()` delegates to abandon for an abandoned target; `amendCharter()` throws `amend.removed`.
+- `charter:before_lock_plan` remains in `application/hooks.ts` with `planDigest`/`featureCount`, but there is no live emitter and no `plan-service.ts`.
+- `feature-state.json` appears in comments and in `subagent-write-audit.ts`'s protected-file list, but no current reader/writer sidecar creates or consumes it.
+- `milestone_ready_for_review` is residual-read compatibility in `service.ts`; it is not currently emitted.
+- `src/prompts/ralph/planning.md` is orphaned because `RalphCase` only has `active`.
+- `infrastructure/subagent-bridge.ts` still declares persona-dir registration payloads, but current runtime does not register bundled persona dirs and the repo ships zero bundled charter personas.
+- Comments in a few modules still mention old planning/feature concepts; treat the live code paths and folder codemaps as authoritative.

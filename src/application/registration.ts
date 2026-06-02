@@ -3,13 +3,12 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
-import { recordEvidenceBatch, recordEvidenceFromFile, verifyCriterion, type EvidenceEntry } from "./record-service";
+import { recordEvidenceBatch, recordEvidenceFromFile, type EvidenceEntry } from "./record-service";
 import { abandonCharter, completeCharter, createCharter, getCharterStatus, pauseCharter, resumeCharter } from "./service";
 import { CharterToolError } from "./errors";
 import { bindCharterToSession, clearSessionBinding, rebindCharter, reconcileSessionBinding, readSessionBinding, resolveCharterId, writeChildBinding, type SessionBindingRecord } from "./binding-service";
 import { buildRalphPromptForCharter } from "./ralph-service";
 import { formatCommandsInline } from "./subagent-bootstrap";
-import { removeCharterReminder, upsertCharterReminder } from "./reminders-bridge";
 import { charterDir, loadCharterState } from "../infrastructure/store";
 import { logger } from "../infrastructure/logger";
 import { TERMINAL_STATUSES } from "../domain/types";
@@ -72,8 +71,7 @@ type EvidenceBatchEntryInput = {
 
 type CharterRecordInput =
   | { action: "evidence"; charterId?: string; entries: EvidenceBatchEntryInput[]; evidenceFile?: never }
-  | { action: "evidence"; charterId?: string; evidenceFile: string; entries?: never }
-  | { action: "verify"; charterId?: string; criterionId?: string; featureId?: string; timeoutMs?: number };
+  | { action: "evidence"; charterId?: string; evidenceFile: string; entries?: never };
 
 const CharterParams = Type.Object({
   action: StringEnum(["create", "pause", "resume", "complete", "abandon"] as const),
@@ -110,15 +108,12 @@ const EvidenceEntryParams = Type.Object({
 // compatibility. All action-specific fields are Optional here; per-action
 // required-field validation is enforced at runtime in the execute handler.
 const CharterRecordParams = Type.Object({
-  action: StringEnum(["evidence", "verify"] as const, {
-    description: "What to record: 'evidence' (manual/typed file), 'verify' (run a command verifier).",
+  action: StringEnum(["evidence"] as const, {
+    description: "What to record: 'evidence' (manual/typed file).",
   }),
   charterId: Type.Optional(Type.String({ description: "Charter UUID. Optional; when omitted, resolves to the charter bound to the current session." })),
   evidenceFile: Type.Optional(Type.String({ description: "Path to typed evidence JSON (kind=command|review|qa|readiness) to import for action=evidence. Mutually exclusive with `entries`." })),
   entries: Type.Optional(Type.Array(EvidenceEntryParams, { description: "Batch evidence entries for action=evidence; the batch is atomic within the call (one criterion-state.json write covering all entries). Mutually exclusive with `evidenceFile`." })),
-  criterionId: Type.Optional(Type.String({ description: "VAL-* criterion id. Required for action=verify." })),
-  timeoutMs: Type.Optional(Type.Number({ description: "Per-command timeout in ms for action=verify (default 120000)." })),
-  featureId: Type.Optional(Type.String({ description: "Feature id this record belongs to (required for action=verify when the criterion is feature-scoped)." })),
 }, { additionalProperties: false });
 
 interface RegisterCharterToolsOptions {
@@ -154,13 +149,11 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           if (sessionId) {
             await bindCharterToSession(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
           }
-          await tryUpsertCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "pause": {
           const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
           const result = await pauseCharter(ctx.cwd, { charterId: resolved.charterId, reason: params.reason });
-          await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "resume": {
@@ -170,13 +163,11 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           if (sessionId) {
             await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
           }
-          await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
           return toolResult(result.message, result);
         }
         case "complete": {
           const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
           const result = await completeCharter(ctx.cwd, { charterId: resolved.charterId, completionNote: params.completionNote });
-          tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
         case "abandon": {
@@ -185,7 +176,6 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
             charterId: resolved.charterId,
             reason: params.reason ?? "",
           });
-          tryRemoveCharterReminder(pi, result.charterId);
           return toolResult(result.message, result);
         }
       }
@@ -195,14 +185,13 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
   pi.registerTool({
     name: "charter_record",
     label: "Charter Record",
-    description: "Record evidence or run command verifiers against charter criteria.",
-    promptSnippet: "Record evidence, run command verifiers, and link results back to charter criteria.",
+    description: "Record evidence against charter criteria.",
+    promptSnippet: "Record evidence and link results back to charter criteria.",
     promptGuidelines: [
-      "Use charter_record action=evidence after a manual check; charter_record action=verify to execute a command verifier defined in charter.md.",
       "Evidence is required for criteria with requireFreshEvidence before complete is allowed.",
     ],
     parameters: CharterRecordParams,
-    async execute(_toolCallId, params: CharterRecordInput, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params: CharterRecordInput, _signal, _onUpdate, ctx) {
       const resolved = await resolveCharterId(params, { sessionId: ctx.sessionManager.getSessionId?.(), homeDir: options.homeDir });
       const status = await getCharterStatus(ctx.cwd, { charterId: resolved.charterId });
       if (params.action === "evidence") {
@@ -220,7 +209,6 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
             charterId: status.charterId,
             evidenceFile: params.evidenceFile!,
           });
-          await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
           return toolResult(`Imported evidence for ${imported.criterionId} (${imported.entries.length} criteria).`, imported);
         }
         if (!params.entries || params.entries.length === 0) throw new Error("entries array must be non-empty for charter_record action=evidence");
@@ -228,21 +216,7 @@ export function registerCharterTools(pi: ExtensionAPI, options: RegisterCharterT
           charterId: status.charterId,
           entries: params.entries as EvidenceEntry[],
         });
-        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
         return toolResult(`Recorded ${batch.entries.length} evidence entries for charter ${batch.charterId}.`, batch);
-      }
-      if (params.action === "verify") {
-        if (!params.criterionId?.trim()) throw new Error("criterionId is required for charter_record action=verify");
-        const result = await verifyCriterion(ctx.cwd, {
-          charterId: status.charterId,
-          criterionId: params.criterionId,
-          featureId: params.featureId,
-          timeoutMs: params.timeoutMs,
-          cwd: ctx.cwd,
-          signal,
-        });
-        await trySyncCharterReminder(pi, ctx.cwd, status.charterId);
-        return toolResult(`Verifier for ${result.criterionId} -> ${result.outcome} (exit=${result.exitCode}).`, result);
       }
       throw new Error("charter_record action is not implemented yet");
     },
@@ -417,7 +391,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
           "1. Extract the real objective from the material you read. Derive a short kebab-case 'name' (≤32 chars, no slugified instruction text — e.g. 'oauth-google-signin' not 'continue-handoff'). Then call charter action=create with the extracted objective and derived name.",
           "2. Run charter_status to confirm the active state and legal nextActions.",
           "3. Author the contract by editing .pi/charters/<id>/criteria.md for VAL-* criteria and .pi/charters/<id>/charter.md for scope/constraints. Do NOT create a charter.md at the repo root.",
-          "4. Execute work toward each VAL. Record results with charter_record action=evidence (manual) or charter_record action=verify (command verifier).",
+          "4. Execute work toward each VAL. Record results with charter_record action=evidence.",
           "5. Call charter action=complete only after every criterion has pass evidence (charter_status will surface remaining gaps).",
           "",
           "Follow charter_status nextActions instead of guessing transitions. Read the pi-charter skill for the full workflow if you are unsure.",
@@ -715,18 +689,15 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
       const reconciled = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
       const binding = reconciled;
       if (binding) {
-        // Drop the session binding if it points at a terminal charter so the
-        // reminder bus doesn't keep refreshing a dead charter on reload.
+        // Drop the stale session binding if it points at a terminal charter.
         const reconciledState = await loadCharterState(charterDir(binding.projectDir, binding.charterId)).catch(() => undefined);
         const terminal = reconciledState
           && (reconciledState.status === "completed"
             || reconciledState.status === "abandoned");
         if (terminal) {
-          removeCharterReminder(pi, binding.charterId);
           await clearSessionBinding(sessionId, options.homeDir).catch(() => undefined);
         } else {
           if (reconciled) ctx.ui.notify(`pi-charter: resumed binding to ${reconciled.charterId}.`, "info");
-          await trySyncCharterReminder(pi, binding.projectDir, binding.charterId);
         }
       }
     }
@@ -737,7 +708,6 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
       if (sessionId) {
         await rebindCharter(ctx.cwd, { charterId: result.charterId, sessionId, homeDir: options.homeDir });
       }
-      await trySyncCharterReminder(pi, ctx.cwd, result.charterId);
       ctx.ui.notify(result.message, "info");
       return;
     }
@@ -755,7 +725,7 @@ export function registerCharterFlags(pi: ExtensionAPI, options: RegisterCharterF
         "",
         "1. Call charter action=create with this objective. Pass a short kebab-case `name` (e.g. 'headless-click-pid') so the widget header is readable; do not embed objective text in id or name.",
         "2. Run charter_status; then edit .pi/charters/<id>/criteria.md to add VAL-* criteria (do NOT create a repo-root charter.md).",
-        "3. Execute work toward each VAL. Record results with charter_record action=evidence or action=verify.",
+        "3. Execute work toward each VAL. Record results with charter_record action=evidence.",
         "4. Follow charter_status nextActions; never guess transitions. Read the pi-charter skill for the full workflow if you are unsure.",
         "5. Drive every VAL to evidence end-to-end. Delegate verification and recon to subagents — main agent context is precious.",
         "6. Do not stop mid-charter to ask routine questions; surface decisions in the work itself.",
@@ -1142,38 +1112,6 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     if (!payload) return;
     runningSubagents.complete(payload.runId);
   }));
-}
-
-async function tryUpsertCharterReminder(pi: ExtensionAPI, projectDir: string, charterId: string): Promise<void> {
-  try {
-    await upsertCharterReminder(pi, projectDir, charterId);
-  } catch {
-    // Reminder bridge is ambient; lifecycle tools must still succeed if a
-    // subscriber or sidecar read fails after the primary state transition.
-  }
-}
-
-function tryRemoveCharterReminder(pi: ExtensionAPI, charterId: string): void {
-  try {
-    removeCharterReminder(pi, charterId);
-  } catch {
-    // Reminder bridge is ambient; terminal transitions must not depend on it.
-  }
-}
-
-async function trySyncCharterReminder(pi: ExtensionAPI, projectDir: string, charterId: string): Promise<void> {
-  try {
-    const state = await loadCharterState(charterDir(projectDir, charterId));
-    // Terminal charters are removed; planning/active/review/paused keep a
-    // status-aware reminder so the agent always sees the correct next step.
-    if (state.status === "completed" || state.status === "abandoned") {
-      removeCharterReminder(pi, charterId);
-      return;
-    }
-    await upsertCharterReminder(pi, projectDir, charterId);
-  } catch {
-    // Reminder bridge is ambient; status refresh must not break the primary flow.
-  }
 }
 
 function toolResult(text: string, details: unknown) {

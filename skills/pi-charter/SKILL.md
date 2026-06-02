@@ -13,18 +13,16 @@ not replace the agent or invent a second evaluator.
 
 A **charter** is an evidence-gated contract between the main agent and the
 mission. The contract is complete only when every in-scope `VAL-*` criterion has
-pass evidence and completion gates are clear.
+recorded pass evidence and completion gates are clear.
 
 The deterministic Ralph loop is the engine. `charter_status nextActions[]`, the
 four-state FSM, drift views, evidence gates, and completion blockers are
 runtime-owned. Markdown teaches doctrine; it does not define legal transitions.
 
 **pi-charter ships zero bundled personas.** Delegate recon, verification, and
-review to **user-owned subagents**. When a VAL
-marks `RequireReviewSubagent: true`, any passing evidence row with
-`source: subagent` and non-empty `recordedBy` (for example
-`subagent:my-reviewer:<sessionId>`) satisfies the gate — no specific agent name
-is required.
+review to **user-owned subagents** when useful. When a VAL marks
+`RequireReviewSubagent: true`, charter displays that authoring annotation and
+any `source` / `recordedBy` provenance, but it is not a completion gate.
 
 ## File tree
 
@@ -62,43 +60,39 @@ Subagent write boundary:
 
 VALs are declarative behavioral assertions, not task titles or implementation
 steps. The read-aloud test: someone who has never seen the codebase should be
-able to verify the VAL from the criterion text, verifier, and produced evidence.
+able to evaluate the VAL from the criterion text, descriptive verifier/command
+annotation, and recorded evidence.
 
-Good VALs name observable pass criteria, plausible failure modes, and a verifier
-shape. Prefer project-level commands (`bun test`, `bun run check-types`) over
-bespoke per-VAL scripts.
+Good VALs name observable pass criteria, plausible failure modes, and what good
+evidence should demonstrate. Best evidence **demonstrates the objective**; command
+output, screenshots, logs, review notes, and artifacts are supporting detail.
+`Verifier:` / `Command:` lines in `criteria.md` are descriptive annotations only:
+they tell the agent or reviewer what to run or inspect, and charter parses and
+displays them, but charter never executes them.
 
-Verify a VAL at **behavior level**, not at the level of one test's title:
+Evaluate a VAL at **behavior level**, not at the level of one test's title:
 
-- Best: a real observable command whose exit code proves the behavior — a build,
-  an HTTP probe, a CLI invocation, a file/exit-code assertion
-  (e.g. `bun run build`, `curl -fsS localhost:3000/health`, `test -f dist/app.js`).
-- Good: a whole test **file** or **glob** — `bun test tests/unit/group-node.test.ts`
-  or `bun test tests/unit/group-*.test.ts`. These fail when the path resolves to
-  nothing, so absence can't pass silently.
-- Avoid: a single `bun test -t '<title>'` (or `--grep` / `--testNamePattern`)
-  with no file/glob. It couples the VAL to one implementer's exact test title and
-  **exits 0 when zero tests match** — a silent false pass. pi-charter emits a
-  `weak-verifier-phrase-coupled` parse warning for this shape; it shows up in
-  `charter_status` under `parse-warnings:`.
+- Strong: recorded evidence that shows the intended behavior or outcome, with
+  supporting command output or artifacts when a command is relevant.
+- Good: a whole test **file** or **glob** run by the agent, with the command and
+  output captured in evidence details.
+- Avoid: evidence that only says a narrowly named test passed without showing how
+  it demonstrates the objective. pi-charter may emit a
+  `weak-verifier-phrase-coupled` parse warning for brittle phrase-coupled command
+  annotations; it shows up in `charter_status` under `parse-warnings:`.
 
 Size a VAL as a **reviewer-meaningful behavioral guarantee** — roughly 3–8 per
-milestone — each backed by a suite or command that exercises many cases. A VAL
-is not a restatement of one test name; its failure should localize to "this
-behavior of the milestone is broken." Invariant: **a command verifier must fail
-when its target is absent** (file / glob / observable commands satisfy this for
-free). For the rare case where a file exists but runs zero tests, guard the
-suite with `scripts/charter-named-test.sh <test-file>` (no phrase), which fails
-when 0 tests ran. The phrase form `charter-named-test.sh <file> '<phrase>'`
-survives only as a niche tool for deliberately binding a VAL to a stable named
-subset of a mixed file; do not reach for it by default.
+milestone. A VAL is not a restatement of one test name; its failure should
+localize to "this behavior of the milestone is broken." The agent owns any
+command execution itself and records the command string plus real output as
+evidence through `charter_record action=evidence`.
 
 Per-VAL flags in `criteria.md`:
 
 - `RequireFreshEvidence: true` — pass evidence must be newer than the last `src/`
   change.
-- `RequireReviewSubagent: true` — pass evidence must include a subagent-attributed
-  row (`source: subagent`, non-empty `recordedBy`).
+- `RequireReviewSubagent: true` — display-only authoring annotation; provenance
+  (`source`, `recordedBy`) is shown for confidence, not used as a gate.
 
 ## Lifecycle (v3)
 
@@ -106,8 +100,9 @@ States: `active`, `paused`, `completed`, `abandoned`.
 
 1. **Create** — `charter action=create` opens an active charter and scaffolds
    `charter.md`, `criteria.md`, and `work/`.
-2. **Execute** — edit criteria, implement, delegate recon/review/verify work to
-   user-owned subagents, record evidence.
+2. **Execute** — edit criteria, implement, delegate recon/review/QA work to
+   user-owned subagents when useful, run any checks yourself or via chosen subagents,
+   and record evidence.
 3. **Complete** — `charter action=complete` when every VAL passes and blockers are
    clear. First attempt scaffolds `REPORT.md`; completion requires non-empty
    content under every heading.
@@ -171,8 +166,9 @@ charter_record({
 })
 ```
 
-Manual evidence requires a non-empty `because`. Command verifiers run via
-`charter_record action=verify`.
+Manual evidence requires a non-empty `because`. Commands are run by the agent
+(or a user-owned subagent) and their output is recorded with
+`charter_record action=evidence`; charter stores evidence, it never runs checks.
 
 Evidence uses dir-per-run layout `work/<segment>/evidence/<ts>/`. Optional
 markdown companions (`review.md`, `qa.md`) may sit beside `evidence.json` in
@@ -199,12 +195,12 @@ Store distilled findings in `library/<topic>.md`. Store raw notes in
 Planning is the work: implementation is mostly typing once criteria name real
 outcomes, boundaries, verification, and risks. Before heavy implementation:
 
-- Every VAL has explicit pass criteria, failure modes, and a verifier or evidence
-  kind an independent party can evaluate.
+- Every VAL has explicit pass criteria, failure modes, and a descriptive verifier
+  or evidence shape an independent party can evaluate.
 - Cross-cutting VALs cover integration, commands, QA, architecture, or suite
   health — not only happy-path feature checks.
-- `## Commands` declares build/test/dev/lint commands subagents must use
-  verbatim when running verifiers.
+- `## Commands` declares build/test/dev/lint commands agents or user-owned
+  subagents can quote and run when gathering evidence.
 
 Done planning means `criteria.md` covers the mission with milestone groupings and
 every VAL has a verifier line; then drive execution via `charter_status`
@@ -225,10 +221,10 @@ charter.
 
 - Stopping after authoring criteria to ask whether to implement — an active
   charter is authorization to execute.
-- Recording manual evidence without `because` — weak evidence fails trust gates.
+- Recording manual evidence without `because` — manual evidence requires a rationale.
 - Writing orchestrator-owned sidecars from a subagent — report via evidence only.
-- Completing before review gates clear — delegate a user-owned review subagent
-  when `RequireReviewSubagent` is set.
+- Treating `RequireReviewSubagent` as a gate — it is display-only; delegate review
+  when useful for confidence, then record the result as evidence.
 
 ## Quick reference
 
@@ -236,8 +232,7 @@ charter.
 | --- | --- |
 | `charter action=create` | Open a charter; session auto-binds. |
 | `charter action=pause/resume` | Lifecycle escape hatch. |
-| `charter action=complete` | Gated finish; REPORT.md + VAL pass + trust gates. |
+| `charter action=complete` | Gated finish; REPORT.md + recorded VAL pass evidence + alignment gates. |
 | `charter action=abandon` | Terminal exit; reason required. |
 | `charter_record action=evidence` | Append pass/fail/partial evidence (batch `entries`). |
-| `charter_record action=verify` | Run a criterion's command verifier. |
 | `charter_status` | Status + drift + blockers + `nextActions[]`. |

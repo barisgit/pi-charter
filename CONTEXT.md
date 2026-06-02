@@ -91,7 +91,7 @@ An append-only record of a check result for one criterion, including the outcome
 _Avoid_: Log line, note, proof string
 
 **Verifier**:
-The mechanism that produces evidence for a criterion. Preferred: deterministic command verifiers declared in `charter.md ## Commands`. Fallback: manual or subagent evidence.
+The mechanism an agent uses to produce evidence for a criterion. Charter records the resulting evidence; it does not run checks.
 _Avoid_: Reviewer, validator, judge
 
 **requireFreshEvidence**:
@@ -99,7 +99,7 @@ A per-criterion trust-gate flag in `criteria.md` requiring passing evidence newe
 _Avoid_: Rerun all tests, freshness hint
 
 **requireReviewSubagent**:
-A per-criterion trust-gate flag in `criteria.md` requiring at least one passing evidence row with `source: subagent` and non-empty `recordedBy`. Any subagent satisfies it; pi-charter ships no bundled personas.
+A display-only per-criterion annotation in `criteria.md` indicating that subagent review was requested. It is informational only; pi-charter ships no bundled personas.
 _Avoid_: Manual approval, reviewer requested
 
 **because**:
@@ -131,7 +131,7 @@ The lifecycle tool. Actions: `create`, `pause`, `resume`, `complete`, `abandon`.
 _Avoid_: charter_manage, charter_create, goal_manage
 
 **charter_record**:
-The execution-write tool. Actions: `evidence` (manual or batch), `verify` (run a `## Commands` entry and stamp the result).
+The execution-write tool. Actions: `evidence` (manual or batch).
 _Avoid_: evidence tool, verifier tool
 
 **charter_status**:
@@ -201,7 +201,7 @@ _Avoid_: Binding, bridge field
 - Use `charter.md` for narrative (objective, scope, boundaries, commands) and `criteria.md` for the VAL-* register; sidecar JSON files hold mutable runtime state.
 - Use three LLM tools (`charter`, `charter_record`, `charter_status`); every tool return carries `nextActions[]`.
 - Persisted decomposition is `Objective → Milestone → VAL`; features and a macro DAG are not persisted.
-- Ship zero bundled personas. `requireReviewSubagent` is satisfied by any subagent.
+- Ship zero bundled personas. `requireReviewSubagent` is display-only.
 - Prefer filesystem state over session-entry-only state; use session entries as audit/complement only.
 - Keep implementation headless first; TUI approver subscribes through hooks later.
 - Think 100x before adding anything: features, knobs, layers, or actions. The right v3 is the one that survives the next refactor by virtue of having nothing to delete.

@@ -1,19 +1,21 @@
 # pi-charter
 
-`pi-charter` is a Pi extension design for durable, charter-bound agent work: the agent starts from an objective, authors or reuses a `charter.md`, decomposes the work into feature files, records evidence against criteria.
+`pi-charter` is a Pi extension for durable, charter-bound agent work. An agent starts from an objective, authors a charter workspace with `charter.md` and `criteria.md`, tracks Objective → Milestone → VAL criteria, and records evidence against those criteria.
 
-This repo is intentionally scaffold-first. The current source of truth is the documentation; implementation starts from `src/index.ts` after the domain language and ADRs stabilize.
+The implementation is live. `src/index.ts` is the extension composition root; code is the source of truth, with `CONTEXT.md` and ADRs documenting the model and boundaries.
 
 ## Current status
 
-**Feature-complete, tested, bridged.** 53 tests / 162 assertions green, types clean, ~2640 LOC of `src/`.
+**Implemented, tested, bridged.** Test suite status: 275 pass / 0 fail; package scripts are `bun test` and `bun run check-types`.
 
-- Four LLM-callable tools wired: `charter_manage`, `charter_plan`, `charter_record`, `charter_status`.
-- Lifecycle FSM with completion gate, hook bus, drift views, session binding, planner-critic, command verifiers.
-- Bundled internal personas: `charter-verifier`, `charter-planner-critic` (both `scope: internal`, `anthropic/claude-sonnet-4-6`).
-- Per-project layout: `<project>/.pi/charters/<charterId>/{charter.md, state.json, plan/, work/, events.jsonl, ...}`.
-- pi-subagents bridge wired: `register-persona-dir` emit, `expose-api` subscriber, `async-started`/`async-complete` → `feature_started`/`feature_completed`/`feature_failed` event mapping.
-- v1 `pi-goals` preserved at `docs/reference/v1-pi-goals/pi-goals/`.
+- Three LLM-callable tools wired: `charter`, `charter_record`, `charter_status`.
+- Lifecycle FSM: `active` | `paused` | `completed` | `abandoned`, with completion gated by recorded criterion evidence.
+- Hook bus, drift views, session binding, widget, slash commands, CLI flags, and deterministic Ralph reprompt loop are registered from the live extension entrypoint.
+- `charter_record` records evidence only; pi-charter does not run verification commands.
+- pi-charter ships zero bundled personas. Bring your own review, QA, or planning subagents and record their outputs as evidence.
+- Per-project workspace: `<project>/.pi/charters/<charterId>/{charter.md, criteria.md, state.json, criterion-state.json, REPORT.md, events.jsonl, work/}`.
+- pi-subagents bridge wired: `expose-api` subscriber plus `async-started`/`async-complete` attribution to legacy-named `feature_started`/`feature_completed`/`feature_failed` events.
+- v1 `pi-goals` preserved at `docs/reference/v1-pi-goals/pi-goals/` for reference only.
 - Research and ADRs in `docs/research/2026-05-14-pi-charter-design/` and `docs/adr/`.
 
 ## Documentation map
@@ -22,33 +24,32 @@ This repo is intentionally scaffold-first. The current source of truth is the do
 |---|---|
 | `CONTEXT.md` | Domain language and boundaries for pi-charter. Read first. |
 | `docs/adr/` | Accepted architectural decisions and tradeoffs. |
-| `docs/implementation/` | Implementation-oriented specs: filesystem layout, tools, lifecycle, and verifiers. |
+| `docs/implementation/` | Implementation-oriented specs: filesystem layout, tools, lifecycle, and evidence handling. |
 | `docs/research/2026-05-14-pi-charter-design/` | Full research and brainstorming archive. |
 | `docs/reference/v1-pi-goals/` | Old v1 implementation preserved for reference only. |
 | `docs/reference/pi-docs/extensions.md` | Pi extension API reference copied from local Pi docs. |
-| `src/index.ts` | Empty runtime entrypoint stub. |
+| `src/index.ts` | Live extension composition root: registers flags, tools, commands, bridges, widget, and Ralph loop. |
 
-## Planned extension surface
+## Extension surface
 
-Four LLM-callable tools:
+Three LLM-callable tools:
 
-- `charter_manage` — lifecycle FSM: create, pause, resume, complete, force-complete, amend charter.
-- `charter_plan` — macro-DAG editing and viewing.
-- `charter_record` — evidence, verification, and handoff writes.
-- `charter_status` — read-only drift views and legal `nextActions[]`.
+- `charter` — lifecycle FSM: create, pause, resume, complete, abandon.
+- `charter_record` — evidence writes against VAL criteria.
+- `charter_status` — read-only status, drift views, and legal `nextActions[]`.
 
 Single slash tree:
 
-- `/charter` opens the widget/TUI/status surface.
-- `/charter <objective>` hands the objective to the agent and tells it to run the planning workflow end-to-end. **Users describe intent; agents own charter creation** (id, criteria shape, plan).
-- `/charter status|pause|resume` are subcommands.
+- `/charter` prints the usage hint; use `/charters` to inspect or manage active charters.
+- `/charter <objective>` hands the objective to the agent and tells it to run the charter workflow end-to-end. **Users describe intent; agents own charter creation** with `charter action=create`.
+- `/charters status|pause|resume|select|list` manages existing charters.
 
 CLI flags:
 
-- `pi --charter-objective "<text>"` hands the objective to the agent on turn 1 (same rule as the slash command; the agent calls `charter_manage create`).
+- `pi --charter-objective "<text>"` hands the objective to the agent on turn 1; the agent calls `charter action=create`.
 - `pi --charter-resume <id>` rebinds before turn 1.
 
-No spec auto-detect, no `--charter-spec`, and no path parameter on creation. If a prompt says "use `docs/spec.md`", the agent reads it with normal file tools and authors `charter.md` during planning.
+No spec auto-detect, no `--charter-spec`, and no path parameter on creation. If a prompt says "use `docs/spec.md`", the agent reads it with normal file tools and authors `charter.md` plus `criteria.md` during planning.
 
 ## Development
 
@@ -57,4 +58,4 @@ bun run check-types
 bun test
 ```
 
-The package is private until naming and tool contracts settle.
+The package is private (`"private": true`).

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { abandonCharter, completeCharter } from "../src/application/service";
@@ -141,8 +141,8 @@ describe("charter abandon", () => {
 
 });
 
-describe("charter complete (trust gate)", () => {
-  test("rejects when all VALs have only manual+because evidence from agent:root; error lists every VAL and a fix-it", async () => {
+describe("charter complete (completion because-gate)", () => {
+  test("completes when all VALs have manual+because evidence from agent:root", async () => {
     await withTempProject(async (projectDir) => {
       await seedCompleteCharter(projectDir);
       await recordEvidence(projectDir, {
@@ -161,43 +161,37 @@ describe("charter complete (trust gate)", () => {
         because: "verified token persistence by hand",
         now: "2026-05-15T02:30:00.000Z",
       });
-      let caught: unknown;
-      try {
-        await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBeInstanceOf(Error);
-      const message = (caught as Error).message;
-      expect(message).toContain("VAL-AUTH-001");
-      expect(message).toContain("VAL-AUTH-002");
-      expect(message.toLowerCase()).toContain("review subagent");
-      expect(message.toLowerCase()).toContain("because");
+      await seedReportReadyForCompletion(join(projectDir, ".pi", "charters", CHARTER_ID));
+      const result = await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
+      expect(result.status).toBe("completed");
       const state = await loadCharterState(join(projectDir, ".pi", "charters", CHARTER_ID));
-      expect(state.status).toBe("active");
+      expect(state.status).toBe("completed");
     });
   });
 
-  test("a charter-reviewer-sourced record clears that VAL from the blocking list", async () => {
+  test("blocks only manual pass evidence without because", async () => {
     await withTempProject(async (projectDir) => {
       await seedCompleteCharter(projectDir);
       await recordEvidence(projectDir, {
         charterId: CHARTER_ID,
         criterionId: "VAL-AUTH-001",
         outcome: "pass",
-        summary: "reviewed by subagent",
-        source: "subagent",
-        recordedBy: "subagent:charter-reviewer:sess-1",
+        summary: "manual self-record with rationale",
+        because: "manual review of callback flow",
         now: "2026-05-15T02:00:00.000Z",
       });
-      await recordEvidence(projectDir, {
-        charterId: CHARTER_ID,
-        criterionId: "VAL-AUTH-002",
+      const charterDir = join(projectDir, ".pi", "charters", CHARTER_ID);
+      const criterionState = JSON.parse(await readFile(join(charterDir, "criterion-state.json"), "utf8"));
+      criterionState.criteria["VAL-AUTH-002"] = {
         outcome: "pass",
-        summary: "manual self-record",
-        because: "low-trust",
-        now: "2026-05-15T02:30:00.000Z",
-      });
+        lastEvidencePath: "work/manual/evidence/no-because.json",
+        lastTs: "2026-05-15T02:30:00.000Z",
+        lastSummary: "manual self-record without rationale",
+        source: "manual",
+        recordedBy: "agent:root",
+      };
+      await writeFile(join(charterDir, "criterion-state.json"), `${JSON.stringify(criterionState, null, 2)}\n`, "utf8");
+      await seedReportReadyForCompletion(charterDir);
       let caught: unknown;
       try {
         await completeCharter(projectDir, { charterId: CHARTER_ID, now: "2026-05-15T03:00:00.000Z" });
@@ -208,6 +202,8 @@ describe("charter complete (trust gate)", () => {
       const message = (caught as Error).message;
       expect(message).toContain("VAL-AUTH-002");
       expect(message).not.toContain("VAL-AUTH-001");
+      expect(message.toLowerCase()).toContain("because");
+      expect(message.toLowerCase()).not.toContain("review subagent");
     });
   });
 

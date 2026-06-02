@@ -4,7 +4,7 @@ Reference for coding agents working in this repository.
 
 ## Project stance
 
-`pi-charter` is a new successor concept, not a cosmetic rename of `pi-goals` v1. Treat v1 as reference material only. The v2 domain model is documented in `CONTEXT.md` and the ADRs.
+`pi-charter` is a new successor concept, not a cosmetic rename of `pi-goals` v1. Treat v1 as reference material only. The current (v3) domain model is documented in `CONTEXT.md` and the ADRs (notably ADR-0012 and ADR-0013).
 
 ## Read order
 
@@ -16,20 +16,20 @@ Reference for coding agents working in this repository.
 
 ## Invariants
 
-- Authored source of truth is `charter.md`, with sections: Objective, Criteria, Scope and constraints.
-- Runtime bitmaps are sidecars (`feature-state.json`, `criterion-state.json`); do not put mutable status in markdown frontmatter.
+- Authored source of truth is split across `charter.md` (Objective, Scope and constraints, optional `## Commands`) and `criteria.md` (the VAL register: Objective → Milestone → VAL).
+- Runtime status lives in JSON sidecars, not markdown frontmatter. The live sidecars are `state.json` (lifecycle/session) and `criterion-state.json` (latest VAL outcomes + evidence pointers); `feature-state.json` is a vestigial name only (no live reader/writer).
 - The agent is the smart-Ralph loop driver. Do not add an auto-spawn scheduler.
 - Tactical turn-to-turn todos stay in `pi-dag-tasks`; pi-charter only subscribes to hook events if needed.
-- Creation is intentionally minimal: `charter_manage({action: "create", objective, budget?, idempotencyKey?})`.
+- Creation is intentionally minimal: `charter({action: "create", objective, budget?, idempotencyKey?})` (the lifecycle tool is `charter`, not `charter_manage`).
 - No `contractPath`, no `--charter-spec`, no spec auto-detect, no spec copy heuristic.
 - Every mutating tool should return legal `nextActions[]` so agents do not memorize the FSM.
-- Prefer deterministic verifiers (`command`, `hook`) before LLM prompt judges; use `manual` only as a weak fallback.
+- The charter records evidence; it does not run checks (ADR-0013). The agent runs commands/tests itself and records the output as `source: verifier` evidence; `Verifier:`/`Command:` annotations on a VAL are descriptive, not executable. Prefer real command output over `source: manual`, and `manual` evidence requires a `because`.
 
 ## Implementation guidance
 
 - Lift from v1 only proven extension plumbing: TypeBox schemas, atomic temp-file writes, lazy state loading, reminder event shape, status widget basics, and command parsing.
 - Replace v1 static reminders with deterministic Ralph steering.
-- Replace v1 string evidence with typed append-only evidence records.
+- Replace v1 string evidence with structured, append-only evidence records (flat `source`/`outcome`/`summary`/`because?`/`details?`); the older typed `kind`/`verdict`/`observation` envelope is rejected.
 - Use `crypto.randomUUID()` for charter ids; do not reuse v1 hash ids.
 - Use Pi extension APIs from `docs/reference/pi-docs/extensions.md` and live installed docs if in doubt.
 - Before editing runtime code, inspect the relevant docs and v1 reference. Keep changes surgical.

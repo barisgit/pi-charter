@@ -66,9 +66,10 @@ describe("pi-charter skill workflow", () => {
     expect(research).toContain("library/research/<topic>.md");
   });
 
-  test("SKILL references RequireReviewSubagent generic gate", async () => {
+  test("SKILL documents RequireReviewSubagent as display-only", async () => {
     const contents = await readSkill();
     expect(contents).toContain("RequireReviewSubagent");
-    expect(contents).toContain("subagent:my-reviewer");
+    expect(contents).toContain("display-only authoring annotation");
+    expect(contents).toContain("not used as a gate");
   });
 });

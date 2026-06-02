@@ -106,7 +106,7 @@
       <span class="pill accent2">design preview</span><span class="pill warn">not yet implemented</span></p>
     <p class="lead">v2 collapses VAL-* criteria into per-feature checks, treats readiness/review/QA as first-class feature kinds, requires a planning forcing function (architecture pass → fan-out validation authoring → critic iterate-to-fixed-point), and adds an <em>awaiting-clarification</em> state so the agent can stall on user input without the Ralph loop spamming.</p>
     <div class="banner" style="margin-top: 14px">
-      <strong>Status:</strong> this page shows the v2 design locked-in after design Q&amp;A. The currently-shipped extension is v1 (separate Criteria section, single charter-verifier persona, simple feature DAG). v2 is a breaking change; existing in-flight charters force-replan on next session.
+      <strong>Superseded historical preview.</strong> This page shows the unreached <strong>v2</strong> design (per-feature validation, a planning forcing function, an <code>awaiting-clarification</code> state, a feature DAG with <code>plan.json</code>/<code>lock_plan</code>). The shipped extension is now <strong>v3</strong>, which deliberately removed all of that: three tools (<code>charter</code>/<code>charter_record</code>/<code>charter_status</code>), a four-state FSM (active/paused/completed/abandoned), an Objective → Milestone → VAL register, and a charter that records evidence but never runs checks. For current behavior see <code>CONTEXT.md</code> and <code>docs/implementation/</code>. Kept only as a design-history artifact.
     </div>
   </header>
 
@@ -449,7 +449,7 @@ tokens, sets session cookie, redirects to /dashboard.
       <ul class="tight">
         <li><strong>Every impl feature</strong> needs ≥1 Happy and ≥1 Edge check.</li>
         <li>Check IDs are scoped: <code>m1-oauth-callback.callback-sets-session-cookie</code>. Globally unique by construction.</li>
-        <li>Command verifiers preferred; <code>hook</code> and <code>manual</code> kinds still supported for non-determinable behavior.</li>
+        <li>Command and verifier annotations are descriptive; agents run checks and record evidence.</li>
         <li><code>charter-planner-critic</code> grades validation <em>depth</em> per feature — returns structured <code>validation-underspecified: [feature-id]</code> when checks read like "we tested it" rather than enumerated failure modes.</li>
         <li>Underspecified iterations loop with the explorers; cap at 3 rounds, then escalate to <code>awaiting-clarification</code> with a one-line note.</li>
       </ul>
@@ -459,34 +459,22 @@ tokens, sets session cookie, redirects to /dashboard.
   </div>
 
   <!-- ================================================================= -->
-  <h2>Verifier kinds</h2>
+  <h2>Evidence annotations</h2>
   <div class="grid grid-3">
     <div class="card tight">
-      <h3>command</h3>
-      <p>Shell command; exit 0 means pass. Best for deterministic checks such as typecheck, unit tests, and smoke scripts.</p>
+      <h3>Command</h3>
+      <p>Describes a useful command for the agent to run. Charter stores the recorded command output; it does not execute the command.</p>
     </div>
     <div class="card tight">
-      <h3>hook</h3>
-      <p>Structured integration callback. Use when another extension or service owns the authoritative check.</p>
+      <h3>Hook / service</h3>
+      <p>Describes evidence another integration or service can provide.</p>
     </div>
     <div class="card tight">
-      <h3>manual</h3>
-      <p>Human or root-agent evidence with rationale. Useful for judgment calls that cannot be automated.</p>
-    </div>
-    <div class="card tight">
-      <h3>prompt-judge</h3>
-      <p>LLM prompt evaluation for subjective criteria when a deterministic verifier is not available.</p>
-    </div>
-    <div class="card tight">
-      <h3>subagent</h3>
-      <p>Runs a named persona such as <code>charter-reviewer</code> and imports its typed evidence. Review and QA gates use this for independent judgment.</p>
-    </div>
-    <div class="card tight">
-      <h3>evidence-exists</h3>
-      <p>Passes when prior evidence of a requested kind exists, optionally after a freshness timestamp. Use it to chain gates without rerunning work.</p>
+      <h3>Manual / review</h3>
+      <p>Human, root-agent, or user-owned subagent evidence with rationale and artifacts.</p>
     </div>
   </div>
-  <p class="sub">All 6 verifier kinds: <code>command</code>, <code>hook</code>, <code>manual</code>, <code>prompt-judge</code>, <code>subagent</code>, and <code>evidence-exists</code>.</p>
+  <p class="sub">Annotations describe what good evidence looks like; recorded evidence decides completion.</p>
 
   <!-- ================================================================= -->
   <h2>Planning — forcing functions</h2>
@@ -630,26 +618,8 @@ tokens, sets session cookie, redirects to /dashboard.
   <p class="sub">Main agent stops re-typing subagent output into <code>charter_record</code> fields. Subagent writes the JSON and records it. Evidence uses the v2.1 dir-per-run layout: <code>work/&lt;featureId&gt;/evidence/&lt;ts&gt;/evidence.json</code> with optional companions like <code>qa.md</code>, <code>review.json</code>, and artifacts. Main's post-spawn job collapses to: read prose summary for working memory → call <code>charter_status</code> → pick next move. Same-feature races are last-write-wins on idempotent updates.</p>
 
   <!-- ================================================================= -->
-  <h2>Bundled personas</h2>
-  <div class="grid grid-4">
-    <div class="card tight">
-      <h3>charter-planner-critic <span class="pill accent2">bundled</span></h3>
-      <p>Plan-time critic. Grades validation depth per feature, audits readiness/QA, detects touch overlap, audits <code>review: skip</code> rationales, iterates with explorers to fixed point.</p>
-    </div>
-    <div class="card tight">
-      <h3>charter-reviewer <span class="pill accent2">bundled</span></h3>
-      <p>Per-feature code review. Reads diff + transcript + spec. Writes typed <code>review.json</code>: blocking issues with file/line, non-blocking notes, outcome.</p>
-    </div>
-    <div class="card tight">
-      <h3>charter-qa <span class="pill accent2">bundled</span></h3>
-      <p>Per-milestone agentic QA. Opens the surface, follows briefs from <code>qa-briefs/&lt;surface&gt;.md</code>, probes critically, writes typed <code>qa.json</code> + screenshots. Appends <code>## Discovered</code> back to briefs.</p>
-    </div>
-    <div class="card tight">
-      <h3>charter-readiness-probe <span class="pill accent2">bundled</span></h3>
-      <p>Verifies one readiness item per feature. Writes typed <code>readiness.json</code>: dependency name, probe result, fallback applied (if any).</p>
-    </div>
-  </div>
-  <p class="sub"><code>charter-verifier</code> is deprecated — per-criterion LLM judges go away with the criteria collapse. All check verification is command/hook/manual; reviewer/qa do code+UX judgment, not check verification.</p>
+  <h2>Personas</h2>
+  <p class="sub">pi-charter ships zero bundled personas. Users bring their own review or QA subagents when useful, and record their output as evidence.</p>
 
   <!-- ================================================================= -->
   <h2>## Commands</h2>
@@ -798,7 +768,7 @@ dev:   bun run dev</code></pre>
   </div>
 
   <footer>
-    Design preview, post-Q&amp;A. Tracks the locked-in v2 decisions. v1 (current shipped extension) docs in <code>src/index.ts</code> and earlier ADRs; v2 ADRs land alongside implementation.
+    Historical v2 design preview, post-Q&amp;A — superseded by the shipped v3 runtime. For current behavior see <code>CONTEXT.md</code>, the ADRs (notably 0011–0013), and <code>docs/implementation/</code>.
   </footer>
 </main>
 </body>

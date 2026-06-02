@@ -39,7 +39,7 @@ describe("public tool API", () => {
     ]);
   });
 
-  test("charter_record schema exposes only evidence and verify", () => {
+  test("charter_record schema exposes only evidence", () => {
     const registered: Array<{ name: string; parameters: { properties: { action: { enum: string[] } } } }> = [];
     const pi: any = {
       events: { emit() {} },
@@ -51,6 +51,6 @@ describe("public tool API", () => {
     };
     registerCharterTools(pi);
     const record = registered.find((tool) => tool.name === "charter_record")!;
-    expect(record.parameters.properties.action.enum.sort()).toEqual(["evidence", "verify"]);
+    expect(record.parameters.properties.action.enum.sort()).toEqual(["evidence"]);
   });
 });

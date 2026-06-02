@@ -77,7 +77,7 @@ describe("structured error when no charter is bound", () => {
     });
   });
 
-  test.each(["evidence", "verify"] as const)(
+  test.each(["evidence"] as const)(
     "charter_record action=%s throws NoCharterBoundError",
     async (action) => {
       await withTempProject(async ({ projectDir, homeDir }) => {

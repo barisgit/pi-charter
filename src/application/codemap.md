@@ -1,497 +1,256 @@
-# Application Layer — `src/application/`
+# src/application/
 
-Top-level orchestration. Each service is a pure-functional, side-effect-scoped unit testable without the extension host.
+## Responsibility
 
----
+Application layer for the partial v3 pi-charter runtime. It wires the Pi extension host to charter lifecycle services, session binding, evidence recording, status/drift projections, Ralph continuation, widgets, reminders, and subagent event bridges.
 
-## `registration.ts`
+Code source of truth in this folder is the v3-active surface:
+- Registered tools are exactly `charter`, `charter_record`, and `charter_status`.
+- `charter` actions are exactly `create`, `pause`, `resume`, `complete`, `abandon`.
+- `charter_record` supports `action: "evidence"` only, from either `entries` or `evidenceFile`.
+- Runtime state is active/paused/completed/abandoned; there is no live planning/lock-plan tool, no `charter_plan`, and no tool action that runs verification.
 
-**Responsibility** — Extension entry point. Wires all tools, commands, flags, and event handlers into the Pi extension API. Zero business logic; purely declarative composition.
+## Design
 
-**Public API** — Registers the following into `pi`:
+### Host registration and UI composition
 
-| Symbol | Type | Purpose |
-|---|---|---|
-| `registerCharterTools(pi, options?)` | `function` | Registers `charter_manage`, `charter_plan`, `charter_record`, `charter_status` tools |
-| `registerCharterCommands(pi)` | `function` | Registers `/charter` and `/charters` slash commands |
-| `registerCharterFlags(pi, options?)` | `function` | Registers `--charter-objective` and `--charter-resume` flags; handles `session_start` |
-| `registerCharterRalphLoop(pi, options?)` | `function` | Wires the deterministic idle reprompt loop |
+- `registration.ts` is the extension composition root for this layer.
+  - `registerCharterTools()` registers three tools: `charter`, `charter_record`, `charter_status`.
+  - `registerCharterCommands()` registers `/charter` and `/charters`; `/charter` sends instructions to the agent instead of creating a charter directly.
+  - `registerCharterFlags()` registers `--charter-objective` and `--charter-resume`, reconciles session bindings on `session_start`, clears stale terminal bindings, and sends startup instructions for new objectives.
+  - `registerCharterSubagentBridge()` captures the pi-subagents exposed API and auto-binds child sessions from `subagent:lineage`.
+  - `registerCharterAsyncBridge()` maps subagent async events into charter mission events.
+  - `registerCharterRalphLoop()` sends deterministic `deliverAs: "steer"` continuation messages on `subagent:all-idle` when a bound charter is not skipped.
+  - `registerCharterRalphMessageRenderer()` renders those steer messages.
+  - `registerCharterWidget()` maintains the bound-charter widget above the editor.
 
-**Design patterns**
-- **Command pattern** per tool: `pi.registerTool({ name, parameters, execute })`.
-- **TypeBox schemas** (`Type.Object(...)`) for all tool parameter validation; schemas ride alongside the tool definition.
-- **Strategy dispatch** inside each `execute` callback: a `switch (params.action)` routes to the appropriate service function.
-- **Dependency injection seam**: `options.homeDir` is a test seam that bypasses the real home-directory layout.
-- **Closure-scoped re-entry guard**: the `/charters` picker sets `isPickerOpen = true` in the closure to prevent double-overlays.
+### Lifecycle service
 
-**Data/control flow**
+- `service.ts` owns lifecycle transitions and status projection.
+  - Live exports used by registered tools: `createCharter`, `pauseCharter`, `resumeCharter`, `completeCharter`, `abandonCharter`, `getCharterStatus`, `listActiveCharters`.
+  - `createCharter()` creates a workspace immediately in `active` state.
+  - `pauseCharter()` moves any non-terminal charter to `paused` and records `previousStatus`.
+  - `resumeCharter()` only accepts `paused` and returns to `active`.
+  - `completeCharter()` only accepts `active`; it checks VAL pass evidence, freshness, manual-evidence rationale, and `REPORT.md` completion before dispatching `charter:before_complete` and writing `completed`.
+  - `abandonCharter()` requires a non-empty reason, dispatches `charter:before_abandon`, and writes `abandoned`.
+  - `getCharterStatus()` returns phase, objective, migration hint, VAL totals, parsed milestone summaries, drift, qa briefs, parsed commands, parse warnings, `blockingForComplete`, and legal `nextActions`.
+  - `nextActionsForStatus()` is the live legal-action catalog. `buildActiveNextActions()` currently returns only the base status actions for active charters.
+  - `computeBlockingForComplete()` surfaces latest non-pass evidence as `val-not-pass` and manual pass evidence without `because` as `manual`; `source`/`recordedBy` are otherwise display/provenance only.
 
-```
-host session_start
-  └─ registerCharterFlags: reconcileSessionBinding → rebind → upsertCharterReminder
+### Evidence recording
 
-user /charter "..."
-  └─ registerCharterCommands: /charter handler → pi.sendUserMessage(...)
-         → agent calls charter_manage:create → bindCharterToSession → upsertCharterReminder
+- `record-service.ts` is the evidence writer and `criterion-state.json` owner.
+  - `recordEvidence()` writes one evidence record under `work/<featureId-or-_charter>/evidence/<stamp>/evidence.json`, updates `criterion-state.json`, and appends `evidence_recorded`.
+  - `recordEvidenceBatch()` validates all entries first, writes all per-entry evidence files, rolls back written files on failure before state mutation, writes `criterion-state.json` once, then appends one event per entry.
+  - `recordEvidenceFromFile()` imports a flat typed evidence JSON file, optionally detects/copies markdown narrative companions, and funnels through the batch writer.
+  - Manual evidence requires a non-empty `because`; no command verifier is executed here.
+  - `loadCriterionState()` is the tolerant reader for `criterion-state.json`, returning an empty state when absent/unreadable.
 
-user /charters
-  └─ registerCharterCommands: /charters handler → openPicker() or verb dispatch
-         verb "select" → setCharterSelection → requestSelectionRefresh
-         verb "pause/resume/status" → resolveCharterForVerb → service call
+### Drift and sidecars
 
-Ralph idle events
-  └─ registerCharterRalphLoop: subagent:all-idle handler
-         → readSessionBinding → buildRalphPromptForCharter → pi.sendMessage(..., triggerTurn:true)
-```
+- `drift-service.ts` computes status views from parsed charter + criterion state.
+  - `uncovered`: missing criterion state or latest outcome not pass.
+  - `stale`: `requireFreshEvidence` pass evidence older than the latest `src/` change.
+  - `readyNext`: the first uncovered VAL in milestone order, or flat criterion order when no milestones are parsed.
+  - `sidecarDrift`: delegated to `sidecar-drift.ts`.
+  - `milestoneArtifacts`: passed milestones whose `work/<milestoneId>/evidence` directory is absent.
+- `sidecar-drift.ts` compares `state.json` and `criterion-state.json` mtimes against their `lastToolWriteAt` fields and reports out-of-band edits.
 
-**Integration points**
-- Imports: `plan-service`, `record-service`, `service` (lifecycle), `binding-service`, `reminders-bridge`, `store`, `subagent-bridge`, `async-bridge-service`, `widget`, `widget-state`, `widget-service`, `charter-selection`.
-- Emits: `reminder:upsert`, `reminder:remove` (via `reminders-bridge`); `pi.sendUserMessage`, `pi.sendMessage`; `pi.on("turn_end")`; `pi.on("session_start")`.
-- Consumes: `ctx.sessionManager.getSessionId`, `ctx.cwd`, `pi.getFlag(...)`.
+### Session binding and child propagation
 
----
+- `binding-service.ts` maintains two pointers:
+  - Forward pointer: `.pi/charters/<charterId>/state.json.sessionId`.
+  - Reverse pointer: `<homeDir>/.pi/agent/sessions/<sessionId>/charter.json`.
+- `bindCharterToSession()` and `rebindCharter()` update the forward state and reverse file atomically enough for normal recovery.
+- `reconcileSessionBinding()` repairs missing/stale forward pointers from the reverse pointer.
+- `resolveCharterId()` resolves explicit `charterId` first, then bound session, else throws `NoCharterBoundError`.
+- `writeChildBinding()` writes participant child-session bindings; `registration.ts` calls it via `autoBindChildFromLineage()` when pi-subagents emits lineage.
 
-## `service.ts`
+### Hooks, errors, and architecture helpers
 
-**Responsibility** — Charter lifecycle state machine and completion gate. Contains the authoritative status transitions, the next-action catalog, and the blocking/evidence trust logic.
+- `hooks.ts` is a minimal in-process veto bus. Live event types are `charter:before_lock_plan`, `charter:before_complete`, and `charter:before_abandon`; subscribers return allow/block decisions and the first block throws.
+- `errors.ts` defines `CharterToolError`, an `Error` with stable `code` and `nextActions` for tool handlers/status guidance.
+- `architecture-writer.ts` writes `.pi/charters/<id>/architecture.md` while the charter is `active`:
+  - `writeAtPlanning()` only writes if the file is empty/missing.
+  - `appendDiscovered()` appends under an H2 `## Discovered` section and rejects `### Discovered`.
+  - `overwriteAtAmend()` overwrites during `active` despite the amend naming.
+  - These helpers are exported application services; they are not wired to a registered tool in this folder.
 
-**Public API**
+### Ralph, reminders, subagents, and version
 
-| Export | Signature | Status |
-|---|---|---|
-| `createCharter` | `(projectDir, {objective, name?, budget?, idempotencyKey?, charterId?, now?, sessionId?}) => CharterServiceResult<CharterState>` | planning |
-| `getCharterStatus` | `(projectDir, {charterId?}) => CharterStatusResult` | any |
-| `pauseCharter` | `(projectDir, {charterId?, reason?, now?}) => CharterServiceResult` | non-terminal |
-| `resumeCharter` | `(projectDir, {charterId?, now?}) => CharterServiceResult` | paused |
-| `completeCharter` | `(projectDir, {charterId?, completionNote?, now?}) => CharterServiceResult` | active/review |
-| `forceCompleteCharter` | `(projectDir, {charterId?, reason, target?, now?}) => CharterServiceResult` | any |
-| `amendCharter` | `(projectDir, {charterId?, reason, target?, now?}) => CharterServiceResult` | terminal |
-| `nextActionsForStatus` | `(status: CharterStatus) => NextAction[]` | pure |
-| `listActiveCharters` | `(projectDir) => CharterListEntry[]` | — |
-| `listUnreviewedMilestones` | `(dir) => UnreviewedMilestone[]` | — |
-| `computeBlockingForComplete` | `(criteria, criterionState, context?) => BlockingForCompleteEntry[]` | pure |
-| `effectiveRequireReviewSubagent` | `(criterion, milestoneIds) => boolean` | pure explicit review-gate rule |
-| `loadBlockingContext` | `(dir, charterId) => BlockingContext` | pure helper |
+- `ralph-service.ts` builds deterministic continuation prompts for non-skipped charters.
+  - Skips `completed`, `abandoned`, and `paused`.
+  - Currently every non-skipped status maps to prompt case `active`.
+  - Prompt template lookup order is repo override, charter override, bundled prompt.
+  - `renderStatusSummary()` compacts status, VAL totals, drift, parse warnings, next actions, commands, and blockers.
+- `reminders-bridge.ts` is event-bus-only; `registerCharterRemindersBridge()` registers no handlers. `upsertCharterReminder()` emits `reminder:upsert`; terminal state converts to `reminder:remove`.
+- `async-bridge-service.ts` appends `feature_started`, `feature_completed`, or `feature_failed` events when subagent async payload metadata includes `pi-charter.projectDir` and `pi-charter.charterId`.
+- `subagent-api.ts` caches the pi-subagents exposed API handle after `subagent:expose-api`.
+- `subagent-bootstrap.ts` formats parsed charter `## Commands` into inline/block text and renders a child prompt containing charter/feature/criterion IDs plus commands.
+- `subagent-write-audit.ts` snapshots managed charter files and plan markdown files to detect forbidden subagent writes.
+- `version.ts` returns `package.json` version.
 
-**Status state machine**
+## Flow
 
-```
-planning ──[lock_plan]──> active ──[complete]──> completed
-                         │                        ↑
-                         │                        │
-                    [pause]                      [amend_charter]
-                         │                        │
-                         ▼                        │
-                        paused ──[resume]─────────┘
-                         │
-                         ├──[complete]──> review ──[complete]──> completed
-                         │
-                         └──[force_complete]──> abandoned | budget_limited
-```
+### Tool flow
 
-**Completion gate (`checkCompletionGate`)**
-Enforced by `completeCharter` before transition. Criteria must have:
-1. `outcome === "pass"` evidence.
-2. If `requireFreshEvidence: true`: evidence timestamp must be within 24 h of now AND not pre-date the plan lock.
-3. If `effectiveRequireReviewSubagent === true`: source must be `"verifier"` or `"subagent"` (never `"manual"`).
+```text
+charter action=create
+  registration.ts
+    → createCharter(ctx.cwd, objective/name/budget/idempotencyKey/sessionId)
+    → bindCharterToSession(sessionId) when available
+    → toolResult
 
-**Trust / blocking logic (`computeBlockingForComplete`)**
-A criterion is "blocking for complete" (surfaced by `getCharterStatus.details.blockingForComplete`) when:
-- It has pass evidence AND that evidence is low-trust (`trustRank <= 1` — manual without because, or manual+because from a non-charter-reviewer writer); OR
-- `effectiveRequireReviewSubagent === true` AND no pass evidence has `recordedBy` starting with `subagent:charter-reviewer:`; OR
-- `effectiveRequireReviewSubagent === true` AND every charter-reviewer reviewer shares the implementer's session id (`implementer-only-reviewer`).
+charter action=pause|resume|complete|abandon
+  registration.ts
+    → binding-service.resolveCharterId(explicit or session binding)
+    → pauseCharter | resumeCharter | completeCharter | abandonCharter
+    → resume also rebinds current session
+    → toolResult
 
-**Review gate rule**: `effectiveRequireReviewSubagent` returns `true` only when the criterion explicitly declares `RequireReviewSubagent: true`.
+charter_record action=evidence
+  registration.ts
+    → binding-service.resolveCharterId
+    → getCharterStatus
+    → if evidenceFile: recordEvidenceFromFile
+    → else entries: recordEvidenceBatch
+    → toolResult
 
-**Identity-disjoint predicate**: Implemented by `loadBlockingContext` — walks `work/<featureId>/evidence/` files and matches reviewer `recordedBy` session segments against implementer session ids.
-
-**Design patterns**
-- **State transition function**: each `*Charter` export is a pure-ish function that loads state, validates preconditions, mutates the state object, writes atomically, and returns a result.
-- **Railway-oriented**: transitions throw on invalid preconditions; callers use try/catch or let the tool layer surface the error.
-- **Lazy optional dependency**: `loadBlockingContext` returns empty maps on error, allowing callers to degrade gracefully to trust-gate-only behavior.
-- **Idempotent writes**: state transitions check current status before writing to avoid no-op writes.
-
-**Data/control flow**
-
-```
-charter_manage tool
-  └─ resolveCharterId (explicit arg → session binding → error)
-      └─ createCharter → createCharterWorkspace (store) → appendEvent
-      └─ pauseCharter → writeCharterState → appendEvent
-      └─ resumeCharter → writeCharterState → appendEvent
-      └─ completeCharter
-             ├─ checkCompletionGate (throw on failures)
-             ├─ computeBlockingForComplete (throw on blocking)
-             ├─ dispatchHook("charter:before_complete")
-             └─ writeCharterState → appendEvent
-      └─ forceCompleteCharter → dispatchHook("charter:before_force_complete")
-      └─ amendCharter → dispatchHook("charter:before_amend_charter")
+charter_status
+  registration.ts
+    → binding-service.resolveCharterId
+    → getCharterStatus
+    → formatCharterStatusText + structured details
 ```
 
-**Integration points**
-- Reads: `charter.md` (domain/charter-md), `criterion-state.json` (record-service), `feature-state.json` (record-service), `events.jsonl` (store), plan `*.md` files.
-- Writes: `state.json` (store), `events.jsonl` (store).
-- Calls: `dispatchHook` (hooks), `computeDrift` (drift-service), `appendEvent` (store), `loadCharterIndex` (store), `loadCharterState` (store), `writeCharterState` (store), `parseCharterMarkdown` (domain).
+### Completion flow
 
----
+```text
+completeCharter
+  → resolve charter id and load state
+  → require state.status === "active"
+  → load parsed charter + criterion-state.json + REPORT.md scaffold
+  → checkCompletionGate:
+       - at least one parsed VAL
+       - each VAL latest outcome is pass
+       - requireFreshEvidence VALs do not predate latest src/ change
+  → computeBlockingForComplete:
+       - non-pass latest evidence => val-not-pass
+       - manual pass without because => manual
+  → checkReportCompletion
+  → if failures: throw CharterToolError(code="complete.gate_blocked")
+  → dispatchHook("charter:before_complete")
+  → write state.status="completed"
+  → append charter_completed event
+```
 
-## `plan-service.ts`
+There is no identity-disjoint/session-disjoint completion gate and no trust-rank model. `requireReviewSubagent` is parsed/displayed by the domain layer but is not a completion gate here.
 
-**Responsibility** — Feature plan CRUD and plan-lock transition. Manages the `plan/<featureId>.md` file layer and the `plan.json` drift snapshot.
+### Status/drift flow
 
-**Public API**
+```text
+getCharterStatus
+  → load state
+  → computeDrift
+       → parsed charter + criterion-state
+       → src freshness check
+       → sidecar mtime drift for state.json and criterion-state.json
+       → milestone artifact reminders
+  → computeBlockingForCompleteSafely
+  → computeMilestoneStatusSummariesSafely
+  → load qa-brief names, commands, parse warnings
+  → buildActiveNextActions / nextActionsForStatus
+```
 
-| Export | Signature |
+### Session, UI, and continuation flow
+
+```text
+session_start
+  → reconcileSessionBinding
+  → clear reverse binding if it points at completed/abandoned charter
+  → optional --charter-resume: resume + rebind
+  → optional --charter-objective: send user message instructing agent to create
+
+subagent:lineage
+  → autoBindChildFromLineage
+  → read root reverse binding
+  → write participant reverse binding for child if root charter is non-terminal
+
+subagent:all-idle
+  → registerCharterRalphLoop debounce/min-interval
+  → read bound session charter
+  → buildRalphPromptForCharter
+  → pi.sendMessage(customType="charter-ralph-continue", deliverAs="steer", triggerTurn=true)
+
+turn_end/session_start/widget refresh
+  → reconcile binding
+  → loadCharterSnapshot
+  → renderCharterWidget above editor
+```
+
+## Integration
+
+### Files read/written under a charter directory
+
+Live current sidecars and documents:
+
+```text
+.pi/charters/<charterId>/
+  state.json                 # mutable CharterState, includes status/sessionId/lastToolWriteAt
+  charter.md                 # authored objective/scope/commands source parsed by domain
+  criteria.md                # authored VAL register parsed by domain via loadParsedCharter
+  criterion-state.json       # mutable latest evidence pointer per VAL
+  REPORT.md                  # completion report scaffold/readiness gate
+  events.jsonl               # append-only lifecycle/evidence/subagent events
+  architecture.md            # optional architecture helper target
+  qa-briefs/*.md             # status display only
+  prompts/ralph/<case>.md    # optional Ralph prompt override
+  work/<feature-or-_charter>/evidence/<stamp>/evidence.json
+```
+
+Session binding file:
+
+```text
+<homeDir>/.pi/agent/sessions/<sessionId>/charter.json
+```
+
+`feature-state.json` is not a live sidecar in this folder; it appears only in comments and the subagent write-audit protected-file list.
+
+### External/event integrations
+
+- Pi extension API: tool/command/flag registration, `session_start`, `turn_end`, `session_shutdown`, message rendering, widgets, and UI custom picker.
+- pi-subagents event bus: `subagent:expose-api`, `subagent:lineage`, `subagent:async-started`, `subagent:async-complete`, `subagent:all-idle`.
+- pi-reminders event bus: `reminder:upsert`, `reminder:remove` emitted by helper functions; no direct dependency on pi-reminders being installed.
+- Infrastructure store: `charterDir`, `createCharterWorkspace`, `loadCharterState`, `writeCharterState`, `loadParsedCharter`, `appendEvent`, `withCharterLock`, `writeTextAtomic`, `writeJsonAtomic`.
+- Domain parsers/types: parsed charter/milestones/criteria/commands, evidence schema validation, source freshness, report markdown checks.
+
+### Module inventory
+
+| File | Current role |
 |---|---|
-| `viewPlan` | `(projectDir, {charterId}) => PlanView` |
-| `lockPlan` | `(projectDir, {charterId, now?, legacy?}) => LockPlanResult` |
-| `addFeature` | `(projectDir, AddFeatureInput) => FeatureWriteResult` |
-| `addFeatureBatch` | `(projectDir, AddFeatureBatchInput) => AddFeatureBatchResult` |
-| `updateFeature` | `(projectDir, UpdateFeatureInput) => FeatureWriteResult` |
-
-**`PlanView.drift` categories**
-- `uncovered`: charter criteria with no feature claiming `fulfills: [criterionId]`.
-- `orphanFeatures`: features with `fulfills: []`.
-- `unknownFulfilledCriteria`: features claiming a criterion id not in the charter.
-- `nextActions`: contextual next actions based on drift state.
-
-**`lockPlan` preconditions (BLOCKs)**
-- At least one VAL-* criterion in `charter.md`.
-- At least one feature in `plan/`.
-- No uncovered criteria.
-- No orphan features.
-- No unknown fulfilled criteria references.
-- No precondition cycles (DFS color algorithm).
-- (non-legacy only) No missing `Verifier:` lines.
-- (non-legacy only) No weak verifiers (`verifier=manual` without `Because:`).
-
-**Atomic batch write (`addFeatureBatch`)**
-1. Validate every entry; detect duplicate ids within batch.
-2. Scan `plan/` for id collisions with existing files.
-3. Stage every write to `<finalPath>.<pid>.<timestamp>.<random>.tmp`.
-4. `rename` in request order; on any failure roll back committed renames + unlink leftover temps.
-5. Append `feature_added` events only after all renames succeed.
-6. Write `plan.json` snapshot atomically (via `writeJsonAtomic`).
-
-**Design patterns**
-- **Atomic rename** for all file writes (no partial state on crash).
-- **Two-phase commit**: validate → stage → commit.
-- **Rollback**: best-effort unlink of committed files and staged temps on failure.
-- **Content-addressable digest**: `digestFeatures` produces `sha256:<hex>` of canonicalized feature metadata for `planDigest`.
-
-**Data/control flow**
-
-```
-charter_plan tool
-  └─ viewPlan → parse charter.md + readFeatures(plan/) → PlanView
-               └─ writeJsonAtomic(plan.json)
-  └─ lockPlan → viewPlan → precondition checks → dispatchHook → writeCharterState → appendEvent("plan_locked")
-  └─ addFeature/addFeatureBatch → validate → writeFile/rename → appendEvent("feature_added")
-  └─ updateFeature → readFile → merge → writeFile → appendEvent("feature_updated")
-```
-
-**Integration points**
-- Reads: `charter.md` (domain/charter-md), `plan/*.md` (domain/feature-md).
-- Writes: `plan/<id>.md`, `plan.json` (via `writeJsonAtomic`).
-- Calls: `appendEvent` (store), `charterDir` (store), `loadCharterState` (store), `writeCharterState` (store), `writeJsonAtomic` (store), `dispatchHook` (hooks).
-
----
-
-## `record-service.ts`
-
-**Responsibility** — Evidence recording, verifier execution, handoff application, and milestone projection. Governs all writes to the evidence layer (`work/<featureId>/evidence/`, `criterion-state.json`, `feature-state.json`).
-
-**Public API**
-
-| Export | Signature |
-|---|---|
-| `recordEvidence` | `(projectDir, RecordEvidenceInput) => RecordEvidenceResult` |
-| `recordEvidenceBatch` | `(projectDir, RecordEvidenceBatchInput) => RecordEvidenceBatchResult` |
-| `loadCriterionState` | `(dir, charterId) => CriterionStateFile` |
-| `verifyCriterion` | `(projectDir, VerifyCriterionInput) => VerifyCriterionResult` |
-| `applyHandoff` | `(projectDir, ApplyHandoffInput) => ApplyHandoffResult` |
-| `loadFeatureState` | `(dir, charterId) => FeatureStateFile` |
-
-**Evidence record shape**
-Each write creates:
-- `work/<featureId>/evidence/<stamp>/evidence.json` — the evidence document.
-- Updates `criterion-state.json` with the latest record for that criterion.
-- Appends `evidence_recorded` to `events.jsonl`.
-
-**`recordEvidenceBatch` phases**
-1. Validate all entries (no I/O).
-2. Stage every evidence file (`writeTextAtomic` is per-file atomic).
-3. On failure: unlink all written files; re-throw before `criterion-state.json` write.
-4. Single `writeJsonAtomic(criterion-state.json)` covering all entries.
-5. Append one `evidence_recorded` per entry.
-6. Project feature completion + milestone readiness.
-
-**Verifier execution (`verifyCriterion`)**
-- Spawns `/bin/sh -c <command>` via Node `child_process.spawn`.
-- Captures stdout/stderr up to 64 KB each; truncates and sets `truncated: true`.
-- SIGKILL after `timeoutMs` (default 120 s).
-- Maps exit code 0 → `outcome: "pass"`, else `"fail"`.
-- Writes evidence with `source: "verifier"` and captures exit code, duration, stdout, stderr, truncated, timedOut in `details`.
-
-**Handoff application (`applyHandoff`)**
-- Validates all `completedCriteria` criterion ids against the charter.
-- Writes a handoff envelope (`handoffs/<stamp>__<featureId>__<sessionId>.json`).
-- Calls `recordEvidence` for each completed criterion with `source: "subagent"` and `recordedBy: subagent:<persona>:<sessionId>`.
-- Updates `feature-state.json`: flips to `completed` if all fulfilled criteria are pass, otherwise preserves `in_progress`.
-- Detects review handoffs (session id contains `charter-reviewer`) and preserves the implementer's `lastWorkerSessionId` for the identity-disjoint review check.
-- Projects `milestone_ready_for_review`.
-
-**Milestone projection (`projectMilestoneReadyForReview`)**
-- Triggered after any evidence write or handoff that affects a feature.
-- Reads all features in the same milestone.
-- If ALL features are `status: "completed"` (none `failed`) → appends a single idempotent `milestone_ready_for_review` event per `(milestoneId, planDigest)`.
-- Event contains `milestoneId`, `planDigest`, and sorted `criterionIds` for milestone review tracking.
-
-**Design patterns**
-- **Append-only evidence**: evidence files are never modified, only appended. `criterion-state.json` is the mutable latest-pointer.
-- **Single atomic state write**: batch evidence uses one `writeJsonAtomic` call regardless of entry count.
-- **Staged writes with rollback**: evidence files written before `criterion-state.json`; failures unlink the former before re-throw.
-- **Idempotent projections**: `milestone_ready_for_review` deduplicates by `(milestoneId, planDigest)`.
-- **Subagent identity encoding**: `recordedBy: "subagent:<persona>:<sessionId>"` enables review-gate and identity-disjoint checks.
-
-**Data/control flow**
-
-```
-charter_record tool
-  ├─ evidence → recordEvidence → parse charter.md → writeTextAtomic(evidence.json)
-  │            → writeJsonAtomic(criterion-state.json) → appendEvent("evidence_recorded")
-  │            → projectFeatureCompletion → projectMilestoneReadyForReview
-  │
-  ├─ verify → verifyCriterion → spawn /bin/sh → recordEvidence(source=verifier)
-  │
-  └─ handoff_apply → applyHandoff
-          → validate criterion ids
-          → writeTextAtomic(handoff envelope)
-          → recordEvidence per completed criterion (source=subagent)
-          → writeJsonAtomic(feature-state.json)
-          → appendEvent("handoff_applied")
-          → projectMilestoneReadyForReview
-```
-
-**Integration points**
-- Reads: `charter.md` (domain/charter-md), `criterion-state.json`, `feature-state.json`, `state.json` (for planDigest), `plan/*.md` (domain/feature-md), `events.jsonl`.
-- Writes: `work/<featureId>/evidence/*.json`, `criterion-state.json`, `feature-state.json`, `handoffs/*.json`, `events.jsonl`.
-- Calls: `appendEvent` (store), `charterDir` (store), `loadCharterState` (store), `writeJsonAtomic` (store), `writeTextAtomic` (store), `parseCharterMarkdown` (domain), `parseFeatureMarkdown` (domain), `projectFeatureCompletionFromEvidence`, `projectMilestoneReadyForReview`.
-
----
-
-## `drift-service.ts`
-
-**Responsibility** — Computes the four-category drift view over the live charter state. A pure, stateless computation given `projectDir`, `charterId`, and optional `now`.
-
-**Public API**
-
-```typescript
-computeDrift(projectDir, { charterId, now?, freshnessWindowMs? }) => DriftViews
-```
-
-**`DriftViews` categories**
-
-| Category | Condition |
-|---|---|
-| `uncovered` | Criterion has no entry in `criterion-state.json`, OR entry `outcome !== "pass"` |
-| `stale` | `requireFreshEvidence: true` AND last evidence age > `freshnessWindowMs` (default 24 h) |
-| `stuck` | Feature with `status === "in_progress"` in `feature-state.json` |
-| `readyNext` | Feature where: not completed, all preconditions completed, and at least one fulfilled criterion is uncovered |
-
-**Design patterns**
-- **Pure projection**: reads state files, computes sets, returns a plain object. No side effects.
-- **Set algebra**: uses `Set<string>` for O(1) membership tests across criteria and features.
-- **Graceful degradation**: all file reads are try/catch; missing files return empty results.
-
-**Integration points**
-- Reads: `charter.md` (domain/charter-md), `plan/*.md` (domain/feature-md), `criterion-state.json`, `feature-state.json`, `state.json`.
-
----
-
-## `binding-service.ts`
-
-**Responsibility** — Dual-pointer session-to-charter binding with crash-safe reconciliation.
-
-**Pointers**
-- **Forward**: `state.json.sessionId` — lives at `<projectDir>/.pi/charters/<charterId>/state.json`.
-- **Reverse**: `<homeDir>/.pi/agent/sessions/<sessionId>/charter.json` → `{ sessionId, charterId, projectDir, boundAt }`.
-
-**Public API**
-
-| Export | Signature |
-|---|---|
-| `bindCharterToSession` | `(projectDir, {charterId, sessionId, homeDir?, now?}) => SessionBindingRecord` |
-| `rebindCharter` | `(projectDir, {charterId, sessionId, homeDir?, now?}) => SessionBindingRecord` |
-| `clearSessionBinding` | `(sessionId, homeDir?) => void` |
-| `readSessionBinding` | `({sessionId, homeDir?}) => SessionBindingRecord \| null` |
-| `resolveCharterId` | `({charterId?}, {sessionId?, homeDir?}) => {charterId, source}` |
-| `reconcileSessionBinding` | `({sessionId, homeDir?, now?}) => SessionBindingRecord \| null` |
-
-**`resolveCharterId` resolution order**
-1. Return explicit `charterId` argument → `source: "argument"`.
-2. Read reverse binding → `source: "binding"`.
-3. Throw `NoCharterBoundError`.
-
-**Reconciliation (`reconcileSessionBinding`)**
-- Reads reverse binding.
-- If forward `state.json.sessionId` is missing or stale, restores it from the reverse record.
-- Returns `null` if no reverse binding exists.
-
-**Design patterns**
-- **Atomic dual-write**: forward (`writeCharterState`) and reverse (`writeReverse`) are both written; reverse uses temp-file rename.
-- **Crash-safe**: reverse pointer is only written after forward succeeds; reconciliation restores forward from reverse.
-- **Custom error type**: `NoCharterBoundError` extends `Error` with `code: "NO_CHARTER_BOUND"` and `hint` for programmatic handling.
-
-**Integration points**
-- Reads: `state.json` (store), reverse `charter.json`.
-- Writes: `state.json` (store), reverse `charter.json`.
-- Called by: `registration.ts` tool handlers, `session_start` handler, `registerCharterFlags`.
-
----
-
-## `hooks.ts`
-
-**Responsibility** — In-process event bus for charter state-transition veto. Subscribers return `{decision: "block", reason}` or `{decision: "allow"}`; a single block throws.
-
-**Public API**
-
-| Export | Signature |
-|---|---|
-| `subscribeHook` | `(<event>, handler: HookSubscriber) => () => void` (returns unsubscribe) |
-| `dispatchHook` | `(<event>, payload) => Promise<void>` |
-| `clearHookSubscribers` | `(event?) => void` |
-
-**Hook events**
-
-| Event | Payload | Fires in |
-|---|---|---|
-| `charter:before_lock_plan` | `BeforeLockPlanPayload` | `lockPlan` |
-| `charter:before_complete` | `BeforeCompletePayload` | `completeCharter` |
-| `charter:before_amend_charter` | `BeforeAmendCharterPayload` | `amendCharter` |
-| `charter:before_force_complete` | `BeforeForceCompletePayload` | `forceCompleteCharter` |
-
-**Design patterns**
-- **Veto pattern**: short-circuits on first `block` decision.
-- **Module-level registry**: `Map<CharterHookEvent, Set<HookSubscriber>>` is a singleton. `subscribeHook` returns an unsubscribe function for teardown.
-- **Async**: `dispatchHook` awaits each subscriber; subscribers may be sync or async.
-
-**Integration points**
-- Called by: `plan-service.ts` (`lockPlan`), `service.ts` (`completeCharter`, `amendCharter`, `forceCompleteCharter`).
-- No infrastructure dependencies — pure application layer.
-
----
-
-## `async-bridge-service.ts`
-
-**Responsibility** — Subscribes to subagent-bridge `subagent:async-started` and `subagent:async-complete` events; writes `feature_started` / `feature_completed` / `feature_failed` events into the charter's `events.jsonl`.
-
-**Public API**
-
-| Export | Signature |
-|---|---|
-| `attributionFromMetadata` | `(metadata) => AsyncBridgeAttribution \| null` |
-| `handleAsyncStarted` | `(input) => Promise<boolean>` |
-| `handleAsyncComplete` | `(input) => Promise<boolean>` |
-
-**Attribution extraction**
-Requires `pi-charter.projectDir` and `pi-charter.charterId` in metadata (both must be non-empty strings). Optional: `pi-charter.featureId`, `pi-charter.criterionId`. Returns `null` if required keys are absent — silently ignored (no attribution).
-
-**Design patterns**
-- **Narrow bridge**: intentionally ignores events without both required metadata keys.
-- **Event sourcing**: writes immutable `MissionEvent` records into `events.jsonl`.
-- **Pure functions + async wrapper**: `handleAsyncStarted` / `handleAsyncComplete` are async but internally pure aside from the `appendEvent` call.
-
-**Integration points**
-- Reads: subagent event payload (from `subagent-bridge`).
-- Writes: `events.jsonl` (via `appendEvent`).
-- Called by: `registration.ts` (wires the two handlers to the subagent-bridge event bus).
-
----
-
-## `reminders-bridge.ts`
-
-**Responsibility** — Bridges pi-charter state to the pi-reminder subsystem. Emits `reminder:upsert` and `reminder:remove` events on the shared event bus.
-
-**Public API**
-
-| Export | Signature |
-|---|---|
-| `registerCharterRemindersBridge` | `(pi) => void` (registers no handlers; event-bus-only) |
-| `upsertCharterReminder` | `(pi, projectDir, charterId) => Promise<void>` |
-| `removeCharterReminder` | `(pi, charterId) => void` |
-
-**Reminder content**
-Emits a persistent reminder with `ttl: "persistent"` and `repeatEveryTurns: 8` containing:
-- Charter name, status, `passCount/totalCount`.
-- `next` guidance (computed differently for planning vs. active vs. paused).
-- Status-specific guidance text.
-
-**Defense in depth**
-`upsertCharterReminder` checks for terminal status and calls `removeCharterReminder` instead of upserting.
-
-**Design patterns**
-- **Event emitter pattern**: does not hold state; delegates to `pi.events.emit`.
-- **Graceful degradation**: `pi-reminders` may be absent; emitting to a bus with no subscribers is a no-op.
-- **Seam for testing**: `upsertCharterReminder` is async-pure; `removeCharterReminder` is sync.
-
-**Integration points**
-- Called by: `registration.ts` tool handlers (create, pause, resume, lockPlan, evidence, handoff) and `session_start` handler.
-- Emits: `reminder:upsert`, `reminder:remove` on `pi.events`.
-
----
-
-## Cross-cutting concerns
-
-### Trust model (VAL hierarchy)
-
-```
-trustRank(source, recordedBy, hasBecause) → number
-  subagent:charter-reviewer:*  → 3 (always clears)
-  verifier | hook | subagent:*  → 2 (clears if has because)
-  manual + because              → 1 (clears only on charter-reviewer override)
-  manual (no because)           → 0 (blocked unless charter-reviewer records)
-```
-
-### Evidence identity encoding
-
-```
-recordedBy ::= "agent:root"           # default root agent
-            |  "subagent:<persona>:<sessionId>"
-            |  "subagent:charter-reviewer:<sessionId>"  # trusted reviewer
-```
-
-### File layout per charter
-
-```
-<projectDir>/.pi/charters/<charterId>/
-  state.json              # CharterState (mutable)
-  charter.md              # Charter document (authored)
-  events.jsonl            # Append-only event log
-  criterion-state.json    # Latest evidence pointer per VAL
-  feature-state.json      # Feature status (completed/in_progress/failed)
-  plan.json               # Snapshot of plan coverage (generated)
-  plan/
-    <featureId>.md        # Feature definitions
-  work/
-    <featureId>/
-      evidence/
-        <stamp>/
-          evidence.json   # Evidence documents (append-only)
-  handoffs/
-    <stamp>__<featureId>__<sessionId>.json  # Handoff envelopes
-
-<homeDir>/.pi/agent/sessions/<sessionId>/
-  charter.json            # Reverse session binding
-```
-
-### Tool → Service → Store/Data domain path
-
-```
-charter_manage → service.ts → store.ts → filesystem
-charter_plan   → plan-service.ts → domain/charter-md, domain/feature-md → filesystem
-charter_record → record-service.ts → domain/charter-md → filesystem
-charter_status → service.ts → drift-service.ts → filesystem
-session_start   → binding-service.ts + reminders-bridge.ts
-subagent events → async-bridge-service.ts → events.jsonl
-```
+| `architecture-writer.ts` | Active-state writer/appender for `architecture.md`; exported helpers but not tool-wired. |
+| `async-bridge-service.ts` | Converts attributed subagent async lifecycle events to charter `events.jsonl` entries. |
+| `binding-service.ts` | Forward/reverse session-charter binding, child binding, reconciliation, explicit-or-bound id resolution. |
+| `drift-service.ts` | Computes uncovered/stale/ready-next/sidecar/artifact drift views. |
+| `errors.ts` | `CharterToolError` with `code` and legal `nextActions`. |
+| `hooks.ts` | In-process veto bus for defined charter hook events. |
+| `ralph-service.ts` | Loads/renders deterministic Ralph continuation prompts and compact status summaries. |
+| `record-service.ts` | Writes typed evidence files and `criterion-state.json`; imports evidence files/narratives. |
+| `registration.ts` | Registers tools, commands, flags, widget, Ralph loop/renderer, subagent bridges. |
+| `reminders-bridge.ts` | Emits reminder upsert/remove payloads; registration is a no-op. |
+| `service.ts` | Lifecycle FSM, completion gate, status projection, legal next actions, active-charter listing. |
+| `sidecar-drift.ts` | Detects out-of-band edits to `state.json` and `criterion-state.json`. |
+| `subagent-api.ts` | Cached pi-subagents exposed API handle. |
+| `subagent-bootstrap.ts` | Formats charter commands and child bootstrap prompt text. |
+| `subagent-write-audit.ts` | Snapshots/diffs managed files to detect forbidden child writes. |
+| `version.ts` | Reads extension version from `package.json`. |
+
+## Vestigial / tech-debt
+
+- `service.ts:663` exports deprecated `forceCompleteCharter()`, but `registration.ts` has no `force_complete` action; it delegates to `abandonCharter()` and rejects non-`abandoned` targets.
+- `service.ts:680` exports deprecated `amendCharter()`, but `registration.ts` has no amend action; it always throws an `amend.removed` `CharterToolError`.
+- `hooks.ts:11-25` still defines `charter:before_lock_plan` and a payload containing `planDigest`/`featureCount`, but `plan-service.ts` and the lock-plan flow are absent, so there is no live emitter in this folder.
+- `service.ts:699-703` keeps `BlockingContext` fields for `milestone_ready_for_review` and implementer sessions; current completion logic does not use them as a gate.
+- `service.ts:803-819` still reads residual `milestone_ready_for_review` events from `events.jsonl`, while `service.ts:859-871` explicitly no longer emits legacy review-prompt next actions.
+- `service.ts:791-795` comments mention `feature-state.json`, `plan/*.md`, and work evidence for blocking context, but the implementation only reads `events.jsonl` for `milestone_ready_for_review` ids.
+- `subagent-write-audit.ts:6-14` protects `feature-state.json` from subagent writes even though no live reader/writer in this folder creates or consumes it.

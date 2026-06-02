@@ -7,7 +7,6 @@ import { computeDrift, type DriftViews } from "./drift-service";
 import { isEvidenceStaleForSrcChange, lastSrcChangeMs } from "../domain/src-freshness";
 import { dispatchHook } from "./hooks";
 import { checkReportCompletion, extractCharterTitleFromMarkdown, renderReportScaffold } from "../domain/report-md";
-import { trustRank } from "../domain/trust-rank";
 import { TERMINAL_STATUSES, type Budget, type CharterCommands, type CharterCriterion, type CharterState, type CharterStatus, type EvidenceSource, type NextAction, type ParseWarning } from "../domain/types";
 import { CharterToolError } from "./errors";
 import { logger } from "../infrastructure/logger";
@@ -258,113 +257,12 @@ function qaBriefNames(entries: Awaited<ReturnType<typeof readQaBriefEntries>>): 
     .sort((a, b) => a.localeCompare(b));
 }
 
-/**
- * Scan events.jsonl for `milestone_ready_for_review` events whose criterionIds
- * have not yet been fully covered by a later subagent review evidence record.
- * Append one nextAction per unreviewed milestone.
- */
-
-
 async function computeMilestoneStatusSummariesSafely(dir: string, charterId: string): Promise<MilestoneStatusSummary[]> {
   try {
     return await computeMilestoneStatusSummaries(dir, charterId);
   } catch {
     return [];
   }
-}
-
-export interface UnreviewedMilestone {
-  milestoneId: string;
-  planDigest: string;
-  criterionIds: string[];
-  /** Timestamp of the originating milestone_ready_for_review event. */
-  readyTs: string;
-}
-
-
-interface LatestMilestoneReadyEvent {
-  milestoneId: string;
-  planDigest: string;
-  criterionIds: string[];
-  ts: string;
-}
-
-async function listLatestMilestoneReadyEvents(dir: string): Promise<LatestMilestoneReadyEvent[]> {
-  const eventsPath = join(dir, "events.jsonl");
-  let raw = "";
-  try {
-    raw = await readFile(eventsPath, "utf8");
-  } catch {
-    return [];
-  }
-  // Keep only the latest milestone_ready_for_review per milestoneId. Re-
-  // completion under a new planDigest emits a fresh event, so the latest
-  // event always reflects the current `(milestoneId, planDigest)` tuple.
-  const readyByMilestone = new Map<string, { ts: string; planDigest: string; criterionIds: string[] }>();
-  for (const line of raw.split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let event: Record<string, unknown>;
-    try {
-      event = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-    if (event.type !== "milestone_ready_for_review") continue;
-    const milestoneId = typeof event.milestoneId === "string" ? event.milestoneId : undefined;
-    const planDigest = typeof event.planDigest === "string" ? event.planDigest : "";
-    const ts = typeof event.ts === "string" ? event.ts : "";
-    const criterionIds = Array.isArray(event.criterionIds)
-      ? event.criterionIds.filter((id): id is string => typeof id === "string")
-      : [];
-    if (!milestoneId) continue;
-    const prev = readyByMilestone.get(milestoneId);
-    if (!prev || ts >= prev.ts) {
-      readyByMilestone.set(milestoneId, { ts, planDigest, criterionIds });
-    }
-  }
-
-  return [...readyByMilestone.entries()].map(([milestoneId, ready]) => ({
-    milestoneId,
-    planDigest: ready.planDigest,
-    criterionIds: ready.criterionIds,
-    ts: ready.ts,
-  }));
-}
-
-/**
- * Pure helper consumed by `getCharterStatus`. Reads
- * `events.jsonl` and feature evidence records, returns the set of
- * milestone_ready_for_review events whose criterionIds are not yet fully
- * covered by subagent-attributed pass evidence.
- *
- * Coverage is decided by persisted evidence records whose `recordedBy` starts
- * with `subagent:` and a non-empty agent/session suffix, not by event payloads.
- */
-export async function listUnreviewedMilestones(dir: string): Promise<UnreviewedMilestone[]> {
-  const readyEvents = await listLatestMilestoneReadyEvents(dir);
-  if (readyEvents.length === 0) return [];
-
-  // Milestone review coverage: a milestone counts as reviewed iff every
-  // criterionId has AT LEAST ONE evidence record where `recordedBy` starts
-  // with `subagent:` prefix and `ts >= milestone_ready_for_review.ts`.
-  // Latest-record-in-criterion-state is not enough; a later agent:root
-  // record would otherwise clobber a valid subagent review.
-  const subagentReviewsByCriterion = await loadSubagentReviewsByCriterion(dir);
-  const unreviewed: UnreviewedMilestone[] = [];
-  for (const ready of readyEvents) {
-    const missing = ready.criterionIds.filter((id) => {
-      const reviews = subagentReviewsByCriterion.get(id) ?? [];
-      return !reviews.some((review) => review.ts >= ready.ts);
-    });
-    if (missing.length === 0) continue;
-    unreviewed.push({
-      milestoneId: ready.milestoneId,
-      planDigest: ready.planDigest,
-      criterionIds: ready.criterionIds,
-      readyTs: ready.ts,
-    });
-  }
-  return unreviewed;
 }
 
 export interface LoadedFeatureEvidenceRecord {
@@ -420,41 +318,6 @@ async function loadEvidenceJson(absolutePath: string, relativePath: string): Pro
   return { path: relativePath, ts, record: parsed };
 }
 
-/**
- * Walk work/<featureId>/evidence records and collect every pass evidence record
- * whose `recordedBy` starts with `subagent:`, keyed by criterionId, with the
- * record `ts`. Milestone review coverage compares these timestamps against
- * milestone_ready_for_review.ts.
- */
-async function loadSubagentReviewsByCriterion(dir: string): Promise<Map<string, { ts: string }[]>> {
-  return loadSubagentPassEvidenceByCriterion(dir, "subagent:");
-}
-
-async function loadSubagentPassEvidenceByCriterion(dir: string, recordedByPrefix: string): Promise<Map<string, { ts: string }[]>> {
-  const out = new Map<string, { ts: string }[]>();
-  const workDir = join(dir, "work");
-  let featureDirs: string[];
-  try {
-    featureDirs = await readdir(workDir);
-  } catch {
-    return out;
-  }
-  for (const featureSegment of featureDirs) {
-    for (const { record: parsed } of await loadFeatureEvidence(dir, featureSegment)) {
-      if (parsed.outcome !== "pass") continue;
-      const criterionId = typeof parsed.criterionId === "string" ? parsed.criterionId : undefined;
-      const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : undefined;
-      const ts = typeof parsed.ts === "string" ? parsed.ts : undefined;
-      if (!criterionId || !recordedBy || !ts) continue;
-      if (!recordedBy.startsWith(recordedByPrefix)) continue;
-      const list = out.get(criterionId) ?? [];
-      list.push({ ts });
-      out.set(criterionId, list);
-    }
-  }
-  return out;
-}
-
 async function computeMilestoneStatusSummaries(dir: string, charterId: string): Promise<MilestoneStatusSummary[]> {
   const charter = await loadParsedCharter(dir);
   const criterionState = await loadCriterionState(dir, charterId);
@@ -479,26 +342,6 @@ async function computeMilestoneStatusSummaries(dir: string, charterId: string): 
     valPassCount: criterionIds.filter((criterionId) => criterionState.criteria[criterionId]?.outcome === "pass").length,
   }];
 }
-
-
-
-async function computeMilestoneReviewNextActions(dir: string): Promise<NextAction[]> {
-  const unreviewed = await listUnreviewedMilestones(dir);
-  return unreviewed.map((entry) => ({
-    tool: "subagent" as const,
-    hint: `Delegate a review subagent for milestone ${entry.milestoneId} (criteria: ${entry.criterionIds.join(", ")}).`,
-    metadata: { milestoneId: entry.milestoneId, criterionIds: entry.criterionIds },
-  }));
-}
-
-async function computeMilestoneReviewNextActionsSafely(dir: string): Promise<NextAction[]> {
-  try {
-    return await computeMilestoneReviewNextActions(dir);
-  } catch {
-    return [];
-  }
-}
-
 async function computeBlockingForCompleteSafely(dir: string, charterId: string): Promise<BlockingForCompleteEntry[]> {
   try {
     const charter = await loadParsedCharter(dir);
@@ -635,11 +478,11 @@ export async function completeCharter(
   ];
   const trustBlocks = blocking.filter((entry) => entry.reason !== "val-not-pass" && !entry.reason.startsWith("report-"));
   if (blocking.length > 0) {
-    // Render `<id>(<reason>)` per VAL so identity-disjoint and
-    // requires-subagent-review rejections are distinguishable from generic
-    // low-trust evidence in the user-facing error string. The summary line
-    // keeps the legacy `low-trust evidence for N VAL(s): ...` phrasing so
-    // existing tests grepping for VAL ids continue to match.
+    // Render `<id>(<reason>)` per VAL so low-trust evidence remains
+    // distinguishable from generic VAL-not-pass entries in the user-facing
+    // error string. The summary line keeps the legacy `low-trust evidence for
+    // N VAL(s): ...` phrasing so existing tests grepping for VAL ids continue
+    // to match.
     if (trustBlocks.length > 0) {
       const idsWithReasons = trustBlocks.map((entry) => `${entry.criterionId}(${entry.reason})`).join(", ");
       failures.push(`low-trust evidence for ${trustBlocks.length} VAL(s): ${idsWithReasons}`);
@@ -673,7 +516,7 @@ export async function completeCharter(
       `Cannot complete charter:`,
       ` - ${failures.join("\n - ")}`,
       ...(trustBlocks.length > 0
-        ? ["Fix: add Because: rationale and record pass evidence from a review subagent (source=subagent, recordedBy=subagent:<agent>:<sessionId>) for the listed VALs."]
+        ? ["Fix: add a Because: rationale to manual pass evidence for the listed VALs."]
         : []),
     ].join("\n");
     // Collect every failing criterion id so nextActions can name them in
@@ -694,20 +537,8 @@ export async function completeCharter(
     for (const id of idList.slice(0, 5)) {
       nextActions.push({
         tool: "charter_record",
-        action: "verify",
-        hint: `Run the configured verifier for ${id} to produce machine-trusted evidence.`,
-      });
-      nextActions.push({
-        tool: "charter_record",
         action: "evidence",
-        hint: `Record subagent-attributed pass evidence for ${id} (set source='subagent', recordedBy='subagent:<agent>:<sessionId>').`,
-      });
-    }
-    const reviewerBlocking = blocking.filter((entry) => entry.reason !== "val-not-pass");
-    if (reviewerBlocking.length > 0) {
-      nextActions.push({
-        tool: "subagent",
-        hint: `Delegate a review subagent for: ${reviewerBlocking.map((b) => b.criterionId).filter(Boolean).join(", ")}.`,
+        hint: `Record pass evidence for ${id}.`,
       });
     }
 
@@ -862,42 +693,21 @@ export async function amendCharter(
 }
 
 /**
- * Extra inputs used by `computeBlockingForComplete` to evaluate the
- * explicit review-subagent gate and the identity-disjoint predicate. When
- * omitted, only the trust gate applies and `requireReviewSubagent` defaults
- * to the criterion's declared (or undefined-as-false) value.
+ * Extra inputs used by status displays. Review-subagent authoring annotations
+ * are display-only; completion blocking is handled by the evidence gates below.
  */
 export interface BlockingContext {
   /** Union of criterionIds across every milestone_ready_for_review event. */
   milestoneCriterionIds: Set<string>;
   /** Map criterionId -> implementer session id pulled from feature-state.lastWorkerSessionId. */
   implementerSessionByCriterion: Map<string, string>;
-  /** Map criterionId -> every pass evidence record's recordedBy on disk. */
-  passRecordedByCriterion: Map<string, string[]>;
 }
 
 /**
- * Only an explicit `RequireReviewSubagent: true` in criteria.md enables the
- * review subagent gate. Legacy milestone_ready_for_review auto-default is not
- * applied.
- */
-export function effectiveRequireReviewSubagent(
-  criterion: CharterCriterion,
-  _milestoneCriterionIds?: ReadonlySet<string>,
-): boolean {
-  return criterion.requireReviewSubagent === true;
-}
-
-/**
- * Shared trust-gate computation used by both `completeCharter` (to block) and
- * `getCharterStatus` (to surface). A criterion shows up here when:
- *   - it has pass evidence AND that evidence is low-trust (manual or
- *     manual+because) AND the writer isn't a review subagent; OR
- *   - effective `requireReviewSubagent` is true and no pass evidence has a
- *     a subagent review writer; OR
- *   - effective `requireReviewSubagent` is true and every pass evidence
- *     shares its session id with the implementing feature
- *     (`implementer-only-reviewer`).
+ * Shared completion-blocking computation used by both `completeCharter` (to
+ * block) and `getCharterStatus` (to surface). A criterion shows up here when
+ * its latest evidence is not pass, or when manual pass evidence lacks a Because
+ * rationale.
  *
  * Criteria with missing evidence are surfaced separately by
  * `checkCompletionGate`; criteria whose latest evidence is partial/fail are
@@ -909,7 +719,6 @@ export function computeBlockingForComplete(
   context?: BlockingContext,
 ): BlockingForCompleteEntry[] {
   const blocking: BlockingForCompleteEntry[] = [];
-  const milestoneIds = context?.milestoneCriterionIds ?? new Set<string>();
   for (const criterion of criteria) {
     const record = criterionState.criteria[criterion.id];
     if (!record) continue;
@@ -924,64 +733,26 @@ export function computeBlockingForComplete(
       continue;
     }
     const trustReason = blockingReason(record);
-    const effectiveReview = effectiveRequireReviewSubagent(criterion, milestoneIds);
-    if (effectiveReview && context) {
-      const allPass = context.passRecordedByCriterion.get(criterion.id) ?? [];
-      const subagentRecords = allPass.filter((rb) => isSubagentRecordedBy(rb));
-      if (subagentRecords.length === 0) {
-        blocking.push({ criterionId: criterion.id, reason: "requires-subagent-review" });
-        continue;
-      }
-      const implementerSession = context.implementerSessionByCriterion.get(criterion.id);
-      if (implementerSession) {
-        const allShareImplementer = subagentRecords.every((rb) =>
-          extractSessionId(rb) === implementerSession,
-        );
-        if (allShareImplementer) {
-          blocking.push({ criterionId: criterion.id, reason: "implementer-only-reviewer" });
-          continue;
-        }
-      }
-      // Charter-verifier evidence present and at least one reviewer is
-      // session-disjoint from the implementer; the review gate is satisfied,
-      // so the trust reason (if any) is also satisfied for this criterion.
-      continue;
-    }
     if (trustReason) blocking.push({ criterionId: criterion.id, reason: trustReason });
   }
   return blocking;
 }
 
-/**
- * Extract the trailing `<sessionId>` segment from a recordedBy string of the
- * form `subagent:<persona>:<sessionId>`. Returns undefined when the input
- * does not match the subagent shape.
- */
-function extractSessionId(recordedBy: string): string | undefined {
-  if (!recordedBy.startsWith("subagent:")) return undefined;
-  const parts = recordedBy.split(":");
-  if (parts.length < 3) return undefined;
-  const sessionId = parts.slice(2).join(":");
-  return sessionId.trim() ? sessionId : undefined;
-}
-
 export function isSubagentRecordedBy(recordedBy: string): boolean {
-  return extractSessionId(recordedBy) !== undefined;
+  if (!recordedBy.startsWith("subagent:")) return false;
+  const parts = recordedBy.split(":");
+  if (parts.length < 3) return false;
+  return Boolean(parts.slice(2).join(":").trim());
 }
 
 function blockingReason(record: CriterionStateRecord): string | undefined {
-  const recordedBy = record.recordedBy ?? "agent:root";
-  if (isSubagentRecordedBy(recordedBy)) return undefined;
   const source: EvidenceSource = record.source ?? "manual";
   const hasBecause = Boolean(record.because && record.because.trim());
-  const rank = trustRank({ recordedBy, source, hasBecause });
-  if (rank > 1) return undefined;
-  if (source !== "manual") {
-    // High-trust source (verifier/hook/subagent) recorded by a non-subagent writer
-    // writer is rare but still passes the gate; only manual lands here.
-    return undefined;
-  }
-  return hasBecause ? "manual+because" : "manual";
+  // ADR-0013: the only surviving evidence-trust gate is "manual pass evidence
+  // must carry a Because:". Who recorded it (subagent vs root) no longer affects
+  // completion; source/recordedBy are display-only.
+  if (source === "manual" && !hasBecause) return "manual";
+  return undefined;
 }
 
 function checkCompletionGate(
@@ -999,7 +770,6 @@ function checkCompletionGate(
   if (criteria.length === 0) {
     failures.push("register-empty: no VAL criteria parsed from criteria.md; author criteria (and fix any parse-warnings) before completing");
   }
-  const milestoneIds = context?.milestoneCriterionIds ?? new Set<string>();
   for (const criterion of criteria) {
     const record = criterionState.criteria[criterion.id];
     if (!record) {
@@ -1011,14 +781,8 @@ function checkCompletionGate(
       continue;
     }
     if (criterion.requireFreshEvidence && isEvidenceStaleForSrcChange(record.lastTs, srcChangeMs)) {
-      failures.push(`${criterion.id}: evidence predates last src/ change; re-run verifier or record fresh evidence`);
+      failures.push(`${criterion.id}: evidence predates last src/ change; record fresh evidence`);
       continue;
-    }
-    if (effectiveRequireReviewSubagent(criterion, milestoneIds)) {
-      const source = (record as { source?: string }).source;
-      if (source !== "verifier" && source !== "subagent") {
-        failures.push(`${criterion.id}: requires review subagent evidence (got ${source ?? "manual"})`);
-      }
     }
   }
   return failures;
@@ -1026,16 +790,14 @@ function checkCompletionGate(
 
 /**
  * Read events.jsonl, feature-state.json, plan/*.md, and the work/ evidence
- * tree to assemble the inputs `computeBlockingForComplete` needs to evaluate
- * the explicit review-subagent gate and identity-disjoint predicate. Returns
- * empty maps on missing/unreadable inputs so callers can safely fall back to
- * the trust-gate-only behaviour.
+ * tree to assemble status display inputs. Returns empty maps on
+ * missing/unreadable inputs so callers can safely fall back to trust-gate-only
+ * behaviour.
  */
 export async function loadBlockingContext(dir: string, charterId: string, state?: CharterState): Promise<BlockingContext> {
   const milestoneCriterionIds = await loadMilestoneReadyCriterionIds(dir);
   const implementerSessionByCriterion = new Map<string, string>();
-  const passRecordedByCriterion = await loadPassRecordedByCriterion(dir);
-  return { milestoneCriterionIds, implementerSessionByCriterion, passRecordedByCriterion };
+  return { milestoneCriterionIds, implementerSessionByCriterion };
 }
 
 async function loadMilestoneReadyCriterionIds(dir: string): Promise<Set<string>> {
@@ -1057,35 +819,6 @@ async function loadMilestoneReadyCriterionIds(dir: string): Promise<Set<string>>
   return ids;
 }
 
-
-/**
- * Walk work/<featureId>/evidence run directories and collect every pass
- * evidence record's `recordedBy` keyed by criterionId.
- * We need every record (not just the latest in criterion-state) so the
- * identity-disjoint predicate can demand at least one session-disjoint reviewer.
- */
-async function loadPassRecordedByCriterion(dir: string): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
-  const workDir = join(dir, "work");
-  let featureDirs: string[];
-  try {
-    featureDirs = await readdir(workDir);
-  } catch {
-    return out;
-  }
-  for (const featureSegment of featureDirs) {
-    for (const { record: parsed } of await loadFeatureEvidence(dir, featureSegment)) {
-      if (parsed.outcome !== "pass") continue;
-      const criterionId = typeof parsed.criterionId === "string" ? parsed.criterionId : undefined;
-      const recordedBy = typeof parsed.recordedBy === "string" ? parsed.recordedBy : undefined;
-      if (!criterionId || !recordedBy) continue;
-      const list = out.get(criterionId) ?? [];
-      list.push(recordedBy);
-      out.set(criterionId, list);
-    }
-  }
-  return out;
-}
 
 export async function resumeCharter(
   projectDir: string,
@@ -1135,32 +868,7 @@ export function buildActiveNextActions(opts: {
   const base = nextActionsForStatus(opts.status);
   if (opts.status !== "active") return base;
 
-  const extras: NextAction[] = [];
-  const ready = opts.drift.readyNext[0];
-  if (ready) {
-    const milestoneSuffix = ready.milestoneId ? ` (milestone ${ready.milestoneId})` : "";
-    extras.push({
-      tool: "charter_record",
-      action: "verify",
-      hint: `Advisory next VAL: ${ready.criterionId}${milestoneSuffix}.`,
-      metadata: { criterionId: ready.criterionId, milestoneId: ready.milestoneId },
-    });
-  }
-
-  const reviewBlockers = new Set(
-    opts.blockingForComplete
-      .filter((entry) => entry.reason === "requires-subagent-review" && entry.criterionId)
-      .map((entry) => entry.criterionId!),
-  );
-  for (const criterionId of reviewBlockers) {
-    extras.push({
-      tool: "subagent",
-      hint: `Delegate a review subagent for ${criterionId} (RequireReviewSubagent).`,
-      metadata: { criterionId },
-    });
-  }
-
-  return [...base, ...extras];
+  return base;
 }
 
 export function nextActionsForStatus(status: CharterStatus): NextAction[] {
@@ -1169,7 +877,6 @@ export function nextActionsForStatus(status: CharterStatus): NextAction[] {
       return [
         { tool: "charter_status", hint: "Read drift views before choosing the next move." },
         { tool: "charter_record", action: "evidence", hint: "Record evidence after running a check." },
-        { tool: "charter_record", action: "verify", hint: "Run configured command verifiers for criteria." },
         { tool: "charter", action: "pause", hint: "Pause if blocked or waiting on user input." },
         { tool: "charter", action: "complete", hint: "Complete only if evidence gates pass and REPORT.md sections are filled." },
         { tool: "charter", action: "abandon", hint: "Abandon with a non-empty reason if the charter should not continue." },
@@ -1209,7 +916,6 @@ function guidelinesForStatus(status: CharterStatus): string[] {
     "MAIN AGENT CONTEXT IS PRECIOUS. Delegate verification and critique to user-owned subagents (`subagent({agent:'<name>', metadata:{'pi-charter.charterId':<id>, 'pi-charter.criterionId':'VAL-...', 'pi-charter.projectDir':<cwd>}, ...})`); delegate read-only recon to `subagent({agent:'explorer', ...})`.",
     "SYNC vs ASYNC: a sync subagent call blocks main entirely until the child finishes — main cannot read files, spawn more work, or receive messages/reminders in the meantime. That is fine when the next move depends on the child's output. An `async:true` call returns immediately with a run id; the child runs in the background while main is free to read, edit, spawn more subagents, or hand control back to the user. The subagent runtime wakes main when any child finishes or needs attention, so explicit sleeping/polling is usually unnecessary.",
     "PREFER ASYNC when the next step does not depend on the child's output, when you want to fan out multiple independent runs, or when the user should be able to prompt fixes while work progresses. Stay sync when you genuinely need the result before choosing the next move and have nothing else to do in parallel.",
-    "requireReviewSubagent is satisfied by any pass evidence with source=subagent and non-empty recordedBy (e.g. subagent:<agent>:<sessionId>); use your own review subagents.",
     "Choose one next move from charter_status nextActions; do not guess transitions.",
   ];
   if (status === "paused") return ["Resume before recording new evidence or changing contract files."];
