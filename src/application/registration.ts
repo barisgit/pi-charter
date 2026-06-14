@@ -542,7 +542,7 @@ async function resolveCharterForVerb(
 }
 
 async function openPicker(
-  _pi: ExtensionAPI,
+  pi: ExtensionAPI,
   ctx: CommandCtxLike,
   active: CharterListEntry[],
   isPickerOpen: () => boolean,
@@ -587,22 +587,42 @@ async function openPicker(
       ctx.hasUI && typeof (ctx.ui as { notify?: unknown }).notify === "function"
         ? (msg, kind) => (ctx.ui as { notify: (m: string, t?: "info" | "warning" | "error") => void }).notify(msg, kind)
         : undefined;
-    const result = await ui.custom<string | null>((tui, theme, _kb, done) => new CharterPickerComponent({
-      charters,
-      snapshots,
-      theme,
-      heightProvider: () => tui.terminal?.rows ?? 24,
-      ...(initialId !== undefined ? { initialCursorCharterId: initialId } : {}),
-      boundCharterId,
-      onDone: done,
-      host: {
-        resolveCharterDir: (id) => charterDir(ctx.cwd, id),
-        ...(notifyHost ? { notify: notifyHost } : {}),
-      },
-    }), {
-      overlay: true,
-      overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+    // Blank coordinated widgets (e.g. the aboveEditor charter panel) while the
+    // fullscreen overlay is open so they don't bleed through. We can't reuse
+    // ctx.ui.fullscreen()/client.ui.fullscreen(): that wrapper calls ui.custom
+    // with no options and would drop the overlay anchoring the picker needs. So
+    // we replicate its lease handling around the existing ui.custom call. A
+    // dedicated client with a distinct clientId is used (not the widget
+    // client's "pi-charter") because connect() is not idempotent and a shared
+    // clientId would let dispose() unregister the real charter widget; the
+    // host's fullscreen stack is global, so any client's lease blanks it.
+    const pickerClient = connect(pi as unknown as Parameters<typeof connect>[0], {
+      ctx: ctx as unknown as Parameters<typeof connect>[1]["ctx"],
+      clientId: "pi-charter-picker",
     });
+    const lease = pickerClient.fullscreen.acquire();
+    let result: string | null;
+    try {
+      result = await ui.custom<string | null>((tui, theme, _kb, done) => new CharterPickerComponent({
+        charters,
+        snapshots,
+        theme,
+        heightProvider: () => tui.terminal?.rows ?? 24,
+        ...(initialId !== undefined ? { initialCursorCharterId: initialId } : {}),
+        boundCharterId,
+        onDone: done,
+        host: {
+          resolveCharterDir: (id) => charterDir(ctx.cwd, id),
+          ...(notifyHost ? { notify: notifyHost } : {}),
+        },
+      }), {
+        overlay: true,
+        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+      });
+    } finally {
+      lease.release();
+      pickerClient.dispose();
+    }
     if (result !== null) {
       setCharterSelection({ kind: "explicit", charterId: result });
       await requestSelectionRefreshSafe(ctx);

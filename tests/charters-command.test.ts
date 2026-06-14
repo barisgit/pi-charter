@@ -36,6 +36,7 @@ interface FakePi {
   registerCommand: (name: string, opts: RegisteredCommand) => void;
   sendUserMessage: (text: string) => void;
   sentUserMessages: string[];
+  events: { on: () => () => void; emit: () => void };
 }
 
 function makeFakePi(): FakePi {
@@ -50,6 +51,10 @@ function makeFakePi(): FakePi {
     sendUserMessage(text) {
       sentUserMessages.push(text);
     },
+    // The picker opens a short-lived utils client (connect) for a fullscreen
+    // lease; with no widget host emitting `ready` it stays in fallback mode, so
+    // a no-op event bus is enough to exercise the picker wiring.
+    events: { on: () => () => {}, emit: () => {} },
   };
 }
 

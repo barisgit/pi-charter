@@ -1,13 +1,15 @@
 /**
  * Centralized logging for pi-charter.
  *
- * Writes to ~/.pi/logs/extensions/pi-charter.log. Never writes to stdout/stderr:
- * those streams belong to the Pi TUI/runtime. Logging failures are swallowed so
- * diagnostics never break charter handling.
+ * Delegates file writes to pi-extension-utils `createLogger`, which writes to
+ * `getAgentDir()/log/pi-charter.log` (or `dirname(PI_CHARTER_LOG_PATH)`) with
+ * size-based rotation. Never writes to stdout/stderr: those streams belong to
+ * the Pi TUI/runtime. Logging failures are swallowed so diagnostics never break
+ * charter handling.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { createLogger } from "pi-extension-utils";
 import { dirname, join } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -35,15 +37,18 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
 };
 
-const LEVEL_PREFIX: Record<LogLevel, string> = {
-  debug: "[pi-charter:DEBUG]",
-  info: "[pi-charter]",
-  warn: "[pi-charter:WARN]",
-  error: "[pi-charter:ERROR]",
-};
+const dirOverride = process.env.PI_CHARTER_LOG_PATH?.trim()
+  ? dirname(process.env.PI_CHARTER_LOG_PATH.trim())
+  : undefined;
+const LOG_DIR = dirOverride ?? join(getAgentDir(), "log");
+const LOG_PATH = join(LOG_DIR, "pi-charter.log");
 
-const DEFAULT_LOG_PATH = join(homedir(), ".pi", "logs", "extensions", "pi-charter.log");
-const LOG_PATH = process.env.PI_CHARTER_LOG_PATH?.trim() || DEFAULT_LOG_PATH;
+// Single utils-backed file logger. Level is 'debug' so our shouldLog() stays the
+// single gate (no double-filtering); utils supplies the ISO timestamp + level.
+const fileLogger = createLogger("pi-charter", {
+  level: "debug",
+  ...(dirOverride ? { dir: dirOverride } : {}),
+});
 
 class Logger {
   private minLevel: LogLevel = "info";
@@ -143,19 +148,17 @@ class ChildLogger {
 
 function appendEntryToFile(entry: LogEntry): void {
   try {
-    mkdirSync(dirname(LOG_PATH), { recursive: true });
-    appendFileSync(LOG_PATH, `${formatEntry(entry)}\n`, "utf8");
+    fileLogger[entry.level](formatBody(entry));
   } catch {
     // Logging must never disrupt the pi TUI/runtime.
   }
 }
 
-function formatEntry(entry: LogEntry): string {
-  const prefix = LEVEL_PREFIX[entry.level];
+function formatBody(entry: LogEntry): string {
   const contextStr = formatContext(entry.context);
-  const message = contextStr ? `${prefix} ${entry.message} ${contextStr}` : `${prefix} ${entry.message}`;
+  const message = contextStr ? `${entry.message} ${contextStr}` : entry.message;
   const error = entry.error ? ` ${entry.error.stack ?? entry.error.message}` : "";
-  return `${entry.timestamp.toISOString()} ${message}${error}`;
+  return `${message}${error}`;
 }
 
 function formatContext(context?: LogContext): string {

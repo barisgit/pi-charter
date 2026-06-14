@@ -345,6 +345,9 @@ describe("CharterPickerComponent rendering and navigation", () => {
         registerCommand(name: string, opts: { handler: (args: string, ctx: any) => Promise<void> | void }) {
           commands.set(name, opts);
         },
+        // Picker opens a short-lived utils client for a fullscreen lease; a
+        // no-op event bus keeps it in fallback mode for this wiring test.
+        events: { on: () => () => {}, emit: () => {} },
       } as never);
       const customCalls: Array<{ options: any }> = [];
       await commands.get("charters")!.handler("", {
