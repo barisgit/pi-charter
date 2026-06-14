@@ -200,7 +200,9 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
             t.fg("muted", formatElapsed(snapshot.header.elapsedMs)),
           ].join("  ");
           const tailPlain = `[${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
-          return { label: snapshot.header.name, tailRendered, tailPlain };
+          // Coerce to string: titledTopSegment's truncateToWidth crashes pi on a
+          // non-string label, and header.name derives from on-disk JSON.
+          return { label: String(snapshot.header.name ?? ""), tailRendered, tailPlain };
         },
         rows: (ctx) => buildDetailLines(t, ctx.selectedRow, ctx.selectedRow ? snapshots.get(ctx.selectedRow.charterId) : undefined, ctx.detail.width, bodyHeight(), { allExpanded, objectiveExpanded }),
       },

@@ -98,6 +98,15 @@ const TERMINAL_CAP = 10;
  * that case, which would render the id twice in the picker; the picker
  * prefers a deliberate empty so it can format id + title without dup.
  */
+/**
+ * Resolve a charter's display name, tolerating out-of-contract on-disk state
+ * (e.g. a non-string `name` in a corrupted/legacy `state.json`). Always returns
+ * a string so downstream TUI chrome never receives a non-string and crashes pi.
+ */
+export function charterDisplayName(name: unknown, charterId: string): string {
+  return typeof name === "string" && name.trim() ? name : charterId.slice(0, 8);
+}
+
 export function extractTitleFromH3(headingLine: string): string {
   const match = /^#{2,3}\s+(VAL-[A-Z0-9-]+)(?:\s+(.*))?$/.exec(headingLine);
   if (!match) return "";
@@ -144,7 +153,7 @@ export async function buildPickerSnapshot(
   return {
     charterId,
     header: {
-      name: state.name?.trim() ? state.name : charterId.slice(0, 8),
+      name: charterDisplayName(state.name, charterId),
       status: state.status,
       elapsedMs,
       passCount,
@@ -212,7 +221,7 @@ async function loadListRow(
   ).length;
   const row: CharterListRow = {
     charterId,
-    name: state.name?.trim() ? state.name : charterId.slice(0, 8),
+    name: charterDisplayName(state.name, charterId),
     status: state.status,
     passCount,
     totalCount: parsed?.criteria.length ?? 0,

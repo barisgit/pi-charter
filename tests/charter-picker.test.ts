@@ -110,6 +110,14 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     }
   });
 
+  test("does not crash when a snapshot name is not a string (corrupt state.json)", () => {
+    // A non-string label reaches pi-tui's truncateToWidth and hard-crashes pi
+    // (text.slice is not a function). The detail title must coerce to string.
+    const bad = snapshot("alpha", { header: { name: 12345 as unknown as string, status: "active" as CharterStatus, elapsedMs: 1000, passCount: 1, totalCount: 2 } });
+    const picker = makePicker({ snapshots: new Map([["alpha", bad]]) });
+    expect(() => picker.render(120)).not.toThrow();
+  });
+
   test("renders terminal separator, bound marker, and cursor marker", () => {
     const charters = [
       charter("alpha"),
