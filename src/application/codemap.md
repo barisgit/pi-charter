@@ -83,7 +83,7 @@ Code source of truth in this folder is the v3-active surface:
   - Currently every non-skipped status maps to prompt case `active`.
   - Prompt template lookup order is repo override, charter override, bundled prompt.
   - `renderStatusSummary()` compacts status, VAL totals, drift, parse warnings, next actions, commands, and blockers.
-- `reminders-bridge.ts` is event-bus-only; `registerCharterRemindersBridge()` registers no handlers. `upsertCharterReminder()` emits `reminder:upsert`; terminal state converts to `reminder:remove`.
+- `reminders-bridge.ts` is event-bus-only; `registerCharterRemindersBridge()` registers no handlers. `upsertCharterReminder()` emits `REMINDER_UPSERT_EVENT`; terminal state converts to `REMINDER_REMOVE_EVENT`.
 - `async-bridge-service.ts` appends `feature_started`, `feature_completed`, or `feature_failed` events when subagent async payload metadata includes `pi-charter.projectDir` and `pi-charter.charterId`.
 - `subagent-api.ts` caches the pi-subagents exposed API handle after `subagent:expose-api`.
 - `subagent-bootstrap.ts` formats parsed charter `## Commands` into inline/block text and renders a child prompt containing charter/feature/criterion IDs plus commands.
@@ -220,7 +220,7 @@ Session binding file:
 
 - Pi extension API: tool/command/flag registration, `session_start`, `turn_end`, `session_shutdown`, message rendering, widgets, and UI custom picker.
 - pi-subagents event bus: `subagent:expose-api`, `subagent:lineage`, `subagent:async-started`, `subagent:async-complete`, `subagent:all-idle`.
-- pi-reminders event bus: `reminder:upsert`, `reminder:remove` emitted by helper functions; no direct dependency on pi-reminders being installed.
+- pi-reminders event bus: `REMINDER_UPSERT_EVENT`, `REMINDER_REMOVE_EVENT` emitted by helper functions; no direct dependency on pi-reminders being installed.
 - Infrastructure store: `charterDir`, `createCharterWorkspace`, `loadCharterState`, `writeCharterState`, `loadParsedCharter`, `appendEvent`, `withCharterLock`, `writeTextAtomic`, `writeJsonAtomic`.
 - Domain parsers/types: parsed charter/milestones/criteria/commands, evidence schema validation, source freshness, report markdown checks.
 

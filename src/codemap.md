@@ -296,7 +296,7 @@ Ralph prompt case selection currently maps every non-skipped status to `active`;
 
 ### Reminder Flow
 
-`reminders-bridge.ts` can emit `reminder:upsert` and `reminder:remove`, but `index.ts` does not call `registerCharterRemindersBridge()`, and its registration function currently registers no handlers. Treat reminders as helper/event-bus remnants, not part of the active entrypoint registration sequence.
+`reminders-bridge.ts` can emit `REMINDER_UPSERT_EVENT` and `REMINDER_REMOVE_EVENT`, but `index.ts` does not call `registerCharterRemindersBridge()`, and its registration function currently registers no handlers. Treat reminders as helper/event-bus remnants, not part of the active entrypoint registration sequence.
 
 ---
 

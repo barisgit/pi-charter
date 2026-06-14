@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { connect, type UtilsClient } from "pi-extension-utils";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -818,7 +819,7 @@ export function registerCharterAsyncBridge(pi: ExtensionAPI): void {
 // hides itself when no charter is bound.
 // ---------------------------------------------------------------------------
 
-/** VM key for `ctx.ui.setWidget` while a charter is bound to this session. */
+/** VM key for the coordinated detail widget while a charter is bound to this session. */
 const DETAIL_WIDGET_KEY = "charter-detail";
 
 interface RegisterCharterWidgetOptions {
@@ -1041,26 +1042,40 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   const runningSubagents = new RunningSubagentRegistry();
   const subs: Array<() => void> = [];
   let disposed = false;
+  let client: UtilsClient | undefined;
+
+  const getClient = (ctx: SelectionRefreshCtx): UtilsClient => {
+    client ??= connect(pi as unknown as Parameters<typeof connect>[0], { ctx: ctx as unknown as Parameters<typeof connect>[1]["ctx"], clientId: "pi-charter" });
+    return client;
+  };
+
+  const removeWidget = (ctx: SelectionRefreshCtx): void => {
+    getClient(ctx).widgets.remove("aboveEditor", DETAIL_WIDGET_KEY);
+  };
 
   const refresh = async (ctx: SelectionRefreshCtx): Promise<void> => {
     if (!ctx.hasUI) return;
 
     const sessionId = ctx.sessionManager.getSessionId?.();
-    if (!sessionId) { ctx.ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    if (!sessionId) { removeWidget(ctx); return; }
     const binding = await reconcileSessionBinding({ sessionId, homeDir: options.homeDir });
-    if (!binding) { ctx.ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    if (!binding) { removeWidget(ctx); return; }
     const charterId = binding.charterId;
     const snapshot = await loadCharterSnapshot({ projectDir: ctx.cwd, charterId, runningSubagents: runningSubagents.forCharter(charterId) });
-    if (!snapshot) { ctx.ui.setWidget(DETAIL_WIDGET_KEY, undefined); return; }
+    if (!snapshot) { removeWidget(ctx); return; }
 
-    ctx.ui.setWidget(
-      DETAIL_WIDGET_KEY,
-      (tui, theme) => ({
-        render: () => renderCharterWidget({ width: tui.terminal?.columns ?? 100, theme, vm: snapshot }),
+    const factory: Parameters<UtilsClient["widgets"]["set"]>[2] = (tui, theme) => {
+      const typedTui = tui as { terminal?: { columns?: number } };
+      return {
+        render: () => renderCharterWidget({ width: typedTui.terminal?.columns ?? 100, theme: theme as Parameters<typeof renderCharterWidget>[0]["theme"], vm: snapshot }),
         invalidate: () => {},
-      }),
-      { placement: "aboveEditor" },
-    );
+      };
+    };
+    // order: 80 keeps the charter panel nearest the editor (highest order renders
+    // closest to the prompt). Convention across the widget set, bottom->top:
+    // charter(80), subagents(60), processes(40), tasks(20). Lower numbers render
+    // further from the editor, leaving room for other extensions to slot between.
+    getClient(ctx).widgets.set("aboveEditor", DETAIL_WIDGET_KEY, factory, { order: 80 });
   };
 
   registerSelectionRefresher(async (ctx) => {
@@ -1082,6 +1097,8 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
       disposed = true;
       for (const unsubscribe of subs) unsubscribe();
       subs.length = 0;
+      client?.dispose();
+      client = undefined;
     }
   });
 

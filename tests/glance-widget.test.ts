@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCharterWidget } from "../src/application/registration";
-import { bindCharterToSession } from "../src/application/binding-service";
+import { bindCharterToSession, clearSessionBinding } from "../src/application/binding-service";
 import { resetCharterSelection } from "../src/ui/charter-selection";
 import { makeActiveCharter } from "./helpers/charter-fixtures";
 
@@ -16,7 +16,10 @@ type SetWidgetCall = {
 
 type FakePi = {
   on: (event: string, handler: (event: unknown, ctx: FakeCtx) => Promise<void> | void) => void;
-  events: { on: (event: string, handler: (raw: unknown) => void) => () => void };
+  events: {
+    on: (event: string, handler: (raw: unknown) => void) => () => void;
+    emit: (event: string, raw: unknown) => void;
+  };
   handlers: Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>;
 };
 
@@ -32,6 +35,7 @@ interface FakeCtx {
 
 function makeFakePi(): FakePi {
   const handlers = new Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>();
+  const eventHandlers = new Map<string, Array<(raw: unknown) => void>>();
   return {
     handlers,
     on(event, handler) {
@@ -39,7 +43,20 @@ function makeFakePi(): FakePi {
       list.push(handler);
       handlers.set(event, list);
     },
-    events: { on: () => () => {} },
+    events: {
+      on(event, handler) {
+        const list = eventHandlers.get(event) ?? [];
+        list.push(handler);
+        eventHandlers.set(event, list);
+        return () => {
+          const next = (eventHandlers.get(event) ?? []).filter((candidate) => candidate !== handler);
+          eventHandlers.set(event, next);
+        };
+      },
+      emit(event, raw) {
+        for (const handler of eventHandlers.get(event) ?? []) handler(raw);
+      },
+    },
   };
 }
 
@@ -61,9 +78,13 @@ function makeCtx(projectDir: string, sessionId: string): { ctx: FakeCtx; calls: 
   };
 }
 
-async function fireSessionStart(pi: FakePi, ctx: FakeCtx): Promise<void> {
-  const handlers = pi.handlers.get("session_start") ?? [];
+async function fireEvent(pi: FakePi, name: string, ctx: FakeCtx): Promise<void> {
+  const handlers = pi.handlers.get(name) ?? [];
   for (const h of handlers) await h({}, ctx);
+}
+
+async function fireSessionStart(pi: FakePi, ctx: FakeCtx): Promise<void> {
+  await fireEvent(pi, "session_start", ctx);
 }
 
 async function withTempDir<T>(prefix: string, fn: (dir: string) => Promise<T>): Promise<T> {
@@ -132,15 +153,22 @@ describe("glance widget cleanup", () => {
     });
   });
 
-  test("no session binding clears only the detail widget", async () => {
+  test("missing session binding removes only the detail widget", async () => {
     await withTempDir("pi-charter-glance-project-", async (projectDir) => {
       await withTempDir("pi-charter-glance-home-", async (homeDir) => {
+        const charterId = await seedActiveCharter(projectDir, `glance-${randomUUID()}`);
+        const sessionId = `session-${randomUUID()}`;
+        await bindCharterToSession(projectDir, { charterId, sessionId, homeDir });
+
         const pi = makeFakePi();
         registerCharterWidget(pi as never, { homeDir });
-        const { ctx, calls } = makeCtx(projectDir, `session-${randomUUID()}`);
+        const { ctx, calls } = makeCtx(projectDir, sessionId);
         await fireSessionStart(pi, ctx);
+        await clearSessionBinding(sessionId, homeDir);
+        await fireEvent(pi, "turn_end", ctx);
 
-        expect(calls).toEqual([{ key: "charter-detail", content: undefined, options: undefined }]);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]).toEqual({ key: "charter-detail", content: undefined, options: { placement: "aboveEditor" } });
       });
     });
   });
