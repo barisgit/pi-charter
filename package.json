@@ -26,7 +26,7 @@
     "ci": "bun run check-types && bun test"
   },
   "dependencies": {
-    "pi-extension-utils": "^0.3.2"
+    "pi-extension-utils": "^0.5.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

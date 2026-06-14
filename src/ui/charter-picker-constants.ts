@@ -5,28 +5,6 @@ export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStat
   "abandoned",
 ]);
 
-// Shared legend lives in the left pane's third section. Only the keys that work
-// regardless of focus belong here; pane-specific keys (`space`, `o`) go in the
-// right pane's bottom-border footer so users see them where they apply.
-export const LEGEND_ENTRIES: ReadonlyArray<readonly [string, string]> = [
-  ["j/k",        "move cursor"],
-  ["pgup/pgdn",  "jump a page"],
-  ["g / G",      "top / end"],
-  ["tab",        "switch pane"],
-  ["[ / ]",      "resize split"],
-  ["s",          "toggle sidebar"],
-  ["O",          "open charter dir"],
-  ["y",          "copy charterId"],
-  ["esc",        "close picker"],
-];
-export const LEGEND_KEY_W = 10;
-
-// Right-pane-only keybind hint, embedded in the right bottom-border segment.
-export const RIGHT_PANE_HINT = "space:fold  o:obj  s:sidebar";
-export const LEFT_FOOTER = "j/k  pgup/pgdn  g/G  esc";
-export const RIGHT_FOOTER = "j/k  space:fold  o:obj  O:dir  y:id";
-
-export const PAGE_SIZE = 10;
 export const MIN_LEFT_PANE = 20;
 export const LEFT_PANE_CAP = 110;
 export const MIN_RIGHT_PANE = 24;

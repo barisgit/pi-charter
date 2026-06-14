@@ -1,37 +1,20 @@
 import { spawn } from "node:child_process";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
 import {
-  boxRow,
   clipStyled,
   clipText,
-  computeFixedSidebarLayout,
-  computeSplitPaneLayout,
-  dispatchNavKeys,
-  endCursor,
-  endScrollOffset,
-  flatRule,
-  formatScrollInfo,
-  homeCursor,
-  homeScrollOffset,
-  moveCursor,
-  moveScrollOffset,
   padRight,
-  pageCursor,
-  pageScrollOffset,
-  renderKeyRow,
-  resizeSplitPane,
-  titledBottomSegment,
-  titledTopSegment,
-  togglePaneFocus,
-  toggleSidebar,
+  paneOverlay,
+  type FullscreenComponentFactory,
+  type PaneOverlayContext,
+  type PaneOverlayOptions,
+  type PaneOverlayPrimaryRow,
 } from "pi-extension-utils";
 import type { CharterStatus } from "../domain/types";
 import {
   BANNED_PRINTABLE,
   DEFAULT_LEFT_FRACTION,
   FLASH_TTL_RENDERS,
-  LEFT_FOOTER,
   LEFT_PANE_CAP,
   LEFT_ROW_BAR_MIN_NAME_W,
   LEFT_ROW_BAR_W,
@@ -40,13 +23,8 @@ import {
   LEFT_ROW_GAP_COUNT_STATUS,
   LEFT_ROW_MIN_NAME_W,
   LEFT_ROW_PREFIX_W,
-  LEGEND_ENTRIES,
-  LEGEND_KEY_W,
   MIN_LEFT_PANE,
   MIN_RIGHT_PANE,
-  PAGE_SIZE,
-  RIGHT_FOOTER,
-  RIGHT_PANE_HINT,
   SPLIT_STEP_COLS,
   TERMINAL_STATUSES,
 } from "./charter-picker-constants";
@@ -67,429 +45,333 @@ interface PickerHostHooks {
 export interface CharterPickerOptions {
   charters: CharterListRow[];
   snapshots: Map<string, PickerSnapshot>;
-  theme: ThemeLike;
   heightProvider: () => number;
   initialCursorCharterId?: string;
   boundCharterId: string | null;
-  onDone: (result: null) => void;
   host?: PickerHostHooks;
 }
 
-export class CharterPickerComponent implements Component {
-  private readonly charters: CharterListRow[];
-  private readonly snapshots: Map<string, PickerSnapshot>;
-  private readonly theme: ThemeLike;
-  private readonly heightProvider: () => number;
-  private readonly boundCharterId: string | null;
-  private readonly onDone: (result: null) => void;
-  private readonly host: PickerHostHooks | undefined;
-  private cursorIndex = 0;
-  private focus: "left" | "right" = "left";
-  private allExpanded = false;
-  private objectiveExpanded = false;
-  private rightScrollLine = 0;
-  private splitFraction = DEFAULT_LEFT_FRACTION;
-  private sidebarCollapsed = false;
-  private finished = false;
-  private lastRightMaxScroll = 0;
-  private lastRenderWidth = 120;
-  private flashMessage: { text: string; kind: "info" | "warning" | "error"; rendersLeft: number } | null = null;
+type FlashMessage = { text: string; kind: "info" | "warning" | "error"; rendersLeft: number };
+type Ctx = PaneOverlayContext<null, CharterListRow>;
 
-  constructor(opts: CharterPickerOptions) {
-    this.charters = opts.charters;
-    this.snapshots = opts.snapshots;
-    this.theme = opts.theme;
-    this.heightProvider = opts.heightProvider;
-    this.boundCharterId = opts.boundCharterId;
-    this.onDone = opts.onDone;
-    this.host = opts.host;
-    const initial = opts.initialCursorCharterId
-      ? this.charters.findIndex((row) => row.charterId === opts.initialCursorCharterId)
-      : -1;
-    this.cursorIndex = initial >= 0 ? initial : 0;
-    this.clampCursor();
-  }
+/**
+ * Build the charter picker as a `paneOverlay` factory.
+ *
+ * The pane-overlay content callbacks receive only a `PaneOverlayContext`, not
+ * the theme. The picker colorizes via `theme.fg`/`theme.bold`, so the options
+ * (and their callbacks) are constructed INSIDE the returned factory where the
+ * theme — plus mutable closure state (flash message, expansion toggles) — is in
+ * scope. Read-only: the picker never resolves a charter id; it only closes with
+ * `null`.
+ */
+export function createCharterPickerOverlay(opts: CharterPickerOptions): FullscreenComponentFactory<null> {
+  return (tui, theme, keybindings, done) => {
+    const t = theme as ThemeLike;
+    const { charters, snapshots, heightProvider, host } = opts;
+    // Read terminal rows LIVE each call (do not capture once): pi-tui's
+    // terminal.rows tracks process.stdout resize events, so the overlay height
+    // must re-read it every render to follow terminal resize.
+    const totalHeight = (): number => (tui as { terminal?: { rows?: number } }).terminal?.rows ?? heightProvider();
 
-  render(width: number): string[] {
-    const totalWidth = Math.max(3, Math.floor(width));
-    this.lastRenderWidth = totalWidth;
-    const height = Math.max(2, Math.floor(this.heightProvider()));
-    const bodyHeight = Math.max(0, height - 2);
-    const cursor = this.charters[this.cursorIndex];
-    const snapshot = cursor ? this.snapshots.get(cursor.charterId) : undefined;
+    // Mutable closure state (replaces the old component's instance fields).
+    let allExpanded = false;
+    let objectiveExpanded = false;
+    let flash: FlashMessage | null = null;
 
-    if (this.sidebarCollapsed) {
-      const layout = computeFixedSidebarLayout({ totalWidth, collapsed: true, leftWidth: 0 });
-      const rightWidth = Math.max(1, layout.rightWidth);
-      const rightContent = this.buildRightPane(rightWidth, bodyHeight);
-      this.lastRightMaxScroll = Math.max(0, rightContent.length - bodyHeight);
-      this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
-      const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + bodyHeight);
-      const rows: string[] = [this.singleTopBorder(rightWidth, snapshot)];
-      for (let i = 0; i < bodyHeight; i++) rows.push(this.singleBodyRow(rightVisible[i] ?? "", rightWidth));
-      rows.push(this.singleBottomBorder(rightWidth));
-      return rows.map((line) => padRight(line, totalWidth));
-    }
+    const setFlash = (text: string, kind: FlashMessage["kind"] = "info"): void => {
+      flash = { text, kind, rendersLeft: FLASH_TTL_RENDERS };
+    };
 
-    const layout = this.computeLayout(totalWidth);
-    const leftWidth = layout.leftWidth;
-    const rightWidth = layout.rightWidth;
-    // Top + bottom rows carry titles (widget-style).
-    // Left pane has three stacked sections: list (top) / info (middle) / legend
-    // (bottom). Each pair is separated by one flatRule divider row. Info and
-    // legend size to their actual content so there's no padding gap above the
-    // dividers; list absorbs everything else.
-    const legendContent = this.buildLegendPane(leftWidth);
-    const infoContent = this.buildInfoPane(leftWidth);
-    const legendHeight = legendContent.length;
-    const infoHeight = clamp(infoContent.length, 3, 14);
-    const listHeight = Math.max(1, bodyHeight - infoHeight - legendHeight - 2); // -2 for two dividers
+    const statusWidth = Math.max(6, Math.min(10, Math.max(0, ...charters.map((r) => r.status.length))));
 
-    // Tick down the flash message lifetime once per render.
-    if (this.flashMessage) {
-      this.flashMessage.rendersLeft -= 1;
-      if (this.flashMessage.rendersLeft <= 0) this.flashMessage = null;
-    }
+    // Primary rows: non-terminal charters, a `done` separator iff any terminal
+    // charters exist, then terminal charters. Selection key = charterId.
+    const primaryRows: PaneOverlayPrimaryRow<CharterListRow>[] = [];
+    const nonTerminal = charters.filter((row) => !TERMINAL_STATUSES.has(row.status));
+    const terminal = charters.filter((row) => TERMINAL_STATUSES.has(row.status));
+    for (const row of nonTerminal) primaryRows.push(row);
+    if (terminal.length > 0) primaryRows.push({ kind: "separator", label: "done" });
+    for (const row of terminal) primaryRows.push(row);
 
-    const listContent = this.buildLeftPane(leftWidth);
-    const rightContent = this.buildRightPane(rightWidth, bodyHeight);
-    this.lastRightMaxScroll = Math.max(0, rightContent.length - bodyHeight);
-    this.rightScrollLine = clamp(this.rightScrollLine, 0, this.lastRightMaxScroll);
-    const rightVisible = rightContent.slice(this.rightScrollLine, this.rightScrollLine + bodyHeight);
+    const bodyHeight = (): number => Math.max(0, Math.max(2, Math.floor(totalHeight())) - 2);
 
-    const rows: string[] = [];
-    rows.push(this.topBorder(leftWidth, rightWidth, snapshot));
-    const infoDivider = flatRule(this.theme, "info", leftWidth, { leadingDashes: 2 });
-    const legendDivider = flatRule(this.theme, "keys", leftWidth, { leadingDashes: 2 });
-    const infoStart = listHeight + 1; // after list + info-divider
-    const legendStart = infoStart + infoHeight + 1; // after info + legend-divider
-    for (let i = 0; i < bodyHeight; i++) {
-      let left: string;
-      if (i < listHeight) {
-        left = listContent[i] ?? "";
-      } else if (i === listHeight) {
-        left = infoDivider;
-      } else if (i < legendStart - 1) {
-        const infoIdx = i - infoStart;
-        left = infoContent[infoIdx] ?? "";
-      } else if (i === legendStart - 1) {
-        left = legendDivider;
-      } else {
-        const legendIdx = i - legendStart;
-        left = legendContent[legendIdx] ?? "";
+    const selectedDir = (row: CharterListRow): string => host?.resolveCharterDir(row.charterId) ?? row.charterId;
+
+    const openSelectedDir = async (ctx: Ctx): Promise<void> => {
+      const row = ctx.selectedRow;
+      if (!row) {
+        setFlash("No charter selected", "warning");
+        ctx.requestRender();
+        return;
       }
-      const right = rightVisible[i] ?? "";
-      rows.push(this.bodyRow(left, right, leftWidth, rightWidth));
-    }
-    rows.push(this.bottomBorder(leftWidth, rightWidth));
-    return rows.map((line) => padRight(line, totalWidth));
-  }
+      const path = selectedDir(row);
+      try {
+        if (host?.openPath) await host.openPath(path);
+        else defaultOpenPath(path);
+        setFlash(`Opened → ${path}`, "info");
+        host?.notify?.(`Opened ${path}`, "info");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setFlash(`Failed to open: ${msg}`, "error");
+        host?.notify?.(`Failed to open: ${msg}`, "error");
+      }
+      ctx.requestRender();
+    };
 
-  handleInput(data: string): void {
-    if (this.finished) return;
-    dispatchNavKeys(data, {
-      close: () => this.finish(),
+    const copySelectedCharterId = async (ctx: Ctx): Promise<void> => {
+      const row = ctx.selectedRow;
+      if (!row) {
+        setFlash("No charter selected", "warning");
+        ctx.requestRender();
+        return;
+      }
+      try {
+        if (host?.copyText) await host.copyText(row.charterId);
+        else await defaultCopyText(row.charterId);
+        setFlash(`Copied id → ${row.charterId}`, "info");
+        host?.notify?.(`Copied charterId ${row.charterId.slice(0, 8)}…`, "info");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setFlash(`Copy failed: ${msg}`, "error");
+        host?.notify?.(`Copy failed: ${msg}`, "error");
+      }
+      ctx.requestRender();
+    };
+
+    const options: PaneOverlayOptions<null, CharterListRow> = {
+      height: () => bodyHeight(),
+      closeKeys: ["escape", "ctrl+c", "q"],
+      closeResult: null,
+      legendPlacement: "primary",
+      // Reset detail scroll per selected charter (each charter's detail opens at
+      // the top, matching the old picker's rightScrollLine=0 on cursor move).
+      perSelectionScroll: true,
       bannedKeys: [...BANNED_PRINTABLE, "enter", "\r", "\n", "delete"],
-      focusToggle: () => { this.focus = togglePaneFocus(this.focus); },
-      move: (delta) => this.moveVertical(delta),
-      page: (delta) => this.pageVertical(delta),
-      home: () => this.homeVertical(),
-      end: () => this.endVertical(),
-      extraBindings: [
-        { keys: "space", handler: () => this.toggleAllExpanded() },
-        { keys: "o", handler: () => this.toggleObjectiveExpanded() },
-        { keys: "s", handler: () => this.toggleSidebar() },
-        { keys: "[", handler: () => this.shiftSplit(-1) },
-        { keys: "]", handler: () => this.shiftSplit(1) },
-        { keys: "shift+o", handler: () => { void this.openSelectedDir(); } },
-        { keys: "y", handler: () => { void this.copySelectedCharterId(); } },
+      split: {
+        initialFraction: DEFAULT_LEFT_FRACTION,
+        minPrimaryWidth: MIN_LEFT_PANE,
+        minDetailWidth: MIN_RIGHT_PANE,
+        maxPrimaryWidth: LEFT_PANE_CAP,
+        stepCols: SPLIT_STEP_COLS,
+        fractionBasis: "interior",
+      },
+      collapse: { key: "s", label: "sidebar", collapsedWidth: 0 },
+      onRender: () => {
+        // Tick down the flash message lifetime once per render; it takes over
+        // the info zone for a few renders so O/y get immediate in-pane feedback.
+        if (flash) {
+          flash.rendersLeft -= 1;
+          if (flash.rendersLeft <= 0) flash = null;
+        }
+      },
+      primary: {
+        mode: "cursor",
+        rows: primaryRows,
+        selectionKey: (row) => row.charterId,
+        ...(opts.initialCursorCharterId !== undefined || charters[0]
+          ? { initialSelectionKey: opts.initialCursorCharterId ?? charters[0]?.charterId }
+          : {}),
+        renderRow: (row, ctx, width) =>
+          leftRow(t, row, {
+            isCursor: ctx.selectedKey === row.charterId,
+            isBound: row.charterId === opts.boundCharterId,
+            dim: TERMINAL_STATUSES.has(row.status),
+            width,
+            statusWidth,
+          }),
+        title: () => {
+          const activeCount = charters.filter((r) => !TERMINAL_STATUSES.has(r.status)).length;
+          const totalCount = charters.length;
+          const tail = activeCount === totalCount ? `${totalCount}` : `${activeCount} active / ${totalCount}`;
+          return { label: "Charters", tail, tailColor: "dim" };
+        },
+        infoTitle: "info",
+        info: (ctx) => buildInfoLines(t, ctx.selectedRow, ctx.selectedRow ? snapshots.get(ctx.selectedRow.charterId) : undefined, ctx.primary.width, flash),
+      },
+      detail: {
+        title: (ctx) => {
+          const row = ctx.selectedRow;
+          const snapshot = row ? snapshots.get(row.charterId) : undefined;
+          if (!snapshot) return { label: "(no selection)", labelColor: "dim", tailColor: "dim" };
+          const passColor = passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
+          const tailRendered = [
+            t.fg(statusColor(snapshot.header.status), `[${snapshot.header.status}]`),
+            t.fg(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`),
+            t.fg("muted", formatElapsed(snapshot.header.elapsedMs)),
+          ].join("  ");
+          const tailPlain = `[${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
+          return { label: snapshot.header.name, tailRendered, tailPlain };
+        },
+        rows: (ctx) => buildDetailLines(t, ctx.selectedRow, ctx.selectedRow ? snapshots.get(ctx.selectedRow.charterId) : undefined, ctx.detail.width, bodyHeight(), { allExpanded, objectiveExpanded }),
+      },
+      customActions: [
+        {
+          keys: "space",
+          label: "fold",
+          showInLegend: false,
+          when: (ctx) => ctx.detailFocus,
+          run: (ctx) => { allExpanded = !allExpanded; ctx.requestRender(); },
+        },
+        {
+          keys: "o",
+          label: "obj",
+          showInLegend: false,
+          when: (ctx) => ctx.detailFocus,
+          run: (ctx) => { objectiveExpanded = !objectiveExpanded; ctx.requestRender(); },
+        },
+        {
+          keys: "shift+o",
+          label: "open dir",
+          run: (ctx) => { void openSelectedDir(ctx); },
+        },
+        {
+          keys: "y",
+          label: "copy id",
+          run: (ctx) => { void copySelectedCharterId(ctx); },
+        },
       ],
-    });
-  }
+    };
 
-  private get selectedCharter(): CharterListRow | undefined {
-    return this.charters[this.cursorIndex];
-  }
+    return paneOverlay<null, CharterListRow>(options)(tui, theme, keybindings, done);
+  };
+}
 
-  private setFlash(text: string, kind: "info" | "warning" | "error" = "info"): void {
-    this.flashMessage = { text, kind, rendersLeft: FLASH_TTL_RENDERS };
-  }
+type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim" | "text" | "borderAccent" | "borderMuted";
 
-  private async openSelectedDir(): Promise<void> {
-    const row = this.selectedCharter;
-    if (!row) {
-      this.setFlash("No charter selected", "warning");
-      return;
-    }
-    const host = this.host;
-    const path = host?.resolveCharterDir(row.charterId) ?? row.charterId;
-    try {
-      if (host?.openPath) {
-        await host.openPath(path);
-      } else {
-        defaultOpenPath(path);
-      }
-      this.setFlash(`Opened → ${path}`, "info");
-      host?.notify?.(`Opened ${path}`, "info");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.setFlash(`Failed to open: ${msg}`, "error");
-      host?.notify?.(`Failed to open: ${msg}`, "error");
-    }
-  }
+function passCountColor(pass: number, total: number): ThemeColorName {
+  if (total === 0) return "dim";
+  if (pass === total) return "success";
+  if (pass === 0) return "muted";
+  return "accent";
+}
 
-  private async copySelectedCharterId(): Promise<void> {
-    const row = this.selectedCharter;
-    if (!row) {
-      this.setFlash("No charter selected", "warning");
-      return;
-    }
-    const host = this.host;
-    try {
-      if (host?.copyText) {
-        await host.copyText(row.charterId);
-      } else {
-        await defaultCopyText(row.charterId);
-      }
-      this.setFlash(`Copied id → ${row.charterId}`, "info");
-      host?.notify?.(`Copied charterId ${row.charterId.slice(0, 8)}…`, "info");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.setFlash(`Copy failed: ${msg}`, "error");
-      host?.notify?.(`Copy failed: ${msg}`, "error");
-    }
-  }
+// Render a progress bar with colored filled portion and dim empty portion.
+function coloredBar(theme: ThemeLike, pass: number, total: number, width: number): string {
+  const filled = total > 0 ? clamp(Math.floor((pass / total) * width), 0, width) : 0;
+  const empty = width - filled;
+  return theme.fg(passCountColor(pass, total), "█".repeat(filled)) + theme.fg("dim", "░".repeat(empty));
+}
 
-  invalidate(): void {
-    // No cached render output.
-  }
+function leftRow(
+  theme: ThemeLike,
+  row: CharterListRow,
+  opts: { isCursor: boolean; isBound: boolean; dim: boolean; width: number; statusWidth: number },
+): string {
+  // Fixed-column layout so bars + counters align vertically across rows:
+  //   prefix(3)  name(flex,≥6)  bar(8)  ' '  count(7,right-aligned)  '  '  status(rest)
+  const { isCursor, isBound, dim, width, statusWidth } = opts;
+  const cursorMark = isCursor ? theme.fg("accent", "►") : " ";
+  const boundMark = isBound ? theme.fg("accent", "*") : " ";
+  const prefix = `${cursorMark}${boundMark} `;
+  const countText = `${row.passCount}/${row.totalCount}`;
+  const countPadded = countText.padStart(LEFT_ROW_COUNT_W);
+  const count = theme.fg(passCountColor(row.passCount, row.totalCount), countPadded);
+  const fixedWithBar = LEFT_ROW_PREFIX_W + LEFT_ROW_BAR_W + LEFT_ROW_GAP_BAR_COUNT + LEFT_ROW_COUNT_W + LEFT_ROW_GAP_COUNT_STATUS + statusWidth;
+  const fixedWithoutBar = LEFT_ROW_PREFIX_W + LEFT_ROW_COUNT_W + LEFT_ROW_GAP_COUNT_STATUS + statusWidth;
+  const fixedWithoutStatus = LEFT_ROW_PREFIX_W + LEFT_ROW_COUNT_W;
+  const showBar = width - fixedWithBar >= LEFT_ROW_BAR_MIN_NAME_W;
+  const showStatus = !showBar && width - fixedWithoutBar >= LEFT_ROW_MIN_NAME_W;
+  const nameWidth = Math.max(0, width - (showBar ? fixedWithBar : showStatus ? fixedWithoutBar : fixedWithoutStatus));
+  const nameText = row.name.length > nameWidth
+    ? clipText(`${row.name.slice(0, Math.max(0, nameWidth - 1))}…`, nameWidth)
+    : row.name;
+  const namePart = padRight(nameText, nameWidth);
+  const styledName = dim ? theme.fg("dim", namePart) : (isCursor ? theme.bold(namePart) : namePart);
+  const bar = showBar
+    ? dim
+      ? theme.fg("dim", progressBar(row.passCount, row.totalCount, LEFT_ROW_BAR_W))
+      : coloredBar(theme, row.passCount, row.totalCount, LEFT_ROW_BAR_W)
+    : "";
+  const barPart = showBar ? `${bar}${" ".repeat(LEFT_ROW_GAP_BAR_COUNT)}` : "";
+  const statusPart = showStatus || showBar
+    ? `${" ".repeat(LEFT_ROW_GAP_COUNT_STATUS)}${theme.fg(statusColor(row.status), clipText(row.status, statusWidth))}`
+    : "";
+  return clipStyled(`${prefix}${styledName}${barPart}${count}${statusPart}`, width);
+}
 
-  private buildLeftPane(width: number): string[] {
-    if (width <= 0) return [];
-    const nonTerminal = this.charters
-      .map((row, index) => ({ row, index }))
-      .filter(({ row }) => !TERMINAL_STATUSES.has(row.status));
-    const terminal = this.charters
-      .map((row, index) => ({ row, index }))
-      .filter(({ row }) => TERMINAL_STATUSES.has(row.status));
-    const lines: string[] = [];
-    for (const entry of nonTerminal) lines.push(this.leftRow(entry.row, entry.index, width, false));
-    if (terminal.length > 0) lines.push(flatRule(this.theme, "done", width, { leadingDashes: 2 }));
-    for (const entry of terminal) lines.push(this.leftRow(entry.row, entry.index, width, true));
-    return lines;
+function buildInfoLines(
+  theme: ThemeLike,
+  row: CharterListRow | undefined,
+  snapshot: PickerSnapshot | undefined,
+  width: number,
+  flash: FlashMessage | null,
+): string[] {
+  if (width <= 0) return [];
+  // Flash message takes over the info pane for a few renders so the user gets
+  // immediate in-pane feedback on O/y actions (separate from host notify toast).
+  if (flash) {
+    const kindColor: ThemeColorName = flash.kind === "error" ? "error" : flash.kind === "warning" ? "warning" : "success";
+    return wrapText(flash.text, width).map((line) => theme.fg(kindColor, line));
   }
-
-  private buildInfoPane(width: number): string[] {
-    if (width <= 0) return [];
-    // Flash message takes over the info pane for a few renders so the user gets
-    // immediate in-pane feedback on O/y actions (separate from host notify toast).
-    if (this.flashMessage) {
-      const kindColor: ThemeColorName = this.flashMessage.kind === "error" ? "error" : this.flashMessage.kind === "warning" ? "warning" : "success";
-      const wrapped = wrapText(this.flashMessage.text, width);
-      return wrapped.map((line) => this.color(kindColor, line));
-    }
-    const row = this.charters[this.cursorIndex];
-    if (!row) return [this.color("dim", "(no selection)")];
-    const snapshot = this.snapshots.get(row.charterId);
-    const out: string[] = [];
-    out.push(this.theme.bold(clipText(row.name, width)));
-    const statusBadge = this.color(statusColor(row.status), `[${row.status}]`);
-    const passColor = this.passCountColor(row.passCount, row.totalCount);
-    const counter = this.color(passColor, `${row.passCount}/${row.totalCount}`);
-    out.push(`${statusBadge} ${counter}`);
-    // Timestamps: date + HH:MM for created, plus updated (live) or completed/terminated
-    // (terminal). Helps distinguish stale active charters at a glance.
-    const tsLines = this.formatTimestamps(row);
-    for (const line of tsLines) out.push(this.color("dim", clipText(line, width)));
-    if (snapshot) {
-      const objWidth = Math.max(1, width);
-      const wrapped = wrapText(snapshot.objective, objWidth);
-      const remaining = Math.max(0, 8 - out.length);
-      for (const line of wrapped.slice(0, remaining)) out.push(this.color("muted", line));
-      if (wrapped.length > remaining && remaining > 0) {
-        out[out.length - 1] = this.color("muted", clipText(`${out[out.length - 1]}…`, objWidth));
-      }
-    }
-    return out;
-  }
-
-  private formatTimestamps(row: CharterListRow): string[] {
-    const out: string[] = [];
-    out.push(`created  ${formatDateTime(row.createdAt)}`);
-    const endIso = row.completedAt ?? row.terminatedAt;
-    if (endIso) {
-      const label = row.completedAt ? "done   " : "ended  ";
-      out.push(`${label} ${formatDateTime(endIso)}`);
-    } else if (row.updatedAt && row.updatedAt !== row.createdAt) {
-      out.push(`updated  ${formatDateTime(row.updatedAt)}`);
-    }
-    return out;
-  }
-
-  private buildLegendPane(width: number): string[] {
-    if (width <= 0) return [];
-    // Shared legend describes keybinds that apply across both panes (tab toggles
-    // focus; the same nav/action keys work everywhere). Aligned two-column format
-    // makes it scannable; dim styling keeps it visually quieter than the list above.
-    const keyW = Math.min(LEGEND_KEY_W, Math.max(3, width - 4));
-    return LEGEND_ENTRIES.map(([key, desc]) => {
-      return this.color("dim", renderKeyRow(key, desc, width, keyW));
-    });
-  }
-
-  private leftRow(row: CharterListRow, index: number, width: number, dim: boolean): string {
-    // Fixed-column layout so bars + counters align vertically across rows:
-    //   prefix(3)  name(flex,≥6)  bar(8)  ' '  count(7,right-aligned)  '  '  status(rest)
-    const isCursor = index === this.cursorIndex;
-    const cursorMark = isCursor ? this.color("accent", "►") : " ";
-    const boundMark = row.charterId === this.boundCharterId ? this.color("accent", "*") : " ";
-    const prefix = `${cursorMark}${boundMark} `;
-    const STATUS_W = Math.max(6, Math.min(10, Math.max(...this.charters.map((r) => r.status.length))));
-    const countText = `${row.passCount}/${row.totalCount}`;
-    const countPadded = countText.padStart(LEFT_ROW_COUNT_W);
-    const count = this.color(this.passCountColor(row.passCount, row.totalCount), countPadded);
-    const fixedWithBar = LEFT_ROW_PREFIX_W + LEFT_ROW_BAR_W + LEFT_ROW_GAP_BAR_COUNT + LEFT_ROW_COUNT_W + LEFT_ROW_GAP_COUNT_STATUS + STATUS_W;
-    const fixedWithoutBar = LEFT_ROW_PREFIX_W + LEFT_ROW_COUNT_W + LEFT_ROW_GAP_COUNT_STATUS + STATUS_W;
-    const fixedWithoutStatus = LEFT_ROW_PREFIX_W + LEFT_ROW_COUNT_W;
-    const showBar = width - fixedWithBar >= LEFT_ROW_BAR_MIN_NAME_W;
-    const showStatus = !showBar && width - fixedWithoutBar >= LEFT_ROW_MIN_NAME_W;
-    const nameWidth = Math.max(0, width - (showBar ? fixedWithBar : showStatus ? fixedWithoutBar : fixedWithoutStatus));
-    const nameText = row.name.length > nameWidth
-      ? clipText(`${row.name.slice(0, Math.max(0, nameWidth - 1))}…`, nameWidth)
-      : row.name;
-    const namePart = padRight(nameText, nameWidth);
-    const styledName = dim ? this.color("dim", namePart) : (isCursor ? this.theme.bold(namePart) : namePart);
-    const bar = showBar
-      ? dim
-        ? this.color("dim", progressBar(row.passCount, row.totalCount, LEFT_ROW_BAR_W))
-        : this.coloredBar(row.passCount, row.totalCount, LEFT_ROW_BAR_W)
-      : "";
-    const barPart = showBar ? `${bar}${" ".repeat(LEFT_ROW_GAP_BAR_COUNT)}` : "";
-    const statusPart = showStatus || showBar
-      ? `${" ".repeat(LEFT_ROW_GAP_COUNT_STATUS)}${this.color(statusColor(row.status), clipText(row.status, STATUS_W))}`
-      : "";
-    return clipStyled(`${prefix}${styledName}${barPart}${count}${statusPart}`, width);
-  }
-
-  private computeLayout(totalWidth: number): { leftWidth: number; rightWidth: number } {
-    const split = computeSplitPaneLayout({
-      totalWidth,
-      leftFraction: this.splitFraction,
-      minLeftWidth: MIN_LEFT_PANE,
-      minRightWidth: MIN_RIGHT_PANE,
-      leftMaxWidth: LEFT_PANE_CAP,
-      fractionBasis: "interior",
-    });
-    const layout = computeFixedSidebarLayout({
-      totalWidth,
-      collapsed: false,
-      leftWidth: split.leftWidth,
-      minLeftWidth: MIN_LEFT_PANE,
-      minRightWidth: MIN_RIGHT_PANE,
-    });
-    return { leftWidth: layout.leftWidth, rightWidth: layout.rightWidth };
-  }
-
-  private shiftSplit(direction: -1 | 1): void {
-    const resized = resizeSplitPane({
-      totalWidth: this.lastRenderWidth,
-      leftFraction: this.splitFraction,
-      minLeftWidth: MIN_LEFT_PANE,
-      minRightWidth: MIN_RIGHT_PANE,
-      leftMaxWidth: LEFT_PANE_CAP,
-      direction,
-      stepCols: SPLIT_STEP_COLS,
-      fractionBasis: "interior",
-    });
-    this.splitFraction = resized.leftFraction;
-  }
-
-  private moveVertical(direction: -1 | 1): void {
-    if (this.focus === "left") {
-      this.cursorIndex = moveCursor({ cursor: this.cursorIndex, scroll: 0, itemCount: this.charters.length, viewportHeight: this.charters.length }, direction).cursor;
-      this.rightScrollLine = 0;
-    } else {
-      this.rightScrollLine = moveScrollOffset({ offset: this.rightScrollLine, contentLength: this.lastRightMaxScroll + 1, viewportHeight: 1 }, direction);
+  if (!row) return [theme.fg("dim", "(no selection)")];
+  const out: string[] = [];
+  out.push(theme.bold(clipText(row.name, width)));
+  const statusBadge = theme.fg(statusColor(row.status), `[${row.status}]`);
+  const counter = theme.fg(passCountColor(row.passCount, row.totalCount), `${row.passCount}/${row.totalCount}`);
+  out.push(`${statusBadge} ${counter}`);
+  // Timestamps: date + HH:MM for created, plus updated (live) or completed/terminated
+  // (terminal). Helps distinguish stale active charters at a glance.
+  for (const line of formatTimestamps(row)) out.push(theme.fg("dim", clipText(line, width)));
+  if (snapshot) {
+    const objWidth = Math.max(1, width);
+    const wrapped = wrapText(snapshot.objective, objWidth);
+    const remaining = Math.max(0, 8 - out.length);
+    for (const line of wrapped.slice(0, remaining)) out.push(theme.fg("muted", line));
+    if (wrapped.length > remaining && remaining > 0) {
+      out[out.length - 1] = theme.fg("muted", clipText(`${out[out.length - 1]}…`, objWidth));
     }
   }
+  return out;
+}
 
-  private pageVertical(direction: -1 | 1): void {
-    if (this.focus === "left") {
-      this.cursorIndex = pageCursor({ cursor: this.cursorIndex, scroll: 0, itemCount: this.charters.length, viewportHeight: this.charters.length }, direction, PAGE_SIZE).cursor;
-      this.rightScrollLine = 0;
-    } else {
-      this.rightScrollLine = pageScrollOffset({ offset: this.rightScrollLine, contentLength: this.lastRightMaxScroll + 1, viewportHeight: 1 }, direction, PAGE_SIZE);
-    }
+function formatTimestamps(row: CharterListRow): string[] {
+  const out: string[] = [];
+  out.push(`created  ${formatDateTime(row.createdAt)}`);
+  const endIso = row.completedAt ?? row.terminatedAt;
+  if (endIso) {
+    const label = row.completedAt ? "done   " : "ended  ";
+    out.push(`${label} ${formatDateTime(endIso)}`);
+  } else if (row.updatedAt && row.updatedAt !== row.createdAt) {
+    out.push(`updated  ${formatDateTime(row.updatedAt)}`);
+  }
+  return out;
+}
+
+function buildDetailLines(
+  theme: ThemeLike,
+  row: CharterListRow | undefined,
+  snapshot: PickerSnapshot | undefined,
+  width: number,
+  bodyHeight: number,
+  expand: { allExpanded: boolean; objectiveExpanded: boolean },
+): string[] {
+  if (width <= 0) return [];
+  if (!row) return [theme.fg("dim", "No charters.")];
+  if (!snapshot) return [theme.fg("dim", "No snapshot for this charter.")];
+
+  const lines: string[] = [];
+  const sectionHeading = (label: string, color: ThemeColorName = "accent") => theme.bold(theme.fg(color, label));
+
+  // Top: colored progress bar straight under the embedded title.
+  lines.push(coloredBar(theme, snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
+
+  // Objective section.
+  lines.push("");
+  lines.push(sectionHeading("Objective", "warning"));
+  const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
+  if (!expand.objectiveExpanded && objectiveLines.length > 2) {
+    lines.push(...objectiveLines.slice(0, 2).map((line) => `  ${line}`));
+    lines.push(theme.fg("dim", "  [o for full]"));
+  } else {
+    lines.push(...objectiveLines.map((line) => `  ${line}`));
   }
 
-  private homeVertical(): void {
-    if (this.focus === "left") {
-      this.cursorIndex = homeCursor({ cursor: this.cursorIndex, scroll: 0, itemCount: this.charters.length, viewportHeight: this.charters.length }).cursor;
-      this.rightScrollLine = 0;
-    } else {
-      this.rightScrollLine = homeScrollOffset();
-    }
-  }
-
-  private endVertical(): void {
-    if (this.focus === "left") {
-      this.cursorIndex = endCursor({ cursor: this.cursorIndex, scroll: 0, itemCount: this.charters.length, viewportHeight: this.charters.length }).cursor;
-      this.rightScrollLine = 0;
-    } else {
-      this.rightScrollLine = endScrollOffset(this.lastRightMaxScroll + 1, 1);
-    }
-  }
-
-  private toggleAllExpanded(): void {
-    if (this.focus !== "right") return;
-    this.allExpanded = !this.allExpanded;
-    this.rightScrollLine = 0;
-  }
-
-  private toggleObjectiveExpanded(): void {
-    if (this.focus !== "right") return;
-    this.objectiveExpanded = !this.objectiveExpanded;
-    this.rightScrollLine = 0;
-  }
-
-  private toggleSidebar(): void {
-    const next = toggleSidebar({ collapsed: this.sidebarCollapsed, focus: this.focus });
-    this.sidebarCollapsed = next.collapsed;
-    this.focus = next.focus;
-  }
-
-  private buildRightPane(width: number, bodyHeight: number): string[] {
-    if (width <= 0) return [];
-    const row = this.charters[this.cursorIndex];
-    if (!row) return [this.color("dim", "No charters.")];
-    const snapshot = this.snapshots.get(row.charterId);
-    if (!snapshot) return [this.color("dim", "No snapshot for this charter.")];
-
-    const lines: string[] = [];
-    const sectionHeading = (label: string, color: ThemeColorName = "accent") =>
-      this.theme.bold(this.color(color, label));
-
-    // Top: colored progress bar straight under the embedded title.
-    lines.push(this.coloredBar(snapshot.header.passCount, snapshot.header.totalCount, Math.max(1, width - 1)));
-
-    // Objective section.
-    lines.push("");
-    lines.push(sectionHeading("Objective", "warning"));
-    const objectiveLines = wrapText(snapshot.objective, Math.max(1, width - 2));
-    if (!this.objectiveExpanded && objectiveLines.length > 2) {
-      lines.push(...objectiveLines.slice(0, 2).map((line) => `  ${line}`));
-      lines.push(this.color("dim", "  [o for full]"));
-    } else {
-      lines.push(...objectiveLines.map((line) => `  ${line}`));
-    }
-
-
-    // Blocking-complete section.
-    // Suppress entirely for terminal charters (completed/abandoned/budget_limited);
-    // the section only makes sense for live work. If all VAL pass on a non-terminal
-    // charter, surface Ready regardless of any stale blockingForComplete data.
-    const isTerminal = snapshot.header.status === "completed" || snapshot.header.status === "abandoned";
-    if (!isTerminal) {
+  // Blocking-complete section.
+  // Suppress entirely for terminal charters (completed/abandoned); the section
+  // only makes sense for live work. If all VAL pass on a non-terminal charter,
+  // surface Ready regardless of any stale blockingForComplete data.
+  const isTerminal = snapshot.header.status === "completed" || snapshot.header.status === "abandoned";
+  if (!isTerminal) {
     lines.push("");
     if (allPass(snapshot)) {
       lines.push(sectionHeading("Ready to complete", "success"));
@@ -497,218 +379,82 @@ export class CharterPickerComponent implements Component {
       lines.push(sectionHeading("Blocking complete", "error"));
       const blocking = snapshot.blockingForComplete;
       if (blocking.length === 0) {
-        lines.push(this.color("dim", "  No blocking data"));
+        lines.push(theme.fg("dim", "  No blocking data"));
       } else {
         const MAX_BLOCKING = 5;
         const shown = blocking.slice(0, MAX_BLOCKING);
-        for (const item of shown) lines.push(this.color("error", `  • ${item}`));
+        for (const item of shown) lines.push(theme.fg("error", `  • ${item}`));
         if (blocking.length > MAX_BLOCKING) {
-          lines.push(this.color("dim", `  … +${blocking.length - MAX_BLOCKING} more`));
+          lines.push(theme.fg("dim", `  … +${blocking.length - MAX_BLOCKING} more`));
         }
       }
     }
-    }
+  }
 
-    // Plan section.
-    lines.push("");
-    lines.push(sectionHeading("Plan"));
-    for (const milestone of snapshot.planTree) {
-      lines.push(`  ${this.theme.bold(this.color("text", milestone.milestoneId))}`);
-      for (const feature of milestone.features) {
-        lines.push(...this.featureLines(feature, width));
-        if (this.allExpanded) {
-          for (const criterion of feature.criteria) lines.push(...this.criterionLines(criterion, width));
-        }
+  // Plan section.
+  lines.push("");
+  lines.push(sectionHeading("Plan"));
+  for (const milestone of snapshot.planTree) {
+    lines.push(`  ${theme.bold(theme.fg("text", milestone.milestoneId))}`);
+    for (const feature of milestone.features) {
+      lines.push(...featureLines(theme, feature, width));
+      if (expand.allExpanded) {
+        for (const criterion of feature.criteria) lines.push(...criterionLines(theme, criterion, width));
       }
     }
-
-    // Recent evidence section.
-    lines.push("");
-    lines.push(sectionHeading("Recent evidence"));
-    const remainingRows = Math.max(5, bodyHeight - lines.length - 1);
-    const evidenceShown = snapshot.recentEvidence.slice(0, Math.max(5, remainingRows));
-    for (const evidence of evidenceShown) lines.push(...this.evidenceLines(evidence, width));
-    if (snapshot.recentEvidence.length > evidenceShown.length) {
-      lines.push(this.color("dim", `… +${snapshot.recentEvidence.length - evidenceShown.length} more`));
-    }
-    return lines;
   }
 
-  // Render a progress bar with colored filled portion (success/accent/muted) and dim empty portion.
-  private coloredBar(pass: number, total: number, width: number): string {
-    const filled = total > 0 ? clamp(Math.floor((pass / total) * width), 0, width) : 0;
-    const empty = width - filled;
-    const filledColor = this.passCountColor(pass, total);
-    return this.color(filledColor, "█".repeat(filled)) + this.color("dim", "░".repeat(empty));
+  // Recent evidence section.
+  lines.push("");
+  lines.push(sectionHeading("Recent evidence"));
+  const remainingRows = Math.max(5, bodyHeight - lines.length - 1);
+  const evidenceShown = snapshot.recentEvidence.slice(0, Math.max(5, remainingRows));
+  for (const evidence of evidenceShown) lines.push(...evidenceLines(theme, evidence, width));
+  if (snapshot.recentEvidence.length > evidenceShown.length) {
+    lines.push(theme.fg("dim", `… +${snapshot.recentEvidence.length - evidenceShown.length} more`));
   }
+  return lines;
+}
 
-  private featureLines(feature: PlanFeatureNode, width: number): string[] {
-    const glyph = feature.status === "completed"
-      ? this.color("success", "✓")
-      : feature.status === "in_progress"
-        ? this.color("accent", "●")
-        : this.color("dim", "○");
-    const bar = width >= 44 ? `${this.coloredBar(feature.passCount, feature.totalCount, 4)} ` : "";
-    const statusWord = this.color(featureStatusColor(feature.status), feature.status);
-    const counter = this.color(this.passCountColor(feature.passCount, feature.totalCount), `${feature.passCount}/${feature.totalCount}`);
-    return [`    ${glyph} ${feature.featureId.padEnd(12)} ${bar}${counter}  ${statusWord}`];
-  }
+function featureLines(theme: ThemeLike, feature: PlanFeatureNode, width: number): string[] {
+  const glyph = feature.status === "completed"
+    ? theme.fg("success", "✓")
+    : feature.status === "in_progress"
+      ? theme.fg("accent", "●")
+      : theme.fg("dim", "○");
+  const bar = width >= 44 ? `${coloredBar(theme, feature.passCount, feature.totalCount, 4)} ` : "";
+  const statusWord = theme.fg(featureStatusColor(feature.status), feature.status);
+  const counter = theme.fg(passCountColor(feature.passCount, feature.totalCount), `${feature.passCount}/${feature.totalCount}`);
+  return [`    ${glyph} ${feature.featureId.padEnd(12)} ${bar}${counter}  ${statusWord}`];
+}
 
-  private criterionLines(criterion: PlanCriterionNode, width: number): string[] {
-    const glyph = criterion.outcome === "pass"
-      ? this.color("success", "✓")
-      : criterion.outcome === "fail"
-        ? this.color("error", "✗")
-        : this.color("dim", "○");
-    const head = `        ${glyph} ${criterion.criterionId}`;
-    if (!criterion.titleFromH3) return [head];
-    const titleWidth = Math.max(8, width - visibleWidth(head) - 2);
-    const wrapped = wrapText(criterion.titleFromH3, titleWidth);
-    return [
-      `${head}  ${wrapped[0] ?? ""}`,
-      ...wrapped.slice(1).map((line) => `          ${line}`),
-    ];
-  }
+function criterionLines(theme: ThemeLike, criterion: PlanCriterionNode, width: number): string[] {
+  const glyph = criterion.outcome === "pass"
+    ? theme.fg("success", "✓")
+    : criterion.outcome === "fail"
+      ? theme.fg("error", "✗")
+      : theme.fg("dim", "○");
+  const head = `        ${glyph} ${criterion.criterionId}`;
+  if (!criterion.titleFromH3) return [head];
+  const titleWidth = Math.max(8, width - visibleWidth(head) - 2);
+  const wrapped = wrapText(criterion.titleFromH3, titleWidth);
+  return [
+    `${head}  ${wrapped[0] ?? ""}`,
+    ...wrapped.slice(1).map((line) => `          ${line}`),
+  ];
+}
 
-  private evidenceLines(evidence: PickerSnapshot["recentEvidence"][number], width: number): string[] {
-    const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
-    const outcome = this.color(outcomeColor, evidence.outcome.padEnd(7));
-    const prefix = `${this.color("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}`;
-    const by = compactRecordedBy(evidence.recordedBy);
-    const byWidth = Math.max(8, width - visibleWidth(prefix) - 2);
-    const wrapped = wrapText(by, byWidth);
-    return [
-      `${prefix}  ${this.color("dim", wrapped[0] ?? "")}`,
-      ...wrapped.slice(1).map((line) => this.color("dim", `                            ${line}`)),
-    ];
-  }
-
-  private topBorder(leftWidth: number, rightWidth: number, snapshot: PickerSnapshot | undefined): string {
-    const activeCount = this.charters.filter((r) => !TERMINAL_STATUSES.has(r.status)).length;
-    const totalCount = this.charters.length;
-    const leftTail = activeCount === totalCount ? `${totalCount}` : `${activeCount} active / ${totalCount}`;
-    const leftFocused = this.focus === "left";
-    const leftSegment = this.titledTopSegment({
-      width: leftWidth,
-      label: "Charters",
-      tail: leftTail,
-      labelColor: leftFocused ? "accent" : "text",
-      tailColor: "dim",
-      labelBold: leftFocused,
-    });
-    const rightFocused = this.focus === "right";
-    let rightSegment: string;
-    if (snapshot) {
-      const passColor = this.passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
-      const tailParts = [
-        this.color(statusColor(snapshot.header.status), `[${snapshot.header.status}]`),
-        this.color(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`),
-        this.color("muted", formatElapsed(snapshot.header.elapsedMs)),
-      ];
-      const tailPlain = `[${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
-      rightSegment = this.titledTopSegment({
-        width: rightWidth,
-        label: snapshot.header.name,
-        tailRendered: tailParts.join("  "),
-        tailPlain,
-        labelColor: rightFocused ? "accent" : "text",
-        labelBold: rightFocused,
-      });
-    } else {
-      rightSegment = this.titledTopSegment({
-        width: rightWidth,
-        label: "(no selection)",
-        tail: "",
-        labelColor: "dim",
-        tailColor: "dim",
-      });
-    }
-    const corner = (s: string) => this.color("dim", s);
-    return `${corner("╭")}${leftSegment}${corner("┬")}${rightSegment}${corner("╮")}`;
-  }
-
-  private singleTopBorder(rightWidth: number, snapshot: PickerSnapshot | undefined): string {
-    const label = snapshot?.header.name ?? "(no selection)";
-    const corner = (s: string) => this.color("dim", s);
-    return `${corner("╭")}${this.titledTopSegment({
-      width: rightWidth,
-      label,
-      labelColor: "accent",
-      labelBold: true,
-    })}${corner("╮")}`;
-  }
-
-  private singleBottomBorder(rightWidth: number): string {
-    const hint = this.lastRightMaxScroll > 0
-      ? `${RIGHT_PANE_HINT}  ${formatScrollInfo(this.rightScrollLine, this.lastRightMaxScroll, { style: "position" })}`
-      : RIGHT_PANE_HINT;
-    const corner = (s: string) => this.color("dim", s);
-    return `${corner("╰")}${this.titledBottomSegment(rightWidth, hint, true)}${corner("╯")}`;
-  }
-
-  private singleBodyRow(right: string, rightWidth: number): string {
-    const v = this.color("dim", "│");
-    return `${v}${padRight(clipStyled(right, rightWidth), rightWidth)}${v}`;
-  }
-
-  private bottomBorder(leftWidth: number, rightWidth: number): string {
-    // Left bottom carries only the cursor position (the shared legend covers the
-    // keys). Right bottom carries the right-pane-only keybinds plus, when
-    // scrollable, the scroll counter — so neither side renders as an empty
-    // "hole" between dashes.
-    const leftHint = this.charters.length > 0
-      ? `${this.cursorIndex + 1}/${this.charters.length}`
-      : "";
-    const rightHint = this.lastRightMaxScroll > 0
-      ? `${RIGHT_PANE_HINT}  ${formatScrollInfo(this.rightScrollLine, this.lastRightMaxScroll, { style: "position" })}`
-      : RIGHT_PANE_HINT;
-    const leftSegment = this.titledBottomSegment(leftWidth, leftHint, false);
-    const rightSegment = this.titledBottomSegment(rightWidth, rightHint, this.focus === "right");
-    const corner = (s: string) => this.color("dim", s);
-    return `${corner("╰")}${leftSegment}${corner("┴")}${rightSegment}${corner("╯")}`;
-  }
-
-  private titledTopSegment(opts: {
-    width: number;
-    label: string;
-    tail?: string;
-    tailRendered?: string;
-    tailPlain?: string;
-    labelColor: ThemeColorName;
-    tailColor?: ThemeColorName;
-    labelBold?: boolean;
-  }): string {
-    return titledTopSegment(this.theme, { ...opts, style: "legacy" });
-  }
-
-  private titledBottomSegment(width: number, hint: string, focused: boolean): string {
-    return titledBottomSegment(this.theme, width, hint, focused);
-  }
-
-  private bodyRow(left: string, right: string, leftWidth: number, rightWidth: number): string {
-    return boxRow(this.theme, left, right, leftWidth, rightWidth);
-  }
-
-  private color(color: ThemeColorName, text: string): string {
-    return this.theme.fg(color, text);
-  }
-
-  private passCountColor(pass: number, total: number): ThemeColorName {
-    if (total === 0) return "dim";
-    if (pass === total) return "success";
-    if (pass === 0) return "muted";
-    return "accent";
-  }
-
-  private clampCursor(): void {
-    this.cursorIndex = clamp(this.cursorIndex, 0, Math.max(0, this.charters.length - 1));
-  }
-
-  private finish(): void {
-    if (this.finished) return;
-    this.finished = true;
-    this.onDone(null);
-  }
+function evidenceLines(theme: ThemeLike, evidence: PickerSnapshot["recentEvidence"][number], width: number): string[] {
+  const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
+  const outcome = theme.fg(outcomeColor, evidence.outcome.padEnd(7));
+  const prefix = `${theme.fg("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}`;
+  const by = compactRecordedBy(evidence.recordedBy);
+  const byWidth = Math.max(8, width - visibleWidth(prefix) - 2);
+  const wrapped = wrapText(by, byWidth);
+  return [
+    `${prefix}  ${theme.fg("dim", wrapped[0] ?? "")}`,
+    ...wrapped.slice(1).map((line) => theme.fg("dim", `                            ${line}`)),
+  ];
 }
 
 function defaultOpenPath(path: string): void {
@@ -787,8 +533,6 @@ function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
-type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim" | "text" | "borderAccent" | "borderMuted";
-
 function statusColor(status: CharterStatus): ThemeColorName {
   switch (status) {
     case "active": return "accent";
@@ -825,8 +569,3 @@ function formatDateTime(ts: string): string {
   const mi = String(parsed.getMinutes()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
-
-export const PICKER_FOOTERS = {
-  left: LEFT_FOOTER,
-  right: RIGHT_FOOTER,
-} as const;

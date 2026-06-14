@@ -4,15 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerCharterCommands } from "../src/application/registration";
 import type { CharterStatus } from "../src/domain/types";
-import { CharterPickerComponent } from "../src/ui/charter-picker";
-import { DEFAULT_LEFT_FRACTION, LEFT_PANE_CAP, MIN_LEFT_PANE } from "../src/ui/charter-picker-constants";
+import { createCharterPickerOverlay } from "../src/ui/charter-picker";
 import type { CharterListRow, PickerSnapshot } from "../src/ui/picker-snapshot";
 
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
-function leftWidthFor(width: number): number {
-  return Math.max(MIN_LEFT_PANE, Math.min(LEFT_PANE_CAP, Math.round((width - 3) * DEFAULT_LEFT_FRACTION)));
-}
+const fakeTui = (rows: number) => ({ terminal: { rows }, requestRender() {} });
 
 function charter(id: string, overrides: Partial<CharterListRow> = {}): CharterListRow {
   return {
@@ -63,44 +60,53 @@ function snapshot(id: string, overrides: Partial<PickerSnapshot> = {}): PickerSn
   };
 }
 
+interface PickerComponent {
+  render(width: number): string[];
+  handleInput(data: string): void;
+  dispose(): void;
+}
+
 function makePicker(opts: {
   charters?: CharterListRow[];
   snapshots?: Map<string, PickerSnapshot>;
   height?: number;
   initialCursorCharterId?: string;
   boundCharterId?: string | null;
-} = {}): CharterPickerComponent {
+} = {}): PickerComponent {
   const charters = opts.charters ?? [charter("alpha"), charter("beta"), charter("gamma")];
-  return new CharterPickerComponent({
+  const height = opts.height ?? 40;
+  const factory = createCharterPickerOverlay({
     charters,
     snapshots: opts.snapshots ?? new Map(charters.map((row) => [row.charterId, snapshot(row.charterId)])),
-    theme,
-    heightProvider: () => opts.height ?? 40,
+    heightProvider: () => height,
     ...(opts.initialCursorCharterId !== undefined ? { initialCursorCharterId: opts.initialCursorCharterId } : {}),
     boundCharterId: opts.boundCharterId ?? null,
-    onDone: () => undefined,
   });
+  return factory(fakeTui(height), theme, {}, () => undefined) as PickerComponent;
 }
 
-function leftCell(row: string, width: number): string {
-  const leftWidth = leftWidthFor(width);
-  return row.slice(1, 1 + leftWidth);
+// Split the left/right interior of a rendered body row at the divider column.
+function leftCell(row: string): string {
+  const divider = row.indexOf("│", 1);
+  return divider > 0 ? row.slice(1, divider) : row.slice(1);
 }
 
-function rightCell(row: string, width: number): string {
-  const leftWidth = leftWidthFor(width);
-  return row.slice(2 + leftWidth, -1);
+function rightCell(row: string): string {
+  const divider = row.indexOf("│", 1);
+  return divider > 0 ? row.slice(divider + 1, row.length - 1) : "";
 }
 
-describe("CharterPickerComponent rendering and navigation", () => {
+describe("createCharterPickerOverlay rendering and navigation", () => {
   test("renders exact height, width, and divider position", () => {
     const picker = makePicker();
     for (const width of [80, 120, 160]) {
       const lines = picker.render(width);
+      // paneOverlay renders bodyHeight + 2 borders; bodyHeight = height - 2.
       expect(lines).toHaveLength(40);
       for (const line of lines) expect(line.length).toBe(width);
-      const dividerColumn = 1 + leftWidthFor(width);
-      for (const row of lines.slice(1, -1)) expect(row[dividerColumn]).toBe("│");
+      // The divider column is consistent across all body rows.
+      const dividerColumn = lines[1]!.indexOf("│", 1);
+      for (const row of lines.slice(2, -1)) expect(row[dividerColumn]).toBe("│");
     }
   });
 
@@ -113,16 +119,15 @@ describe("CharterPickerComponent rendering and navigation", () => {
       charter("done-b", { status: "abandoned" as CharterStatus }),
     ];
     const picker = makePicker({ charters, boundCharterId: "bound", initialCursorCharterId: "cursor" });
-    const lines = picker.render(120);
-    const left = lines.slice(1, -1).map((line) => leftCell(line, 120)).join("\n");
-    expect(left).toMatch(/── done ─+/);
+    const left = picker.render(120).slice(1, -1).map(leftCell).join("\n");
+    expect(left).toMatch(/─ done ─+/);
     expect(left.split("\n").find((line) => line.includes("bound"))).toContain("*");
     expect(left.split("\n").find((line) => line.includes("cursor"))).toContain("►");
   });
 
   test("renders right pane sections in order", () => {
     const picker = makePicker();
-    const right = picker.render(160).slice(1, -1).map((line) => rightCell(line, 160)).join("\n");
+    const right = picker.render(160).slice(1, -1).map(rightCell).join("\n");
     // Picker renders either "Blocking complete" or "Ready to complete" depending on state.
     const labels = ["Objective", /Blocking complete|Ready to complete/, "Plan", "Recent evidence"];
     let last = -1;
@@ -136,11 +141,11 @@ describe("CharterPickerComponent rendering and navigation", () => {
   test("renders progress bars and space toggles all criteria", () => {
     const picker = makePicker();
     let lines = picker.render(160);
-    expect(lines.some((line) => line.includes("▰") || line.includes("▱"))).toBe(false);
     expect(lines.join("\n")).toContain("█");
     expect(lines.join("\n")).toContain("░");
     expect(lines.join("\n")).not.toMatch(/VAL-A\s\sFirst criterion/);
 
+    // space toggles criteria only when the detail pane has focus.
     picker.handleInput("\t");
     picker.handleInput(" ");
     lines = picker.render(160);
@@ -154,9 +159,9 @@ describe("CharterPickerComponent rendering and navigation", () => {
 
   test("renders objective truncation hint and expansion", () => {
     // The right detail pane truncates objectives > 2 lines and shows [o for full];
-    // pressing 'o' (with focus right) expands. The left info pane has its own short
-    // preview — we scope this assertion to the right detail pane only.
-    const rightOf = (lines: string[]): string => lines.map((l) => l.split("\u2502")[2] ?? "").join("\n");
+    // pressing 'o' (with detail focus) expands. The left info pane has its own
+    // short preview — scope this assertion to the right detail pane only.
+    const rightOf = (lines: string[]): string => lines.slice(1, -1).map(rightCell).join("\n");
 
     const one = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", { objective: "one line" })]]) });
     expect(rightOf(one.render(80))).not.toContain("[o for full]");
@@ -175,16 +180,55 @@ describe("CharterPickerComponent rendering and navigation", () => {
     expect(expandedRight).toContain("line four");
   });
 
-  test("tab changes focus and j scrolls right pane", () => {
+  test("tab changes focus and j scrolls the detail pane", () => {
     const picker = makePicker({ height: 8 });
-    picker.render(80);
-    expect((picker as any).focus).toBe("left");
+    const detailRow0 = (lines: string[]) => rightCell(lines[1]!);
+    const before = detailRow0(picker.render(80));
     picker.handleInput("\t");
-    expect((picker as any).focus).toBe("right");
-    expect((picker as any).rightScrollLine).toBe(0);
     picker.handleInput("j");
-    expect((picker as any).rightScrollLine).toBeGreaterThan(0);
-    expect((picker as any).cursorIndex).toBe(0);
+    // With detail focus, j scrolls the detail pane: its first visible row changes.
+    expect(detailRow0(picker.render(80))).not.toBe(before);
+  });
+
+  test("a newly selected charter opens its detail at the top (no mid-scroll bleed)", () => {
+    // Give each charter a tall detail pane so it can be scrolled. alpha and beta
+    // share the same structure, so a fresh detail's row 0 is identical.
+    const tall = (id: string) => snapshot(id, {
+      objective: Array.from({ length: 12 }, (_, i) => `${id} objective line ${i}`).join("\n"),
+    });
+    const charters = [charter("alpha"), charter("beta")];
+    const picker = makePicker({
+      height: 8,
+      charters,
+      snapshots: new Map(charters.map((r) => [r.charterId, tall(r.charterId)])),
+    });
+    const detailRow0 = (lines: string[]) => rightCell(lines[1]!);
+    const freshTop = detailRow0(picker.render(80));
+    // Scroll alpha's detail down.
+    picker.handleInput("\t");
+    picker.handleInput("j");
+    picker.handleInput("j");
+    expect(detailRow0(picker.render(80))).not.toBe(freshTop);
+    // Switch to beta: its detail must open at the top, not inherit alpha's scroll.
+    picker.handleInput("\t"); // back to list focus
+    picker.handleInput("j"); // select beta
+    expect(detailRow0(picker.render(80))).toBe(freshTop);
+  });
+
+  test("overlay height tracks live terminal rows on resize", () => {
+    let rows = 40;
+    const liveTui = { terminal: { get rows() { return rows; } }, requestRender() {} };
+    const charters = [charter("alpha"), charter("beta")];
+    const factory = createCharterPickerOverlay({
+      charters,
+      snapshots: new Map(charters.map((r) => [r.charterId, snapshot(r.charterId)])),
+      heightProvider: () => 24,
+      boundCharterId: null,
+    });
+    const picker = factory(liveTui, theme, {}, () => undefined) as PickerComponent;
+    expect(picker.render(80)).toHaveLength(40);
+    rows = 20;
+    expect(picker.render(80)).toHaveLength(20);
   });
 
   test("banned keys do not mutate rendered output", () => {
@@ -197,36 +241,32 @@ describe("CharterPickerComponent rendering and navigation", () => {
     }
   });
 
-  test("renders shared and pane-specific keyboard legends", () => {
+  test("renders the auto-derived legend as a third left-pane zone", () => {
     const lines = makePicker().render(160);
-    const left = lines.slice(1, -1).map((line) => leftCell(line, 160)).join("\n");
-    // Shared legend lives as a third section inside the left pane (with a `keys`
-    // flatRule divider above it). Only keys that work regardless of focus belong
-    // here; pane-specific keys (space/o) live on the right bottom border instead.
-    expect(left).toMatch(/── keys ─+/);
-    expect(left).toMatch(/j\/k\s+move cursor/);
-    expect(left).toMatch(/pgup\/pgdn\s+jump a page/);
-    expect(left).toMatch(/g \/ G\s+top \/ end/);
-    expect(left).toMatch(/tab\s+switch pane/);
-    expect(left).toMatch(/\[ \/ \]\s+resize split/);
-    expect(left).toMatch(/s\s+toggle sidebar/);
-    expect(left).toMatch(/O\s+open charter dir/);
-    expect(left).toMatch(/y\s+copy charterId/);
-    expect(left).toMatch(/esc\s+close picker/);
-    // Pane-specific keys NOT in the shared legend.
+    const left = lines.slice(1, -1).map(leftCell).join("\n");
+    // The legend is auto-derived by paneOverlay from nav keys + customActions and
+    // stacked as the left pane's third zone. Its divider label is the collapse
+    // label ("sidebar"); the picker also surfaces an "info" zone above it.
+    expect(left).toMatch(/─ info ─+/);
+    expect(left).toMatch(/─ sidebar ─+/);
+    expect(left).toMatch(/tab\/←\/→\s+focus/);
+    expect(left).toMatch(/j\/k\s+select/);
+    expect(left).toMatch(/u\/d\s+half-page/);
+    expect(left).toMatch(/g\/G\s+top\/bottom/);
+    expect(left).toMatch(/\[\/\]\s+resize/);
+    expect(left).toMatch(/s\s+sidebar/);
+    // The open-dir / copy-id custom actions stay in the legend (O and y).
+    expect(left).toMatch(/shift\+o\s+open dir/);
+    expect(left).toMatch(/y\s+copy id/);
+    expect(left).toMatch(/q\/esc\s+close/);
+    // Detail-only toggles (space/o) are hidden from the legend.
     expect(left).not.toMatch(/space\s+fold/);
-    expect(left).not.toMatch(/o\s+toggle objective/);
-    // Bottom border: left carries cursor counter; right carries the right-only
-    // keybind hint (so the segment is never an empty `dash + spaces + dash` hole).
-    const bottom = lines.at(-1)!;
-    expect(bottom).toMatch(/1\/3/);
-    expect(bottom).toMatch(/space:fold/);
-    expect(bottom).toMatch(/o:obj/);
+    expect(left).not.toMatch(/\bo\s+obj/);
   });
 
   test("left list hides progress bars and then status under pressure", () => {
     const picker = makePicker();
-    const mediumLeft = picker.render(120).slice(1, 4).map((line) => leftCell(line, 120)).join("\n");
+    const mediumLeft = picker.render(120).slice(1, 4).map(leftCell).join("\n");
     expect(mediumLeft).not.toContain("█");
     expect(mediumLeft).not.toContain("░");
     expect(mediumLeft).toMatch(/active/);
@@ -235,44 +275,21 @@ describe("CharterPickerComponent rendering and navigation", () => {
       charter("done-a", { status: "completed" as CharterStatus, passCount: 10, totalCount: 10 }),
       charter("done-b", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
     ] });
-    const tightLeft = tight.render(72).slice(1, 3).map((line) => leftCell(line, 72)).join("\n");
+    const tightLeft = tight.render(72).slice(1, 4).map(leftCell).join("\n");
     expect(tightLeft).not.toContain("█");
     expect(tightLeft).not.toContain("░");
     expect(tightLeft).toMatch(/10\/10/);
     expect(tightLeft).not.toMatch(/completed|abandoned/);
   });
 
-  test("arrow keys mirror j/k without legend entries", () => {
-    const picker = makePicker({ height: 8 });
-    picker.render(80);
+  test("arrow keys mirror j/k", () => {
+    const picker = makePicker();
+    const cursorRow = (lines: string[]) => lines.slice(1, -1).map(leftCell).find((l) => l.includes("►")) ?? "";
+    expect(cursorRow(picker.render(80))).toContain("alpha");
     picker.handleInput("\u001b[B");
-    expect((picker as any).cursorIndex).toBe(1);
+    expect(cursorRow(picker.render(80))).toContain("beta");
     picker.handleInput("\u001b[A");
-    expect((picker as any).cursorIndex).toBe(0);
-
-    picker.handleInput("\t");
-    picker.handleInput("\u001b[B");
-    expect((picker as any).rightScrollLine).toBeGreaterThan(0);
-    picker.handleInput("\u001b[A");
-    expect((picker as any).rightScrollLine).toBe(0);
-
-    const left = picker.render(160).slice(1, -1).map((line) => leftCell(line, 160)).join("\n");
-    expect(left).not.toMatch(/up|down|arrow/i);
-  });
-
-  test("top border stays aligned at minimum left split", () => {
-    const picker = makePicker({ charters: [
-      charter("depth2-smoke", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
-      charter("autobind-smoke", { status: "abandoned" as CharterStatus, passCount: 0, totalCount: 1 }),
-      charter("subagent-binding", { status: "completed" as CharterStatus, passCount: 6, totalCount: 6 }),
-    ] });
-    let lines = picker.render(120);
-    for (let i = 0; i < 8; i++) picker.handleInput("[");
-    lines = picker.render(120);
-    const bodyDivider = lines[1]!.indexOf("│", 1);
-    expect(lines[0]!.length).toBe(120);
-    expect(lines[0]![bodyDivider]).toBe("┬");
-    expect(lines[0]!.slice(1, bodyDivider)).not.toContain("active /");
+    expect(cursorRow(picker.render(80))).toContain("alpha");
   });
 
   test("right pane uses available space for evidence and wraps fields", () => {
@@ -295,7 +312,7 @@ describe("CharterPickerComponent rendering and navigation", () => {
     })]]) });
     picker.handleInput("\t");
     picker.handleInput(" ");
-    const right = picker.render(120).slice(1, -1).map((line) => rightCell(line, 120)).join("\n");
+    const right = picker.render(120).slice(1, -1).map(rightCell).join("\n");
     expect(right.match(/VAL-LONG-/g)?.length).toBeGreaterThan(5);
     expect(right).toContain("charter-reviewer:session-0");
     expect(right).toContain("disappearing past");
@@ -303,41 +320,35 @@ describe("CharterPickerComponent rendering and navigation", () => {
 
   test("s collapses and restores the sidebar", () => {
     const picker = makePicker();
+    const dividerIndex = (rendered: string[]) => rendered[1]!.indexOf("│", 1);
     const expanded = picker.render(100);
-    const expandedDivider = expanded[1]!.indexOf("│", 1);
+    const expandedDivider = dividerIndex(expanded);
     expect(expandedDivider).toBeGreaterThan(1);
     picker.handleInput("s");
     const collapsed = picker.render(100);
-    expect(collapsed[1]!.indexOf("│", 1)).toBe(99);
-    expect((picker as any).focus).toBe("right");
+    expect(dividerIndex(collapsed)).toBe(99);
     picker.handleInput("s");
-    const restored = picker.render(100);
-    expect(restored[1]!.indexOf("│", 1)).toBe(expandedDivider);
+    expect(dividerIndex(picker.render(100))).toBe(expandedDivider);
   });
 
   test("bracket keys resize split using last rendered width", () => {
     const picker = makePicker();
-    let lines = picker.render(80);
     const dividerIndex = (rendered: string[]) => rendered[1]!.indexOf("│", 1);
-    const initial = dividerIndex(lines);
+    const initial = dividerIndex(picker.render(80));
 
     picker.handleInput("[");
-    lines = picker.render(80);
-    expect(dividerIndex(lines)).toBeLessThan(initial);
+    expect(dividerIndex(picker.render(80))).toBeLessThan(initial);
 
     picker.handleInput("]");
-    lines = picker.render(80);
-    expect(dividerIndex(lines)).toBe(initial);
+    expect(dividerIndex(picker.render(80))).toBe(initial);
 
     const wide = makePicker();
-    lines = wide.render(160);
-    const wideInitial = dividerIndex(lines);
+    const wideInitial = dividerIndex(wide.render(160));
     for (let i = 0; i < 8; i++) wide.handleInput("]");
-    lines = wide.render(160);
-    expect(dividerIndex(lines)).toBeGreaterThan(wideInitial);
+    expect(dividerIndex(wide.render(160))).toBeGreaterThan(wideInitial);
   });
 
-  test("bare /charters opens top-left fullscreen overlay", async () => {
+  test("bare /charters opens a true fullscreen custom UI (no overlay options)", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-picker-wire-"));
     try {
       const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> | void }>();
@@ -349,7 +360,7 @@ describe("CharterPickerComponent rendering and navigation", () => {
         // no-op event bus keeps it in fallback mode for this wiring test.
         events: { on: () => () => {}, emit: () => {} },
       } as never);
-      const customCalls: Array<{ options: any }> = [];
+      const customCalls: Array<{ options: unknown }> = [];
       await commands.get("charters")!.handler("", {
         cwd: projectDir,
         hasUI: true,
@@ -362,11 +373,10 @@ describe("CharterPickerComponent rendering and navigation", () => {
         },
         sessionManager: { getSessionId: () => undefined },
       });
+      // client.ui.fullscreen() runs the picker via ctx.ui.custom with NO overlay
+      // options — a TRUE fullscreen lease, not an anchored overlay.
       expect(customCalls).toHaveLength(1);
-      expect(customCalls[0]!.options.overlay).toBe(true);
-      expect(customCalls[0]!.options.overlayOptions.anchor).toBe("top-left");
-      expect(customCalls[0]!.options.overlayOptions.width).toBe("100%");
-      expect(customCalls[0]!.options.overlayOptions.maxHeight).toBe("100%");
+      expect(customCalls[0]!.options).toBeUndefined();
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

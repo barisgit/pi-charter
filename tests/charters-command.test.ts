@@ -111,21 +111,22 @@ beforeEach(() => resetCharterSelection());
 afterEach(() => resetCharterSelection());
 
 describe("/charters command", () => {
-  test("bare opens the picker overlay with overlay anchor/width options", async () => {
+  test("bare opens the picker via a true fullscreen custom UI (no overlay options)", async () => {
     await withTempProject(async (projectDir) => {
       const idA = await seedActiveCharter(projectDir, { name: "alpha" });
       const idB = await seedActiveCharter(projectDir, { name: "beta" });
       const pi = makeFakePi();
       registerCharterCommands(pi as never);
       const charters = pi.commands.get("charters")!;
-      const { ctx, customCalls } = makeCtx(projectDir, { hasUI: true, customResult: idA });
+      const { ctx, customCalls } = makeCtx(projectDir, { hasUI: true, customResult: null });
       await charters.handler("", ctx);
+      // client.ui.fullscreen() acquires a fullscreen lease and runs the picker
+      // via ctx.ui.custom with NO overlay options (true fullscreen).
       expect(customCalls).toHaveLength(1);
-      expect(customCalls[0]!.options).toMatchObject({
-        overlay: true,
-        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
-      });
-      expect(getCharterSelection()).toEqual({ kind: "explicit", charterId: idA });
+      expect(customCalls[0]!.options).toBeUndefined();
+      // The picker is read-only: it only closes with null, so the bare command
+      // never mutates the charter selection.
+      expect(getCharterSelection()).toEqual({ kind: "unset" });
       expect(idB).not.toEqual(idA);
     });
   });

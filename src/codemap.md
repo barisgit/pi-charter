@@ -284,7 +284,7 @@ session_start / turn_end / selection refresh / async updates
 /charters
   → buildPickerSnapshot()
       reads state, parsed markdown, criterion-state, blockers, recent evidence
-  → CharterPickerComponent custom TUI overlay
+  → createCharterPickerOverlay() fullscreen paneOverlay (via client.ui.fullscreen)
 
 subagent:all-idle
   → registerCharterRalphLoop debounce/min-interval
@@ -323,9 +323,9 @@ Ralph prompt case selection currently maps every non-skipped status to `active`;
 ### With `pi-tui`
 
 - `ctx.ui.setWidget("pi-charter", factory, { placement: "aboveEditor" })` hosts the compact widget.
-- `ctx.ui.custom(factory, options)` opens the `/charters` picker overlay.
-- `CharterPickerComponent` implements `Component` with `render(width)` and `handleInput(data)`.
-- `truncateToWidth()`, `visibleWidth()`, and `matchesKey()` support terminal layout/input handling.
+- `client.ui.fullscreen(createCharterPickerOverlay(...))` runs the `/charters` picker as a true fullscreen custom UI (acquires a fullscreen lease, calls `ctx.ui.custom` with no overlay options).
+- The picker is built on `pi-extension-utils` `paneOverlay()`; the returned component exposes `render(width)` / `handleInput(data)` / `dispose()`.
+- `truncateToWidth()` and `visibleWidth()` support terminal layout.
 
 ### On-Disk State Layout
 

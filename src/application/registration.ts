@@ -30,7 +30,7 @@ import { handleAsyncComplete, handleAsyncStarted } from "./async-bridge-service"
 import { __resetSubagentApiForTests, getSubagentApi, setSubagentApiForBridge } from "./subagent-api";
 import { renderCharterWidget } from "../ui/widget";
 import { loadCharterSnapshot, RunningSubagentRegistry } from "../ui/widget-service";
-import { CharterPickerComponent } from "../ui/charter-picker";
+import { createCharterPickerOverlay } from "../ui/charter-picker";
 import { buildPickerSnapshot, listAllCharters } from "../ui/picker-snapshot";
 import { listActiveCharters, type CharterListEntry } from "./service";
 import {
@@ -580,53 +580,39 @@ async function openPicker(
     const boundCharterId = binding?.charterId ?? null;
     const initialId = boundCharterId ?? charters[0]?.charterId;
 
-    const ui = ctx.ui as unknown as {
-      custom<T>(factory: (tui: { terminal?: { rows?: number } }, theme: { fg(color: string, text: string): string; bold(text: string): string }, keybindings: unknown, done: (result: T) => void) => unknown, options?: { overlay?: boolean; overlayOptions?: unknown }): Promise<T>;
-    };
     const notifyHost: ((message: string, type?: "info" | "warning" | "error") => void) | undefined =
       ctx.hasUI && typeof (ctx.ui as { notify?: unknown }).notify === "function"
         ? (msg, kind) => (ctx.ui as { notify: (m: string, t?: "info" | "warning" | "error") => void }).notify(msg, kind)
         : undefined;
-    // Blank coordinated widgets (e.g. the aboveEditor charter panel) while the
-    // fullscreen overlay is open so they don't bleed through. We can't reuse
-    // ctx.ui.fullscreen()/client.ui.fullscreen(): that wrapper calls ui.custom
-    // with no options and would drop the overlay anchoring the picker needs. So
-    // we replicate its lease handling around the existing ui.custom call. A
-    // dedicated client with a distinct clientId is used (not the widget
+    // A dedicated client with a distinct clientId is used (not the widget
     // client's "pi-charter") because connect() is not idempotent and a shared
-    // clientId would let dispose() unregister the real charter widget; the
-    // host's fullscreen stack is global, so any client's lease blanks it.
+    // clientId would let dispose() unregister the real charter widget.
+    // client.ui.fullscreen() acquires a fullscreen lease (blanking coordinated
+    // widgets like the aboveEditor charter panel), runs the picker as a TRUE
+    // fullscreen custom UI (no overlay anchoring — this avoids the image
+    // z-order bleed-through the old overlay had), and releases in a finally.
     const pickerClient = connect(pi as unknown as Parameters<typeof connect>[0], {
       ctx: ctx as unknown as Parameters<typeof connect>[1]["ctx"],
       clientId: "pi-charter-picker",
     });
-    const lease = pickerClient.fullscreen.acquire();
-    let result: string | null;
     try {
-      result = await ui.custom<string | null>((tui, theme, _kb, done) => new CharterPickerComponent({
+      await pickerClient.ui.fullscreen<null>(createCharterPickerOverlay({
         charters,
         snapshots,
-        theme,
-        heightProvider: () => tui.terminal?.rows ?? 24,
+        // Fallback only; the picker reads tui.terminal.rows live each render.
+        heightProvider: () => 24,
         ...(initialId !== undefined ? { initialCursorCharterId: initialId } : {}),
         boundCharterId,
-        onDone: done,
         host: {
           resolveCharterDir: (id) => charterDir(ctx.cwd, id),
           ...(notifyHost ? { notify: notifyHost } : {}),
         },
-      }), {
-        overlay: true,
-        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
-      });
+      }));
     } finally {
-      lease.release();
       pickerClient.dispose();
     }
-    if (result !== null) {
-      setCharterSelection({ kind: "explicit", charterId: result });
-      await requestSelectionRefreshSafe(ctx);
-    }
+    // The picker is read-only: it only ever closes with null, so there is no
+    // selection to apply here.
   } finally {
     setPickerOpen(false);
   }
