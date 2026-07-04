@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { Markdown, visibleWidth } from "@earendil-works/pi-tui";
 import {
   clipStyled,
   clipText,
@@ -28,7 +29,7 @@ import {
   SPLIT_STEP_COLS,
   TERMINAL_STATUSES,
 } from "./charter-picker-constants";
-import type { CharterListRow, PickerSnapshot, PlanCriterionNode, PlanFeatureNode } from "./picker-snapshot";
+import type { CharterListRow, PickerSnapshot, PlanCriterionNode } from "./picker-snapshot";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
@@ -74,7 +75,7 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
     const totalHeight = (): number => (tui as { terminal?: { rows?: number } }).terminal?.rows ?? heightProvider();
 
     // Mutable closure state (replaces the old component's instance fields).
-    let allExpanded = false;
+    let allExpanded = true;
     let objectiveExpanded = false;
     let flash: FlashMessage | null = null;
 
@@ -194,12 +195,13 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
           const snapshot = row ? snapshots.get(row.charterId) : undefined;
           if (!snapshot) return { label: "(no selection)", labelColor: "dim", tailColor: "dim" };
           const passColor = passCountColor(snapshot.header.passCount, snapshot.header.totalCount);
+          const criteriaCount = `${snapshot.header.passCount}/${snapshot.header.totalCount} criteria`;
           const tailRendered = [
             t.fg(statusColor(snapshot.header.status), `[${snapshot.header.status}]`),
-            t.fg(passColor, `${snapshot.header.passCount}/${snapshot.header.totalCount} VAL`),
+            t.fg(passColor, criteriaCount),
             t.fg("muted", formatElapsed(snapshot.header.elapsedMs)),
           ].join("  ");
-          const tailPlain = `[${snapshot.header.status}]  ${snapshot.header.passCount}/${snapshot.header.totalCount} VAL  ${formatElapsed(snapshot.header.elapsedMs)}`;
+          const tailPlain = `[${snapshot.header.status}]  ${criteriaCount}  ${formatElapsed(snapshot.header.elapsedMs)}`;
           // Coerce to string: titledTopSegment's truncateToWidth crashes pi on a
           // non-string label, and header.name derives from on-disk JSON.
           return { label: String(snapshot.header.name ?? ""), tailRendered, tailPlain };
@@ -368,11 +370,13 @@ function buildDetailLines(
     lines.push(...objectiveLines.map((line) => `  ${line}`));
   }
 
+  const isTerminal = TERMINAL_STATUSES.has(snapshot.header.status);
+  if (!isTerminal && snapshot.report) lines.push(theme.fg("dim", "  REPORT.md scaffolded — fill before complete"));
+
   // Blocking-complete section.
   // Suppress entirely for terminal charters (completed/abandoned); the section
-  // only makes sense for live work. If all VAL pass on a non-terminal charter,
+  // only makes sense for live work. If all criteria pass on a non-terminal charter,
   // surface Ready regardless of any stale blockingForComplete data.
-  const isTerminal = snapshot.header.status === "completed" || snapshot.header.status === "abandoned";
   if (!isTerminal) {
     lines.push("");
     if (allPass(snapshot)) {
@@ -395,15 +399,9 @@ function buildDetailLines(
 
   // Plan section.
   lines.push("");
-  lines.push(sectionHeading("Plan"));
-  for (const milestone of snapshot.planTree) {
-    lines.push(`  ${theme.bold(theme.fg("text", milestone.milestoneId))}`);
-    for (const feature of milestone.features) {
-      lines.push(...featureLines(theme, feature, width));
-      if (expand.allExpanded) {
-        for (const criterion of feature.criteria) lines.push(...criterionLines(theme, criterion, width));
-      }
-    }
+  lines.push(planHeading(theme, snapshot));
+  if (expand.allExpanded) {
+    for (const criterion of snapshot.plan.criteria) lines.push(...criterionLines(theme, criterion, width));
   }
 
   // Recent evidence section.
@@ -415,19 +413,42 @@ function buildDetailLines(
   if (snapshot.recentEvidence.length > evidenceShown.length) {
     lines.push(theme.fg("dim", `… +${snapshot.recentEvidence.length - evidenceShown.length} more`));
   }
+
+  // REPORT.md section: appended inline for terminal charters, after the
+  // regular panes (objective/blocking/plan/evidence stay visible above).
+  if (isTerminal && snapshot.report) {
+    lines.push("");
+    lines.push(sectionHeading("REPORT.md", "accent"));
+    lines.push(...renderMarkdownLines(theme, snapshot.report.markdown, width));
+  }
   return lines;
 }
 
-function featureLines(theme: ThemeLike, feature: PlanFeatureNode, width: number): string[] {
-  const glyph = feature.status === "completed"
-    ? theme.fg("success", "✓")
-    : feature.status === "in_progress"
-      ? theme.fg("accent", "●")
-      : theme.fg("dim", "○");
-  const bar = width >= 44 ? `${coloredBar(theme, feature.passCount, feature.totalCount, 4)} ` : "";
-  const statusWord = theme.fg(featureStatusColor(feature.status), feature.status);
-  const counter = theme.fg(passCountColor(feature.passCount, feature.totalCount), `${feature.passCount}/${feature.totalCount}`);
-  return [`    ${glyph} ${feature.featureId.padEnd(12)} ${bar}${counter}  ${statusWord}`];
+function renderMarkdownLines(theme: ThemeLike, markdown: string, width: number): string[] {
+  // Prefer pi's real markdown renderer (same one the chat view uses).
+  // getMarkdownTheme() depends on the interactive theme being initialized;
+  // fall back to plain wrapped text in headless contexts (tests).
+  try {
+    return new Markdown(markdown, 2, 0, getMarkdownTheme()).render(Math.max(10, width));
+  } catch {
+    /* fall through to plain rendering */
+  }
+  const out: string[] = [];
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, "");
+    if (line.trim().length === 0) {
+      out.push("");
+      continue;
+    }
+    out.push(...wrapText(line, Math.max(1, width)).map((wrapped) => `  ${wrapped}`));
+  }
+  return out;
+}
+
+function planHeading(theme: ThemeLike, snapshot: PickerSnapshot): string {
+  const counter = theme.fg(passCountColor(snapshot.plan.passCount, snapshot.plan.totalCount), `${snapshot.plan.passCount}/${snapshot.plan.totalCount}`);
+  const statusWord = theme.fg(planStatusColor(snapshot.plan.status), snapshot.plan.status);
+  return `${theme.bold(theme.fg("accent", "Plan"))} ${counter} ${statusWord}`;
 }
 
 function criterionLines(theme: ThemeLike, criterion: PlanCriterionNode, width: number): string[] {
@@ -437,25 +458,37 @@ function criterionLines(theme: ThemeLike, criterion: PlanCriterionNode, width: n
       ? theme.fg("error", "✗")
       : theme.fg("dim", "○");
   const head = `        ${glyph} ${criterion.criterionId}`;
-  if (!criterion.titleFromH3) return [head];
-  const titleWidth = Math.max(8, width - visibleWidth(head) - 2);
+  const dependsPlain = formatDepends(criterion.depends);
+  const depends = dependsPlain ? ` ${theme.fg("dim", dependsPlain)}` : "";
+  if (!criterion.titleFromH3) return [depends ? `${head}  ${depends.trimStart()}` : head];
+  const titleWidth = Math.max(8, width - visibleWidth(head) - 2 - visibleWidth(dependsPlain) - (dependsPlain ? 1 : 0));
   const wrapped = wrapText(criterion.titleFromH3, titleWidth);
   return [
-    `${head}  ${wrapped[0] ?? ""}`,
+    `${head}  ${wrapped[0] ?? ""}${depends}`,
     ...wrapped.slice(1).map((line) => `          ${line}`),
   ];
 }
 
+function formatDepends(depends: string[]): string {
+  if (depends.length === 0) return "";
+  const MAX_DEPS = 3;
+  const shown = depends.slice(0, MAX_DEPS).join(", ");
+  const extra = depends.length > MAX_DEPS ? `, +${depends.length - MAX_DEPS}` : "";
+  return `← ${shown}${extra}`;
+}
+
 function evidenceLines(theme: ThemeLike, evidence: PickerSnapshot["recentEvidence"][number], width: number): string[] {
   const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
-  const outcome = theme.fg(outcomeColor, evidence.outcome.padEnd(7));
-  const prefix = `${theme.fg("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(14)}  ${outcome}`;
+  const outcome = theme.fg(outcomeColor, evidence.outcome.padEnd(4));
+  const prefix = `${theme.fg("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(3)}  ${outcome}`;
   const by = compactRecordedBy(evidence.recordedBy);
-  const byWidth = Math.max(8, width - visibleWidth(prefix) - 2);
+  const indentWidth = visibleWidth(prefix) + 2;
+  const byWidth = Math.max(8, width - indentWidth);
   const wrapped = wrapText(by, byWidth);
+  const indent = " ".repeat(indentWidth);
   return [
     `${prefix}  ${theme.fg("dim", wrapped[0] ?? "")}`,
-    ...wrapped.slice(1).map((line) => theme.fg("dim", `                            ${line}`)),
+    ...wrapped.slice(1).map((line) => theme.fg("dim", `${indent}${line}`)),
   ];
 }
 
@@ -545,7 +578,7 @@ function statusColor(status: CharterStatus): ThemeColorName {
   }
 }
 
-function featureStatusColor(status: "completed" | "in_progress" | "pending"): ThemeColorName {
+function planStatusColor(status: "completed" | "in_progress" | "pending"): ThemeColorName {
   if (status === "completed") return "success";
   if (status === "in_progress") return "accent";
   return "dim";

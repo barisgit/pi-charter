@@ -1,74 +1,58 @@
 /**
- * Bridge between disk state and the charter widget ViewModel.
- *
- * `loadCharterSnapshot` reads all per-charter sources from disk and hands the
- * reducer a fully-resolved ReducerInput. The widget host calls this on every
- * relevant event (charter state changes, evidence recorded, plan locked, async
- * subagent started/completed) and then pushes the resulting ViewModel into
- * `CharterWidget.update(...)`.
- *
- * Running subagents are tracked in-memory (no disk projection) because the
- * existing async-bridge appends events to `events.jsonl` for durability but
- * doesn't maintain an "in-flight" view. We keep that in a per-process Map
- * keyed by runId and seeded by the same async-bridge events.
+ * Bridge between ADR-0014 status projections and the old charter widget VM.
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { CharterCriterion } from "../domain/types";
-import { charterDir, loadCharterState, loadParsedCharter } from "../infrastructure/store";
+import { getBoundCharterStatus, getCharterStatus, type CharterStatusResult } from "../application/service";
+import { listCharters } from "../infrastructure/store";
 import { buildViewModel, type CharterWidgetVM, type ReducerInput, type RunningSubagent } from "./widget-state";
 
 export interface SnapshotInput {
   projectDir: string;
   charterId: string;
-  runningSubagents: RunningSubagent[];
+  runningSubagents?: RunningSubagent[];
   now?: number;
 }
 
+export type CharterWidgetStatusWithDates = CharterStatusResult & { createdAt?: string; updatedAt?: string };
+
+export async function loadCharterWidgetStatus(
+  projectDir: string,
+  input: { sessionId?: string } = {},
+): Promise<CharterWidgetStatusWithDates | undefined> {
+  const status = await getBoundCharterStatus(projectDir, input.sessionId);
+  if (!status) return undefined;
+  return withListDates(projectDir, status);
+}
+
 export async function loadCharterSnapshot(input: SnapshotInput): Promise<CharterWidgetVM> {
-  const dir = charterDir(input.projectDir, input.charterId);
-  const [state, charter, criterionOutcomes] = await Promise.all([
-    loadCharterState(dir),
-    readCharter(dir),
-    readCriterionOutcomes(dir),
-  ]);
+  const status = await getCharterStatus(input.projectDir, { charterId: input.charterId });
+  const dated = await withListDates(input.projectDir, status);
   const reducerInput: ReducerInput = {
-    charterId: input.charterId,
-    name: state.name,
-    status: state.status,
-    createdAt: state.createdAt,
-    criteria: charter.criteria,
-    criterionOutcomes,
-    runningSubagents: input.runningSubagents,
+    charterId: dated.charterId,
+    name: slugFromId(dated.charterId),
+    status: dated.status,
+    createdAt: dated.createdAt ?? new Date().toISOString(),
+    criteria: dated.criteria,
+    runningSubagents: input.runningSubagents ?? [],
     now: input.now,
   };
   return buildViewModel(reducerInput);
 }
 
-async function readCharter(dir: string): Promise<{ criteria: CharterCriterion[] }> {
-  try {
-    return { criteria: (await loadParsedCharter(dir)).criteria };
-  } catch {
-    return { criteria: [] };
-  }
+async function withListDates(projectDir: string, status: CharterStatusResult): Promise<CharterWidgetStatusWithDates> {
+  const row = (await listCharters(projectDir)).find((entry) => entry.charterId === status.charterId);
+  return { ...status, createdAt: row?.createdAt, updatedAt: row?.updatedAt };
 }
 
-async function readCriterionOutcomes(dir: string): Promise<Record<string, { outcome?: string }>> {
-  try {
-    const parsed = JSON.parse(await readFile(join(dir, "criterion-state.json"), "utf8")) as {
-      criteria?: Record<string, { outcome?: string }>;
-    };
-    return parsed.criteria ?? {};
-  } catch {
-    return {};
-  }
+function slugFromId(charterId: string): string {
+  const match = /^\d{8}-\d{6}-(.+)$/.exec(charterId);
+  return match?.[1] ?? charterId.slice(0, 8);
 }
 
 /**
- * In-memory tracker for in-flight subagents. Seeded by the async-bridge's
- * `subagent:async-started` / `subagent:async-complete` events. Keyed by runId.
- * Lives for the duration of the process.
+ * In-memory tracker kept for compatibility with the old widget host API. The
+ * ADR-0014 runtime does not currently bind subagent runs to criteria, so the
+ * status projection's fail Evidence occupies the old accent/running segment.
  */
 export class RunningSubagentRegistry {
   private subs = new Map<string, RunningSubagent>();

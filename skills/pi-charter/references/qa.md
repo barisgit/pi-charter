@@ -1,40 +1,47 @@
-# QA capture recipes
+# QA artifact capture quick reference
 
-This shelf helps agents choose the right QA capture recipe for the surface under test. Start here, then open the referenced recipe for concrete capture commands, artifact expectations, and fallback guidance.
+Use this only when a criterion needs concrete artifact capture. The evidence source of truth is still the `Evidence:` line in `.charters/<id>/charter.md`; files under `.charters/<id>/work/` are supporting artifacts.
 
-## What surface are you capturing?
+## Shared rules
 
-- Terminal session, CLI tool, TUI, agent driving a shell -> qa/terminal.md
-- Browser, web app, web TUI in headless browser -> qa/browser.md
-- Native desktop app, OS UI, system dialog -> qa/desktop.md
-- Mobile app, mobile web, simulator -> qa/mobile.md
-- HTTP/REST/GraphQL API -> qa/http-api.md
-- WebSocket / SSE / real-time -> qa/http-api.md#websocket-sse
-- Database state, schema, query plans -> qa/database.md
-- Server logs, processes, system metrics -> qa/logs-and-processes.md
-- File changes, generated code, build outputs -> qa/generated-files.md
-- Visual regression (before/after pixel diff) -> qa/visual-regression.md
-- Reproducing the run (env, scripts) -> qa/reproducibility.md
+- Save artifacts in `.charters/<id>/work/` using stable names such as `c1-login-flow.webm`, `c2-api-response.txt`, or `c3-before-after.png`.
+- Cite relative paths in Evidence notes: `work/c1-login-flow.webm`.
+- Inspect every artifact before citing it. Open screenshots, replay recordings, read saved output.
+- Capture artifacts during criterion verification, not while curating `REPORT.md`.
+- Redact secrets, tokens, private payloads, and user data before saving or linking artifacts.
 
-## Shared conventions
+## Choose the strongest useful capture
 
-- Artifacts inside QA evidence run dir: work/<feat>/evidence/<ts>/<filename>.
-- Stable descriptive filenames (dashboard-after-login.png not screenshot1.png).
-- Every artifact captured -> appears in BOTH qa.json artifacts[] AND qa.md.
-- qa.md is human-readable narrative; qa.json is machine record.
-- If recommended stack and graceful degradation both fail -> see 'When to abandon and improvise' section of the relevant recipe.
+- Browser/web app: Playwright trace/video/screenshots, browser automation screenshots, console/network excerpts.
+- Native desktop or OS UI: short screen recording plus key screenshots.
+- Terminal CLI or TUI: real PTY recording with `asciinema`, `script`, or tmux; for non-interactive commands, saved stdout/stderr is enough.
+- HTTP/API: replayable request plus sanitized response body, headers when relevant, stream transcript for SSE/WebSocket.
+- Database: schema/query/count output that demonstrates the state change, with sensitive values redacted.
+- Logs/processes: relevant log excerpt plus the action that produced it; include process health output when lifecycle matters.
+- Generated files/build output: the generated artifact, checksum or diff when helpful, and the command output that produced it.
+- Visual changes: before/after screenshots or a visual diff, with enough context to identify the surface.
 
-## Recipe status
+## Minimal command patterns
 
-| recipe | status | platform | date |
-|---|---|---|---|
-| qa/terminal.md | verified | macOS arm64 | 2026-05-21 |
-| qa/browser.md | stub | n/a | n/a |
-| qa/desktop.md | stub | n/a | n/a |
-| qa/mobile.md | stub | n/a | n/a |
-| qa/http-api.md | stub | n/a | n/a |
-| qa/database.md | stub | n/a | n/a |
-| qa/logs-and-processes.md | stub | n/a | n/a |
-| qa/generated-files.md | stub | n/a | n/a |
-| qa/visual-regression.md | stub | n/a | n/a |
-| qa/reproducibility.md | stub | n/a | n/a |
+```bash
+# Browser trace/video/screenshots when the repo already has Playwright.
+bunx playwright test <focused-spec> --trace on --video on --screenshot on
+
+# Save API output.
+mkdir -p .charters/<id>/work
+curl -i http://localhost:3000/health | tee .charters/<id>/work/c1-health.txt
+
+# Save non-interactive command output.
+bun test 2>&1 | tee .charters/<id>/work/c2-tests.txt
+
+# Record a terminal session when interactive behavior matters.
+asciinema rec .charters/<id>/work/c3-tui.cast
+```
+
+## Evidence note examples
+
+```markdown
+Evidence: pass — drove checkout in local browser; confirmation showed order id; recording: work/c1-checkout.webm (2026-07-02)
+Evidence: pass — curl returned 201 with created id and persisted row count 1; output: work/c2-api-create.txt (2026-07-02)
+Evidence: pass — focused unit and integration checks pass for parser behavior; output: work/c3-tests.txt (2026-07-02)
+```

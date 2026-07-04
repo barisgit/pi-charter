@@ -1,6 +1,6 @@
 /**
- * Charter widget — aboveEditor box that shows charter VAL progress at a glance
- * plus a fixed-height feature list with per-feature VAL beads.
+ * Charter widget — aboveEditor box that shows charter criteria progress at a glance
+ * plus compact per-criterion progress beads.
  *
  * Layout, glyphs, and selection rules: see widget-state.ts + the spec landed
  * in m2624. Rendering is pure string composition once the ViewModel is built.
@@ -12,7 +12,10 @@
 
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { CharterStatus } from "../domain/types";
-import type { CharterWidgetVM, PlanningStep, PlanningVM, ValState } from "./widget-state";
+import type { CharterStatusResult } from "../application/service";
+import { buildViewModel, type CharterWidgetVM, type PlanningStep, type PlanningVM, type ValState } from "./widget-state";
+
+export type CharterWidgetStatus = CharterStatusResult;
 
 interface ThemeLike {
   fg(color: string, text: string): string;
@@ -60,6 +63,18 @@ export interface RenderOptions {
   vm: CharterWidgetVM;
 }
 
+export function buildCharterWidgetView(status: CharterWidgetStatus | undefined, now?: number): CharterWidgetVM | undefined {
+  if (!status) return undefined;
+  return buildViewModel({
+    charterId: status.charterId,
+    name: slugFromId(status.charterId),
+    status: status.status,
+    createdAt: (status as { createdAt?: string }).createdAt ?? new Date().toISOString(),
+    criteria: status.criteria,
+    now,
+  });
+}
+
 export function renderCharterWidget(opts: RenderOptions): string[] {
   const width = Math.max(MIN_TERMINAL_WIDTH, opts.width);
   const displayName = opts.vm.displayName;
@@ -97,8 +112,8 @@ function statusColor(status: CharterStatus): string {
 
 /**
  * Planning-phase render: pipeline of 5 steps with state glyphs, inline
- * detail counts, and a next-action hint. No VAL bar (no evidence yet) and no
- * feature rows (the task tracker above the widget already shows them).
+ * detail counts, and a next-action hint. No criteria bar (no evidence yet) and no
+ * task rows (the task tracker above the widget already shows them).
  */
 function renderPlanningView(opts: {
   width: number;
@@ -215,11 +230,11 @@ function renderBeads(n: number, valStates: ValState[], budget: number, theme: Th
     return { rendered: theme.fg("dim", text), plainLen: text.length };
   }
   if (budget >= n) {
-    // Full row: one glyph per VAL.
+    // Full row: one glyph per criterion.
     const rendered = valStates.map((state) => glyphForState(state, theme)).join("");
     return { rendered, plainLen: n };
   }
-  // Compressed: pack ceil(n/budget) VALs per bead. Bucket = worst-state-wins.
+  // Compressed: pack ceil(n/budget) criteria per bead. Bucket = worst-state-wins.
   const perBead = Math.ceil(n / budget);
   const beadCount = Math.ceil(n / perBead);
   const beads: string[] = [];
@@ -246,6 +261,11 @@ function glyphForState(state: ValState, theme: ThemeLike): string {
 
 function statusLabel(status: CharterStatus): string {
   return status;
+}
+
+function slugFromId(charterId: string): string {
+  const match = /^\d{8}-\d{6}-(.+)$/.exec(charterId);
+  return match?.[1] ?? charterId.slice(0, 8);
 }
 
 export function formatElapsed(ms: number): string {

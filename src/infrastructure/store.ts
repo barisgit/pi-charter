@@ -1,64 +1,15 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { parseCharterMarkdown, renderInitialCharterMarkdown, renderInitialCriteriaMarkdown } from "../domain/charter-md";
-import type { Budget, CharterEvent, CharterState, LegacyCharterStatus, ParsedCharterMarkdown } from "../domain/types";
+import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
+import { renderCharterTemplate } from "../domain/template";
+import type { CharterEvent, CharterState, CriterionSnapshot } from "../domain/types";
 
 export interface CreateCharterWorkspaceInput {
   charterId: string;
-  name?: string;
   objective: string;
   now: string;
-  budget?: Budget;
   sessionId?: string;
-}
-
-export async function loadParsedCharter(dirOrProject: string, charterId?: string): Promise<ParsedCharterMarkdown> {
-  const dir = charterId ? charterDir(dirOrProject, charterId) : dirOrProject;
-  const charterMarkdown = await readFile(join(dir, "charter.md"), "utf8");
-  const criteriaMarkdown = await readOptionalText(join(dir, "criteria.md"));
-  if (criteriaMarkdown !== undefined && isDefaultCriteriaScaffold(criteriaMarkdown)) {
-    return parseCharterMarkdown(charterMarkdown);
-  }
-  return parseCharterMarkdown(
-    charterMarkdown,
-    criteriaMarkdown === undefined ? undefined : { criteriaMarkdown },
-  );
-}
-
-function isDefaultCriteriaScaffold(markdown: string): boolean {
-  const valHeadings = markdown.match(/^#{2,3}\s+VAL-[A-Z0-9-]+\b/gm) ?? [];
-  return valHeadings.length === 1 && /^(?:##|###)\s+VAL-EXAMPLE\b/m.test(markdown);
-}
-
-function charterHasInlineCriteria(markdown: string): boolean {
-  const criteriaSection = /(?:^|\n)##\s+Criteria\s*(?:\n|$)([\s\S]*?)(?=\n##\s+|$)/i.exec(markdown)?.[1] ?? "";
-  return /(?:^|\n)###\s+VAL-[A-Z0-9-]+\b/i.test(criteriaSection);
-}
-
-async function readOptionalText(path: string): Promise<string | undefined> {
-  try {
-    return await readFile(path, "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-const charterQueues = new Map<string, Promise<unknown>>();
-
-export async function withCharterLock<T>(charterDir: string, fn: () => Promise<T>): Promise<T> {
-  const key = resolve(charterDir);
-  const prev = charterQueues.get(key) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  // Store the swallowed-error version so a failed charter mutation doesn't poison the queue.
-  const guard = next.catch(() => undefined);
-  charterQueues.set(key, guard);
-  try {
-    return await next;
-  } finally {
-    // GC: if no later writer chained onto us, drop the entry.
-    if (charterQueues.get(key) === guard) charterQueues.delete(key);
-  }
 }
 
 export interface CreatedCharterWorkspace {
@@ -67,114 +18,143 @@ export interface CreatedCharterWorkspace {
   state: CharterState;
 }
 
-export interface CharterIndexRow {
+export interface CharterListRow {
   charterId: string;
   objective: string;
   status: CharterState["status"];
   createdAt: string;
   updatedAt: string;
+  sessionId?: string;
 }
 
+const charterQueues = new Map<string, Promise<unknown>>();
+const writeQueues = new Map<string, Promise<unknown>>();
+
 export function chartersRoot(projectDir: string): string {
-  return join(projectDir, ".pi", "charters");
+  return join(projectDir, ".charters");
 }
 
 export function charterDir(projectDir: string, charterId: string): string {
   return join(chartersRoot(projectDir), charterId);
 }
 
+export function charterFilePath(dir: string): string {
+  return join(dir, "charter.md");
+}
+
+export function reportPath(dir: string): string {
+  return join(dir, "REPORT.md");
+}
+
+export async function withCharterLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(dir);
+  const prev = charterQueues.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  const guard = next.catch(() => undefined);
+  charterQueues.set(key, guard);
+  try {
+    return await next;
+  } finally {
+    if (charterQueues.get(key) === guard) charterQueues.delete(key);
+  }
+}
+
 export async function createCharterWorkspace(
   projectDir: string,
   input: CreateCharterWorkspaceInput,
 ): Promise<CreatedCharterWorkspace> {
-  const root = chartersRoot(projectDir);
   const dir = charterDir(projectDir, input.charterId);
+  const text = renderCharterTemplate(input.objective);
+  const parsed = parseCharterFile(text);
+  const nowSeq = 1;
   const state: CharterState = {
     charterId: input.charterId,
-    schemaVersion: "v2",
-    name: input.name,
+    schemaVersion: "file-interface",
     objective: input.objective.trim(),
     status: "active",
     createdAt: input.now,
     updatedAt: input.now,
-    lastToolWriteAt: input.now,
-    budget: input.budget,
     sessionId: input.sessionId,
+    nextSeq: nowSeq,
+    latestSourceSeq: 0,
+    snapshotHash: hashText(text),
+    criteriaSnapshot: snapshotFromParsed(parsed, 0),
   };
 
-  await mkdir(join(dir, "work"), { recursive: true });
-  await writeTextAtomic(join(dir, "charter.md"), renderInitialCharterMarkdown(state.objective, state.name));
-  await writeTextAtomic(join(dir, "criteria.md"), renderInitialCriteriaMarkdown(state.name));
+  await mkdir(dir, { recursive: true });
+  await writeTextAtomic(join(dir, "charter.md"), text);
   await writeJsonAtomic(join(dir, "state.json"), state);
-  await writeJsonAtomic(join(dir, "criterion-state.json"), { charterId: input.charterId, criteria: {}, lastToolWriteAt: input.now });
+  await writeTextAtomic(join(dir, "events.jsonl"), "");
   await appendEvent(dir, {
     type: "charter_created",
     ts: input.now,
     charterId: input.charterId,
     objective: state.objective,
   });
-  await updateIndex(root, state);
-
   return { charterId: input.charterId, charterDir: dir, state };
+}
+
+export async function ensureWorkDir(dir: string): Promise<string> {
+  const path = join(dir, "work");
+  await mkdir(path, { recursive: true });
+  return path;
 }
 
 export async function loadCharterState(dirOrProject: string, charterId?: string): Promise<CharterState> {
   const dir = charterId ? charterDir(dirOrProject, charterId) : dirOrProject;
-  const parsed = JSON.parse(await readFile(join(dir, "state.json"), "utf8")) as unknown;
-  const state = normalizeCharterState(parsed);
-  if (state.schemaVersion === "v2" || state.schemaVersion === "v1-needs-replan") return state;
-  if (await isV1CharterDir(dir)) return { ...state, schemaVersion: "v1-needs-replan" };
-  return state;
+  const raw = JSON.parse(await readFile(join(dir, "state.json"), "utf8")) as unknown;
+  return normalizeCharterState(raw);
 }
 
-export async function isV1Charter(projectDir: string, charterId: string): Promise<boolean> {
-  return isV1CharterDir(charterDir(projectDir, charterId));
-}
-
-async function isV1CharterDir(dir: string): Promise<boolean> {
-  let charterMarkdown = "";
-  try {
-    charterMarkdown = await readFile(join(dir, "charter.md"), "utf8");
-    await readFile(join(dir, "criterion-state.json"), "utf8");
-  } catch {
-    return false;
-  }
-  const criteriaSection = /(?:^|\n)##\s+Criteria\s*(?:\n|$)([\s\S]*?)(?=\n##\s+|$)/i.exec(charterMarkdown)?.[1] ?? "";
-  return /(?:^|\n)###\s+VAL-[A-Z0-9-]+\b/i.test(criteriaSection);
-}
-
-export async function writeCharterState(dir: string, state: CharterState, toolWriteAt?: string): Promise<void> {
-  state.lastToolWriteAt = toolWriteAt ?? new Date().toISOString();
+export async function writeCharterState(dir: string, state: CharterState): Promise<void> {
+  state.updatedAt = new Date().toISOString();
   await writeJsonAtomic(join(dir, "state.json"), state);
 }
 
-export async function loadCharterIndex(projectDir: string): Promise<CharterIndexRow[]> {
+export async function loadCharterText(dir: string): Promise<string> {
+  return readFile(join(dir, "charter.md"), "utf8");
+}
+
+export async function loadParsedCharter(dir: string): Promise<ParsedCharterFile> {
+  return parseCharterFile(await loadCharterText(dir));
+}
+
+export async function listCharterIds(projectDir: string): Promise<string[]> {
   try {
-    const parsed = JSON.parse(await readFile(join(chartersRoot(projectDir), "index.json"), "utf8")) as { charters?: unknown };
-    if (!Array.isArray(parsed.charters)) return [];
-    return parsed.charters.filter(isIndexRow);
+    const entries = await readdir(chartersRoot(projectDir), { withFileTypes: true });
+    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().reverse();
   } catch {
     return [];
   }
 }
 
-// Per-path serialization. Parallel charter_plan calls (and any other in-process
-// writer that targets the same file in the same turn) chain through one promise
-// per absolute path so read-modify-write sequences like appendEvent can't lose
-// concurrent updates and tmp-rename races can't ENOENT each other.
-const writeQueues = new Map<string, Promise<unknown>>();
+export async function listCharters(projectDir: string): Promise<CharterListRow[]> {
+  const rows: CharterListRow[] = [];
+  for (const id of await listCharterIds(projectDir)) {
+    try {
+      const state = await loadCharterState(projectDir, id);
+      rows.push({
+        charterId: state.charterId,
+        objective: state.objective,
+        status: state.status,
+        createdAt: state.createdAt,
+        updatedAt: state.updatedAt,
+        sessionId: state.sessionId,
+      });
+    } catch {
+      // Ignore malformed directories; parser tolerance applies to charter.md,
+      // not missing runtime sidecars.
+    }
+  }
+  return rows;
+}
 
-async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
-  const prev = writeQueues.get(path) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
-  // Store the swallowed-error version so a failed write doesn't poison the queue.
-  const guard = next.catch(() => undefined);
-  writeQueues.set(path, guard);
+export async function pathExists(path: string): Promise<boolean> {
   try {
-    return await next;
-  } finally {
-    // GC: if no later writer chained onto us, drop the entry.
-    if (writeQueues.get(path) === guard) writeQueues.delete(path);
+    await stat(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -182,8 +162,6 @@ export async function appendEvent(dir: string, event: CharterEvent): Promise<voi
   const path = join(dir, "events.jsonl");
   await mkdir(dirname(path), { recursive: true });
   await withPathLock(path, async () => {
-    // Read inside the same path lock as the atomic rewrite so concurrent
-    // appendEvent callers cannot base their write on stale contents.
     let existing = "";
     try {
       existing = await readFile(path, "utf8");
@@ -194,6 +172,17 @@ export async function appendEvent(dir: string, event: CharterEvent): Promise<voi
   });
 }
 
+export async function readEvents(dir: string): Promise<CharterEvent[]> {
+  try {
+    return (await readFile(join(dir, "events.jsonl"), "utf8"))
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as CharterEvent);
+  } catch {
+    return [];
+  }
+}
+
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await writeTextAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -202,104 +191,82 @@ export async function writeTextAtomic(path: string, value: string): Promise<void
   await withPathLock(path, () => writeTextAtomicUnsafe(path, value));
 }
 
+export function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+export function snapshotFromParsed(parsed: ParsedCharterFile, evidenceSeq: number): CriterionSnapshot[] {
+  return parsed.criteria.map((criterion) => ({
+    id: criterion.id,
+    title: criterion.title,
+    depends: criterion.depends,
+    evidence: { ...criterion.evidence },
+    evidenceSeq,
+  }));
+}
+
+async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(path);
+  const prev = writeQueues.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  const guard = next.catch(() => undefined);
+  writeQueues.set(key, guard);
+  try {
+    return await next;
+  } finally {
+    if (writeQueues.get(key) === guard) writeQueues.delete(key);
+  }
+}
+
 async function writeTextAtomicUnsafe(path: string, value: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  // Random suffix prevents sub-ms collisions across parallel writers (multiple
-  // charter_plan add_feature calls in the same turn race on Date.now()).
   const tempPath = `${path}.${process.pid}.${Date.now()}.${randomBytes(6).toString("hex")}.tmp`;
   await writeFile(tempPath, value, "utf8");
   await rename(tempPath, path);
 }
 
-async function updateIndex(root: string, state: CharterState): Promise<void> {
-  const path = join(root, "index.json");
-  // Wrap the entire load-modify-write under the same path lock that writeJsonAtomic
-  // uses, so concurrent createCharterWorkspace calls from different charters in the
-  // same project cannot lose rows via last-writer-wins.
-  await withPathLock(path, async () => {
-    let current: { charters: CharterIndexRow[] } = { charters: [] };
-    try {
-      current = JSON.parse(await readFile(path, "utf8")) as typeof current;
-    } catch {
-      current = { charters: [] };
-    }
-    const row = {
-      charterId: state.charterId,
-      objective: state.objective,
-      status: state.status,
-      createdAt: state.createdAt,
-      updatedAt: state.updatedAt,
-    };
-    const others = Array.isArray(current.charters)
-      ? current.charters.filter((item) => item.charterId !== state.charterId)
-      : [];
-    await writeTextAtomicUnsafe(path, `${JSON.stringify({ charters: [...others, row] }, null, 2)}\n`);
-  });
-}
-
-function isIndexRow(value: unknown): value is CharterIndexRow {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const raw = value as Record<string, unknown>;
-  return (
-    typeof raw.charterId === "string" &&
-    typeof raw.objective === "string" &&
-    isStatus(raw.status) &&
-    typeof raw.createdAt === "string" &&
-    typeof raw.updatedAt === "string"
-  );
-}
-
 function normalizeCharterState(value: unknown): CharterState {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid charter state");
   const raw = value as Record<string, unknown>;
-  if (typeof raw.charterId !== "string" || !raw.charterId) throw new Error("Invalid charter state: charterId");
-  if (typeof raw.objective !== "string" || !raw.objective.trim()) throw new Error("Invalid charter state: objective");
+  if (typeof raw.charterId !== "string" || raw.charterId.length === 0) throw new Error("Invalid charter state: charterId");
+  if (typeof raw.objective !== "string") throw new Error("Invalid charter state: objective");
   if (!isStatus(raw.status)) throw new Error("Invalid charter state: status");
-  const now = new Date().toISOString();
+  if (raw.schemaVersion !== "file-interface") throw new Error("Invalid charter state: schemaVersion");
   return {
     charterId: raw.charterId,
-    schemaVersion: raw.schemaVersion === "v2" || raw.schemaVersion === "v1-needs-replan" ? raw.schemaVersion : undefined,
-    name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : undefined,
-    objective: raw.objective.trim(),
-    status: normalizeStatus(raw.status),
-    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : now,
-    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : now,
-    charterDigest: typeof raw.charterDigest === "string" ? raw.charterDigest : undefined,
+    schemaVersion: "file-interface",
+    objective: raw.objective,
+    status: raw.status,
+    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
     sessionId: typeof raw.sessionId === "string" ? raw.sessionId : undefined,
-    budget: typeof raw.budget === "object" && raw.budget ? (raw.budget as Budget) : undefined,
-    previousStatus: raw.previousStatus === undefined ? undefined : normalizeStatus(raw.previousStatus),
+    previousStatus: isStatus(raw.previousStatus) ? raw.previousStatus : undefined,
     completedAt: typeof raw.completedAt === "string" ? raw.completedAt : undefined,
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
-    completionReason: typeof raw.completionReason === "string" ? raw.completionReason : undefined,
-    lastToolWriteAt: typeof raw.lastToolWriteAt === "string" ? raw.lastToolWriteAt : undefined,
+    completionNote: typeof raw.completionNote === "string" ? raw.completionNote : undefined,
+    abandonReason: typeof raw.abandonReason === "string" ? raw.abandonReason : undefined,
+    nextSeq: typeof raw.nextSeq === "number" && raw.nextSeq > 0 ? Math.floor(raw.nextSeq) : 1,
+    latestSourceSeq: typeof raw.latestSourceSeq === "number" && raw.latestSourceSeq >= 0 ? Math.floor(raw.latestSourceSeq) : 0,
+    snapshotHash: typeof raw.snapshotHash === "string" ? raw.snapshotHash : "",
+    criteriaSnapshot: Array.isArray(raw.criteriaSnapshot) ? raw.criteriaSnapshot.filter(isCriterionSnapshot) : [],
   };
 }
 
-function isLegacyStatus(value: unknown): value is LegacyCharterStatus {
-  return (
-    value === "planning" ||
-    value === "review" ||
-    value === "awaiting-clarification" ||
-    value === "budget_limited"
-  );
+function isStatus(value: unknown): value is CharterState["status"] {
+  return value === "active" || value === "paused" || value === "completed" || value === "abandoned";
 }
 
-function normalizeStatus(value: unknown): CharterState["status"] {
-  if (value === "active" || value === "paused" || value === "completed" || value === "abandoned") {
-    return value;
-  }
-  if (value === "planning" || value === "review" || value === "awaiting-clarification") {
-    return "active";
-  }
-  if (value === "budget_limited") {
-    return "abandoned";
-  }
-  throw new Error(`Invalid charter state: status (${String(value)})`);
-}
-
-function isStatus(value: unknown): value is CharterState["status"] | LegacyCharterStatus {
+function isCriterionSnapshot(value: unknown): value is CriterionSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const raw = value as Record<string, unknown>;
+  const evidence = raw.evidence as Record<string, unknown> | undefined;
   return (
-    value === "active" ||
-    value === "paused" || value === "completed" || value === "abandoned" || isLegacyStatus(value)
+    typeof raw.id === "string" &&
+    typeof raw.title === "string" &&
+    Array.isArray(raw.depends) &&
+    evidence !== undefined &&
+    (evidence.status === "pass" || evidence.status === "fail" || evidence.status === "none") &&
+    typeof evidence.note === "string" &&
+    typeof raw.evidenceSeq === "number"
   );
 }

@@ -1,11 +1,13 @@
 /**
- * Pure view-model reducer for the charter widget (v3).
+ * Pure view-model reducer for the charter widget.
  *
- * Consumes charter state, criteria, criterion-state, and running subagents.
- * No feature DAG, no feature-state sidecar. No I/O, no timers, no UI imports.
+ * Preserves the old widget VM/visual contract while reading ADR-0014 charter
+ * status projections: pass Evidence fills the pass segment, fail Evidence fills
+ * the old running/accent segment, and none Evidence remains pending/dim.
  */
 
-import type { CharterCriterion, CharterStatus } from "../domain/types";
+import type { CharterStatus } from "../domain/types";
+import type { CriterionStatusView } from "../application/service";
 
 export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set([
   "completed",
@@ -16,11 +18,11 @@ export type ValState = "pass" | "running" | "pending";
 
 export interface CharterWidgetVM {
   charterId: string;
-  /** Short header label: name when set, else first 8 chars of UUID. */
+  /** Short header label: ADR-0014 slug/objective label, else id prefix. */
   displayName: string;
   status: CharterStatus;
   isTerminal: boolean;
-  /** @deprecated v3 removed planning; always false. */
+  /** Planning UI is retained for old visuals, but ADR-0014 has no planning phase. */
   isPlanning: boolean;
   elapsedMs: number;
   bar: { pass: number; running: number; total: number };
@@ -28,10 +30,7 @@ export interface CharterWidgetVM {
   planning?: PlanningVM;
 }
 
-/**
- * Planning-phase view model (kept for type-compat; planning state no longer
- * exists in v3 — isPlanning is always false).
- */
+/** Retained for the old renderer's planning visual branch. */
 export interface PlanningVM {
   steps: PlanningStep[];
   criteriaCount: number;
@@ -63,41 +62,33 @@ export interface ReducerInput {
   name?: string;
   status: CharterStatus;
   createdAt: string;
-  criteria: CharterCriterion[];
-  criterionOutcomes: Record<string, { outcome?: string } | undefined>;
-  runningSubagents: RunningSubagent[];
+  criteria: CriterionStatusLike[];
+  runningSubagents?: RunningSubagent[];
   now?: number;
 }
+
+export type CriterionStatusLike = Pick<CriterionStatusView, "id" | "evidence">;
 
 export function buildViewModel(input: ReducerInput): CharterWidgetVM {
   const now = input.now ?? Date.now();
   const createdMs = parseIsoOrFallback(input.createdAt, now);
   const isTerminal = TERMINAL_STATUSES.has(input.status);
 
-  const verifyingCriteria = new Set<string>();
-  for (const sub of input.runningSubagents) {
-    if (sub.criterionId) verifyingCriteria.add(sub.criterionId);
-  }
-
   let pass = 0;
   let running = 0;
   for (const criterion of input.criteria) {
-    const outcome = input.criterionOutcomes[criterion.id]?.outcome;
-    if (outcome === "pass") pass++;
-    else if (verifyingCriteria.has(criterion.id)) running++;
+    if (criterion.evidence === "pass") pass++;
+    else if (criterion.evidence === "fail") running++;
   }
-  const bar = { pass, running, total: input.criteria.length };
-
-  const displayName = resolveDisplayName(input.charterId, input.name);
 
   return {
     charterId: input.charterId,
-    displayName,
+    displayName: resolveDisplayName(input.charterId, input.name),
     status: input.status,
     isTerminal,
     isPlanning: false,
     elapsedMs: Math.max(0, now - createdMs),
-    bar,
+    bar: { pass, running, total: input.criteria.length },
   };
 }
 
@@ -110,5 +101,10 @@ function parseIsoOrFallback(iso: string | undefined, fallback: number): number {
 function resolveDisplayName(charterId: string, name?: string): string {
   const trimmed = name?.trim();
   if (trimmed) return trimmed;
-  return charterId.slice(0, 8);
+  return slugFromId(charterId) || charterId.slice(0, 8);
+}
+
+function slugFromId(charterId: string): string {
+  const match = /^\d{8}-\d{6}-(.+)$/.exec(charterId);
+  return match?.[1] ?? "";
 }

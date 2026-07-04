@@ -9,3 +9,4 @@ dist/
 coverage/
 package-lock.json
 .playwright-mcp/
+.charters/

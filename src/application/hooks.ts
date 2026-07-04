@@ -1,27 +1,8 @@
-/**
- * Charter hook bus. Minimal in-process registry that lets subscribers veto
- * charter state transitions (charter:before_lock_plan, charter:before_complete,
- * charter:before_abandon).
- *
- * Subscribers return `{decision: 'block', reason}` to block the transition or
- * `{decision: 'allow'}` to pass through. The host agent decides whether to
- * surface a TUI approver, run an external verifier, etc.
- */
-
-export type CharterHookEvent =
-  | "charter:before_lock_plan"
-  | "charter:before_complete"
-  | "charter:before_abandon";
+export type CharterHookEvent = "charter:before_complete" | "charter:before_abandon";
 
 export interface HookPayloadBase {
   charterId: string;
   ts: string;
-}
-
-export interface BeforeLockPlanPayload extends HookPayloadBase {
-  type: "charter:before_lock_plan";
-  planDigest: string;
-  featureCount: number;
 }
 
 export interface BeforeCompletePayload extends HookPayloadBase {
@@ -35,13 +16,8 @@ export interface BeforeAbandonPayload extends HookPayloadBase {
   reason: string;
 }
 
-export type HookPayload =
-  | BeforeLockPlanPayload
-  | BeforeCompletePayload
-  | BeforeAbandonPayload;
-
+export type HookPayload = BeforeCompletePayload | BeforeAbandonPayload;
 export type HookDecision = { decision: "allow" } | { decision: "block"; reason: string };
-
 export type HookSubscriber<P extends HookPayload = HookPayload> = (
   payload: P,
 ) => HookDecision | Promise<HookDecision>;
@@ -72,11 +48,9 @@ export async function dispatchHook<P extends HookPayload>(
   payload: P,
 ): Promise<void> {
   const set = subscribers.get(event);
-  if (!set || set.size === 0) return;
+  if (!set) return;
   for (const handler of set) {
     const result = await handler(payload);
-    if (result.decision === "block") {
-      throw new Error(`${event} blocked: ${result.reason}`);
-    }
+    if (result.decision === "block") throw new Error(`${event} blocked: ${result.reason}`);
   }
 }

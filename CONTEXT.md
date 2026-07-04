@@ -1,6 +1,8 @@
 # pi-charter Context
 
-pi-charter is a Pi extension for durable, charter-bound agent work: an agent receives an objective, authors or reuses a charter (charter.md + criteria.md), groups VAL-* criteria under milestone headings, records evidence against each criterion, and stays aligned until the completion gate passes.
+pi-charter is a Pi extension for durable, charter-bound agent work: an agent receives an objective, calls `charter create`, and from then on works normally — editing one markdown file (`charter.md`) to author criteria and record evidence, while the runtime watches the file, steers via the smart-Ralph loop, and gates completion.
+
+The file is the interface. There is no tool for editing criteria or recording evidence; the only tool is lifecycle.
 
 This context defines the domain language. It intentionally describes the product model, not TypeScript implementation details.
 
@@ -9,199 +11,181 @@ This context defines the domain language. It intentionally describes the product
 ### Core identity
 
 **Charter**:
-A binding document that authorizes and constrains an agent run, authored as two files: `charter.md` (Objective, Scope and constraints, Mission Boundaries, Commands) and `criteria.md` (the VAL-* register).
+A binding document that authorizes and constrains an agent run, authored as a single file `charter.md` containing the Objective, optional Scope, and the Criteria with their Evidence lines.
 _Avoid_: Goal, mission, contract, quest
 
 **charter.md**:
-The authored narrative file containing Objective, Scope and constraints, Mission Boundaries, and Commands. Does not contain Criteria.
-_Avoid_: Charter, contract.md
-
-**criteria.md**:
-The authored assertion register containing every Criterion as a `VAL-*`-prefixed heading with pass criteria, failure modes, and trust-gate flags. Indexed by stable `VAL-*` id; safe to reorder.
-_Avoid_: Contract.md, assertions.md, validation.md
+The single authored file and sole contentful interface: Objective, optional Scope, Criteria headings, Depends lines, Evidence lines. The agent edits it directly; the runtime diffs it.
+_Avoid_: Charter, contract.md, criteria.md
 
 **Objective**:
-The concise outcome the user or orchestrator wants the agent to achieve.
+The concise outcome the user or orchestrator wants the agent to achieve. The only required input to `create`.
 _Avoid_: Goal, task, prompt
 
-**Criteria**:
-Observable assertions that must hold before the charter can be completed.
-_Avoid_: Acceptance tests, assertions, checklist, validation contract
+**Criterion**:
+An observable assertion (`### C<n>. <title>` heading in charter.md) that must hold before the charter can be completed, with an optional prose body describing how to verify and one Evidence line.
+_Avoid_: VAL, acceptance test, checklist item, validation contract
 
-**Scope and constraints**:
-Boundaries that define what the agent should not do, what must be preserved, and what resources may be spent.
-_Avoid_: Notes, preferences, non-goals
-
-**Mission**:
-The runtime execution container bound to one charter, session, budget, plan, and evidence history.
-_Avoid_: Charter, project, campaign
+**Scope**:
+Optional inert prose section in charter.md defining what is in and out of bounds.
+_Avoid_: Mission Boundaries, notes, non-goals
 
 **CharterId**:
-The stable UUID identifying one mission directory and preventing stale writes.
-_Avoid_: Session id, goal id, task id
+`<YYYYMMDD-HHMMSS>-<slug>` identifying one charter directory. Chronologically sortable by construction; addressable by unique prefix or slug fragment.
+_Avoid_: UUID, session id, goal id
+
+**Open-ended charter**:
+A charter whose `## Criteria` section is empty. It can never complete; it runs until paused or abandoned. Adding criteria later makes it bounded.
+_Avoid_: Endless mode, watch mode
 
 **pi-charter**:
-The Pi extension that manages charters, plans, evidence, status, and hooks.
-_Avoid_: pi-goals v2, pi-missions
+The Pi extension that manages charter lifecycle, file diffing, staleness, Ralph steering, and the completion gate.
+_Avoid_: pi-goals, pi-missions
 
 ### Lifecycle
 
 **Active**:
 The execution state. A charter is `active` from creation; there is no separate planning or review state.
-_Avoid_: Running, doing work, planning, review
+_Avoid_: Running, planning, review
 
 **Paused**:
-A non-terminal interruption state that preserves the charter binding and can resume to active later.
-_Avoid_: Stopped, abandoned
+A non-terminal interruption state that preserves the charter binding and can resume to active later. Also the mechanism for "blocked on the user": pause with a note carrying the question.
+_Avoid_: Stopped, abandoned, awaiting user
 
 **Completed**:
-The terminal state for a charter whose criteria, evidence freshness, reviewer-stamp requirements, and REPORT.md gate have passed.
+The terminal state for a charter that passed the completion gate (all criteria pass, no stale evidence, REPORT.md, hooks allow).
 _Avoid_: Finished, closed, resolved
 
 **Abandoned**:
-The terminal state for a charter intentionally stopped without satisfying the criteria. A reason is required.
+The terminal state for a charter intentionally stopped without satisfying the criteria. A note is required.
 _Avoid_: Cancelled, deleted, failed
 
 **Smart-Ralph loop**:
-The execution discipline where the agent, not a scheduler, reads current status each turn and chooses one next move. The runtime’s Ralph service reprompts the agent on idle for non-terminal charters; the agent decides when to stop by calling `pause` or `abandon`.
+The execution discipline where the agent, not a scheduler, reads current status and chooses one next move. The runtime reprompts the agent on idle for non-terminal charters; the agent decides when to stop by calling `pause` or `abandon`.
 _Avoid_: Auto-spawn scheduler, autonomous worker pool
 
-**Reminder**:
-Status/doctrine text injected into context, widgets, or tool responses; it does not start a turn.
-_Avoid_: Steer, prompt, nag
-
 **Ralph reprompt**:
-A fresh continuation message sent when the root agent and async subagents are all idle and the charter is non-terminal; it starts a new turn.
-_Avoid_: Reminder
-
-### Decomposition
-
-**Milestone**:
-An ordered group of VALs in `criteria.md`, expressed as a `##` heading. The persisted layer between Objective and VAL.
-_Avoid_: Phase, epic, feature group
-
-**Tactical task**:
-A short-lived turn-to-turn todo managed by pi-dag-tasks, not by pi-charter.
-_Avoid_: Charter task, milestone task
+A fresh continuation message sent when the root agent and async subagents are all idle and the charter is non-terminal. Condensed: state, evidence counts, top blocker, stale mentions. It starts a new turn.
+_Avoid_: Reminder, wall of text
 
 ### Evidence and verification
 
-**Evidence record**:
-An append-only record of a check result for one criterion, including the outcome, summary, optional `because`, source (`manual` | `command` | `subagent`), optional `recordedBy`, and timestamp.
-_Avoid_: Log line, note, proof string
+**Evidence line**:
+The `Evidence: pass|fail|none — <note>` line under a criterion heading. Latest state only; history lives in the journal. `none` until actually verified; the note carries what was run/observed and artifact paths.
+_Avoid_: Evidence record, log line, proof string, checkbox
+
+**Evidence hierarchy**:
+Doctrine for evidence quality, strongest first: (1) used it like a user would — drove the real app, captured screenshot/recording to `work/`; (2) observed the real system — real command or endpoint output; (3) ran the checks — tests/typecheck/lint, acceptable alone only for criteria about code behavior.
+_Avoid_: Test evidence as default
+
+**Artifact**:
+A file in the charter's `work/` directory produced at verification time — screenshot, recording, output dump — referenced by path from an Evidence line and later curated into REPORT.md. Never captured retroactively to satisfy the report.
+_Avoid_: Attachment, upload
+
+**Staleness**:
+Computed, global: a criterion is stale when its `pass` evidence precedes the latest source-modifying tool call (sequence-counter order). Advisory in status/Ralph; hard-rejected at `complete`.
+_Avoid_: requireFreshEvidence, freshness flag
 
 **Verifier**:
-The mechanism an agent uses to produce evidence for a criterion. Charter records the resulting evidence; it does not run checks.
+The mechanism an agent uses to produce evidence. The charter records the result; it does not run checks.
 _Avoid_: Reviewer, validator, judge
 
-**requireFreshEvidence**:
-A per-criterion trust-gate flag in `criteria.md` requiring passing evidence newer than the last `src/` change.
-_Avoid_: Rerun all tests, freshness hint
+### Structure
 
-**requireReviewSubagent**:
-A display-only per-criterion annotation in `criteria.md` indicating that subagent review was requested. It is informational only; pi-charter ships no bundled personas.
-_Avoid_: Manual approval, reviewer requested
+**Depends line**:
+Optional `Depends: C1, C2` line under a criterion heading. Feeds Ralph steering and status ordering only; never gates evidence or completion. Cycles and dangling refs are warnings.
+_Avoid_: DAG, blockedBy, precondition
 
-**because**:
-A short justification field required on `source: manual` evidence rows. Explains why the agent believes the criterion is satisfied without an automated check.
-_Avoid_: Reason, note, comment
+**Grouping heading**:
+Any inert heading inside `## Criteria` used to visually group criteria. Not modeled by the runtime; there is no milestone entity.
+_Avoid_: Milestone, phase, epic, feature
 
-**Criterion state**:
-The computed mutable status sidecar for criteria, stored in `criterion-state.json`.
-_Avoid_: Criteria frontmatter, contract state
+**Tactical task**:
+A short-lived turn-to-turn todo managed by pi-dag-tasks, not by pi-charter.
+_Avoid_: Charter task
 
-### Status and continuation
+### Runtime mechanics
 
-**Status view**:
-The `charter_status` read showing per-VAL outcomes, completion blockers, the next non-pass VAL, and milestone groupings. Replaces v2.x "drift view."
-_Avoid_: Scheduler queue, issue list, drift view
+**Snapshot diff**:
+How the runtime observes edits: at every tool result and turn boundary it hash-compares charter.md against the last snapshot and, on change, parses and diffs per-criterion sections into the journal. No polling, no fs watcher.
+_Avoid_: File watcher, poll loop
 
-**Ready-next advisory**:
-The first non-pass VAL in declaration order, surfaced in status output. Advisory only; the agent may pick any non-pass VAL.
-_Avoid_: Assigned task, scheduled job
+**Sequence counter**:
+A monotonic index over tool calls in the session. Evidence edits and source modifications each get a seq; staleness is a comparison of seqs.
+_Avoid_: Turn counter, timestamp ordering
+
+**Journal**:
+`events.jsonl`, the append-only history: evidence diffs, source-change ticks, lifecycle transitions, external edits.
+_Avoid_: Log file, audit table
+
+### Completion
+
+**Completion gate**:
+`complete` succeeds only when every criterion's Evidence line is `pass` with a non-empty note, no pass evidence is stale, REPORT.md exists and is filled in, and the `charter:before_complete` hook allows.
+_Avoid_: Done check, sign-off
 
 **REPORT.md**:
-A scaffolded markdown file authored at first `charter complete` attempt. Three sections (Title and Objective prefilled from charter.md; Outcome and Notes empty). Completion gate requires every heading have non-empty content.
-_Avoid_: Summary, changelog, release notes
+The charter's main deliverable: a showcase of what was built, suitable for pasting into a PR. Scaffolded at first `complete` attempt, pre-populated from charter.md (objective, criteria, pass notes, artifact links). The agent curates narrative and ordering; it does not produce new evidence at report time. Artifact links per criterion are encouraged, not code-gated.
+_Avoid_: Summary, changelog
 
-### Tool and UI surface
+### Tool surface
 
 **charter**:
-The lifecycle tool. Actions: `create`, `pause`, `resume`, `complete`, `abandon`. Replaces v2.x `charter_manage`.
-_Avoid_: charter_manage, charter_create, goal_manage
-
-**charter_record**:
-The execution-write tool. Actions: `evidence` (manual or batch).
-_Avoid_: evidence tool, verifier tool
-
-**charter_status**:
-The read-only tool that returns per-VAL outcomes, completion blockers, milestone groupings, and legal next actions.
-_Avoid_: mission_status, goal_status
+The single LLM tool. Params: `action`, `id?`, `objective?`, `note?`. Actions: `create`, `list`, `status`, `pause`, `resume`, `complete`, `abandon`.
+_Avoid_: charter_record, charter_status, charter_manage
 
 **nextActions**:
 The tool-return field listing legal next tool calls for the current state so agents do not memorize the FSM.
 _Avoid_: Help text, suggestions
 
-**/charter**:
-The single slash-command tree for opening the TUI/status surface and running interactive charter commands.
-_Avoid_: /mission, /missions, /goal
+**Status view**:
+The `status` action's terse read: FSM state, per-criterion `{id, title, evidence, stale?, depends}`, blockers for complete, nextActions.
+_Avoid_: Drift view, dashboard, wall of text
 
-### Hooks and subagent boundaries
-
-**Decision-control hook**:
-A hook event that another extension can block or modify before a high-risk charter transition.
-_Avoid_: Notification hook, log event
-
-**Metadata passthrough**:
-Opaque metadata stamped onto subagent events so pi-charter can relate delegated work back to a charter and criterion. Used to populate the `recordedBy` field on subagent-sourced evidence.
-_Avoid_: Binding, bridge field
+**Scaffold template**:
+The charter.md that `create` writes: objective filled in, grammar and evidence doctrine taught in HTML comments (including one example criterion inside a comment), zero live placeholder criteria.
+_Avoid_: Boilerplate, empty file
 
 ## Relationships
 
-- A **Charter** belongs to exactly one **Mission** runtime container.
-- A **Mission** has exactly one active **CharterId**.
-- A **Charter** is authored as **charter.md** plus **criteria.md**.
-- **charter.md** contains one **Objective**, zero or more **Scope and constraints** entries, optional **Mission Boundaries**, and optional **Commands**.
-- **criteria.md** contains zero or more **Milestones**, each with one or more **Criteria** (VAL-*).
-- A **Milestone** is a group heading in `criteria.md`; **Criteria** are leaves.
-- **Criterion state** is a mutable sidecar derived from criteria.md and evidence records.
-- **Evidence records** belong to one **Criterion**.
-- The runtime’s deterministic Ralph reprompt service keeps non-terminal charters moving when the agent and async children are idle; the completion gate (every VAL pass + fresh evidence + reviewer-where-required + REPORT.md gate) decides completion.
-- A **Tactical task** may inform a **Status view** via hook events, but pi-dag-tasks does not store a pointer into pi-charter.
-- A root Pi session may bind to one **CharterId**; subagent sessions receive charter scope through **Metadata passthrough** and do not bind themselves.
+- A Pi session binds to at most one active **Charter**; `create` while one is active fails with a pointer to it. `id` addresses other charters.
+- A **Charter** is authored as one **charter.md**; `state.json` holds lifecycle/session/snapshot state; the **Journal** holds history; `work/` holds **Artifacts**; **REPORT.md** is the deliverable.
+- **charter.md** contains one **Objective**, optional **Scope**, and zero or more **Criteria** (flat; grouping headings are inert).
+- Each **Criterion** has one **Evidence line**, an optional prose body, and an optional **Depends line**.
+- The runtime observes edits via **Snapshot diff**, orders them with the **Sequence counter**, computes **Staleness**, and steers via **Ralph reprompts**; the **Completion gate** decides completion.
+- Charters live in `.charters/` at the project root; old `.pi/charters/` dirs are never read.
+- A **Tactical task** stays in pi-dag-tasks; subagent sessions receive charter scope through metadata passthrough and do not bind themselves.
 
 ## Example dialogue
 
 > **Dev:** "The user gave us an OAuth spec and said to implement it. Do we create a goal?"
 >
-> **Domain expert:** "No. Create a **Charter** from the objective with `charter action=create`, then read the spec with normal file tools and author **charter.md** and **criteria.md** directly. There is no planning state — the charter is `active` from creation."
+> **Domain expert:** "Clarify anything genuinely unclear first — a charter is created when the agent has what it needs. Then `charter action=create` with the objective, and author the criteria by editing the scaffolded **charter.md** directly. There is no planning state."
 >
-> **Dev:** "Should each implementation step become a pi-dag-task?"
+> **Dev:** "How do I record that a criterion passed?"
 >
-> **Domain expert:** "Tactical turn-to-turn todos belong in pi-dag-tasks. Durable assertions belong in **criteria.md** as `VAL-*` entries grouped under **Milestone** headings."
+> **Domain expert:** "Edit its **Evidence line** in charter.md: `Evidence: pass — <what you ran and what it showed>`, with artifact paths from `work/` when you drove the real thing. There is no evidence tool."
 >
 > **Dev:** "The tests passed. Can the agent complete the charter?"
 >
-> **Domain expert:** "Only if every Criterion has a fresh passing **Evidence record**, criteria with `requireReviewSubagent` have at least one subagent-sourced evidence row, REPORT.md exists with non-empty content under every heading, and decision-control hooks allow completion."
+> **Domain expert:** "Tests are the weakest evidence — fine for pure code-behavior criteria, not for anything user-facing. And only if no pass evidence is stale: if source changed after a criterion was verified, `complete` rejects until it's re-verified. Then REPORT.md gets curated from the artifacts that already exist."
 
 ## Flagged ambiguities
 
-- **Charter vs Mission**: The user-facing product name is pi-charter; the authored files are `charter.md` and `criteria.md`. The runtime TypeScript container may still be called **Mission** because it describes execution state. Prefer user-facing `Charter` names and keep `Mission` internal only.
-- **Contract**: Earlier research used `contract.md`. v3 splits the contract into two authored files: **charter.md** (narrative) and **criteria.md** (assertion register). See ADR-0010.
-- **Goal**: v1 used **Goal**. In pi-charter, "goal" survives only as an informal synonym for **Objective** and should not appear in public APIs.
-- **Mission**: Avoid using "mission" in extension names, slash commands, tools, or package names because `pi-missions` is taken and Factory.ai uses Missions publicly.
-- **Validation**: Use **Verifier** for the mechanism and **Evidence record** for the observed result.
-- **Loop / stage**: pi-charter does not persist micro-stages. Persisted layers are `Objective → Milestone → VAL`. Behavioral coaching lives in `skills/pi-charter/SKILL.md` and in `charter_status.nextActions[]` advisories.
-- **Scheduler**: pi-charter does not schedule workers or features. The agent decides what to chunk and parallelise; the **Ready-next advisory** is one VAL pointer, nothing more.
-- **Features**: v2.x had a Feature decomposition layer with `fulfills[]` and `preconditions[]`. v3 removes it; the unit of work is the VAL, and the agent decides chunking in flight (ADR-0012).
+- **Charter vs Mission**: The user-facing name is pi-charter. "Mission" survives only as an internal TypeScript container name if at all; never in public surfaces (Factory.ai owns Missions publicly).
+- **Goal**: Codex and Claude Code ship `/goal` features (May 2026) occupying the same niche. pi-charter's differentiator is the structured, evidence-carrying completion contract in charter.md. "Goal" should not appear in public APIs.
+- **VAL**: the previous design used `VAL-*` headings in criteria.md. Criteria are now `### C<n>.` headings in charter.md. "VAL" is dead vocabulary.
+- **Milestone**: previously a modeled entity; now grouping headings are inert prose.
+- **Evidence record**: the previous structured envelope (source/outcome/because/details) is dead; the Evidence line's note carries everything, and the journal keeps history.
+- **Turn**: a turn can last hours with long-horizon agents; staleness is ordered by the per-tool-call sequence counter, never by turns.
 
 ## Recommended defaults while user is away
 
 - Keep the root context as a single `CONTEXT.md`; this repo has one domain context.
-- Use `charter.md` for narrative (objective, scope, boundaries, commands) and `criteria.md` for the VAL-* register; sidecar JSON files hold mutable runtime state.
-- Use three LLM tools (`charter`, `charter_record`, `charter_status`); every tool return carries `nextActions[]`.
-- Persisted decomposition is `Objective → Milestone → VAL`; features and a macro DAG are not persisted.
-- Ship zero bundled personas. `requireReviewSubagent` is display-only.
-- Prefer filesystem state over session-entry-only state; use session entries as audit/complement only.
+- One tool, four params, seven actions; every return carries `nextActions[]`.
+- One file: charter.md is both contract and evidence surface. Sidecar JSON holds only lifecycle/snapshot state.
+- Parser is tolerant: unknown structure is inert, breakage is a warning, evidence-side work is never blocked on parse errors.
+- Template and skill teach; Ralph advises; only the completion gate enforces.
+- Ship zero bundled personas. Evidence quality is doctrine plus advisories, not gates.
 - Keep implementation headless first; TUI approver subscribes through hooks later.
-- Think 100x before adding anything: features, knobs, layers, or actions. The right v3 is the one that survives the next refactor by virtue of having nothing to delete.
+- Think 100x before adding anything: features, knobs, layers, or actions. The right design is the one that survives the next refactor by virtue of having nothing to delete.

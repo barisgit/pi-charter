@@ -4,7 +4,7 @@ Reference for coding agents working in this repository.
 
 ## Project stance
 
-`pi-charter` is a new successor concept, not a cosmetic rename of `pi-goals` v1. Treat v1 as reference material only. The current (v3) domain model is documented in `CONTEXT.md` and the ADRs (notably ADR-0012 and ADR-0013).
+`pi-charter` is a new successor concept, not a cosmetic rename of `pi-goals` v1. Treat v1 as reference material only. The current domain model is documented in `CONTEXT.md` and the ADRs (notably ADR-0014, which supersedes the v3 surface from ADR-0010/0011 and amends ADR-0012/0013).
 
 ## Read order
 
@@ -16,21 +16,28 @@ Reference for coding agents working in this repository.
 
 ## Invariants
 
-- Authored source of truth is split across `charter.md` (Objective, Scope and constraints, optional `## Commands`) and `criteria.md` (the VAL register: Objective → Milestone → VAL).
-- Runtime status lives in JSON sidecars, not markdown frontmatter. The live sidecars are `state.json` (lifecycle/session) and `criterion-state.json` (latest VAL outcomes + evidence pointers); `feature-state.json` is a vestigial name only (no live reader/writer).
-- The agent is the smart-Ralph loop driver. Do not add an auto-spawn scheduler.
+- The file is the interface: `charter.md` is the single authored artifact (Objective, optional Scope, `### C<n>.` criteria with `Depends:` and `Evidence:` lines). There is no `criteria.md` and no tool for editing criteria or recording evidence — agents edit the file; the runtime snapshot-diffs it at tool-result boundaries.
+- One LLM tool: `charter({action, id?, objective?, note?})` with actions `create | list | status | pause | resume | complete | abandon`. Every return carries legal `nextActions[]` so agents do not memorize the FSM.
+- Charters live in `.charters/<YYYYMMDD-HHMMSS>-<slug>/` (timestamp-sorted ids, not UUIDs). Sidecars: `state.json` (lifecycle/session/snapshot only), `events.jsonl` (append-only journal), `work/` (evidence artifacts), `REPORT.md` (deliverable). Old `.pi/charters/` dirs are never read; no migration.
+- Criterion state lives in the markdown Evidence lines; history lives in the journal. `criterion-state.json` and `feature-state.json` are dead names.
+- Decomposition is flat: Objective → Criterion. Milestones are not modeled; grouping headings are inert. `Depends:` is advisory only — never a gate.
+- A charter with no criteria is open-ended: `complete` is never legal; it runs until pause/abandon.
+- Staleness is computed and global (sequence-counter order, per tool call — never per turn): stale `pass` evidence is advisory in status/Ralph and hard-rejected at `complete`. There is no per-criterion freshness flag.
+- The agent is the smart-Ralph loop driver. Do not add an auto-spawn scheduler. Ralph reprompts are condensed one-liners; `status` stays terse.
+- The charter records evidence; it does not run checks (ADR-0013). Evidence doctrine (taught, not gated): use it like a user (screenshot/recording in `work/`) > observe the real system > run tests. Artifacts are captured at verification time, never retroactively for the report.
+- REPORT.md is curation, not creation: scaffolded at first `complete` attempt, pre-populated from charter.md; artifact links are encouraged, not code-gated.
+- One active charter per session; `create` while one is active fails with a pointer to it.
 - Tactical turn-to-turn todos stay in `pi-dag-tasks`; pi-charter only subscribes to hook events if needed.
-- Creation is intentionally minimal: `charter({action: "create", objective, budget?, idempotencyKey?})` (the lifecycle tool is `charter`, not `charter_manage`).
-- No `contractPath`, no `--charter-spec`, no spec auto-detect, no spec copy heuristic.
-- Every mutating tool should return legal `nextActions[]` so agents do not memorize the FSM.
-- The charter records evidence; it does not run checks (ADR-0013). The agent runs commands/tests itself and records the output as `source: verifier` evidence; `Verifier:`/`Command:` annotations on a VAL are descriptive, not executable. Prefer real command output over `source: manual`, and `manual` evidence requires a `because`.
+- No `contractPath`, no `--charter-spec`, no spec auto-detect, no spec copy heuristic. No budgets (bound by the host session; revisit with the planned CLI extraction).
 
 ## Implementation guidance
 
 - Lift from v1 only proven extension plumbing: TypeBox schemas, atomic temp-file writes, lazy state loading, reminder event shape, status widget basics, and command parsing.
 - Replace v1 static reminders with deterministic Ralph steering.
-- Replace v1 string evidence with structured, append-only evidence records (flat `source`/`outcome`/`summary`/`because?`/`details?`); the older typed `kind`/`verdict`/`observation` envelope is rejected.
-- Use `crypto.randomUUID()` for charter ids; do not reuse v1 hash ids.
+- Evidence is the `Evidence: pass|fail|none — <note>` line in charter.md; the journal keeps history. The v3 structured entry schema and the older typed `kind`/`verdict`/`observation` envelope are both rejected.
+- Charter ids are `<YYYYMMDD-HHMMSS>-<slug>` (ADR-0014); do not use UUIDs or v1 hash ids.
+- The parser is tolerant: unknown structure is inert prose, breakage is a warning, never a work blocker.
+- The `create` scaffold template teaches the whole grammar and evidence doctrine in HTML comments, with the example criterion inside a comment (zero live placeholders).
 - Use Pi extension APIs from `docs/reference/pi-docs/extensions.md` and live installed docs if in doubt.
 - Before editing runtime code, inspect the relevant docs and v1 reference. Keep changes surgical.
 
