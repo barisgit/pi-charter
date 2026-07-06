@@ -1,16 +1,59 @@
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createCharter } from "../src/application/service";
-import { registerCharterCommands, registerCharterTools, registerCharterWidget } from "../src/application/registration";
-import { loadCharterState } from "../src/infrastructure/store";
+import { createCharter, getCharterStatus, pauseCharter } from "../src/application/service";
+import { registerCharterCommands, registerCharterRalphLoop, registerCharterTools, registerCharterWidget } from "../src/application/registration";
+import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
 
 function fakeEvents() {
   return {
     on: () => () => undefined,
     emit: () => undefined,
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createRalphHarness(project: string, sessionId = "s1", ctxOverrides: Record<string, unknown> = {}) {
+  const handlers: Record<string, (event: unknown, context: any) => void | Promise<void>> = {};
+  const emitter = new EventEmitter();
+  const sent: Array<{ message: any; options: any }> = [];
+  const pi = {
+    on: (eventName: string, handler: (event: unknown, context: any) => void | Promise<void>) => {
+      handlers[eventName] = handler;
+      return () => undefined;
+    },
+    events: {
+      on: (eventName: string, handler: (event: unknown) => void) => {
+        emitter.on(eventName, handler);
+        return () => emitter.off(eventName, handler);
+      },
+      emit: (eventName: string, event: unknown) => emitter.emit(eventName, event),
+    },
+    sendMessage: (message: any, options: any) => {
+      sent.push({ message, options });
+    },
+  } as any;
+  const ctx = {
+    cwd: project,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    sessionManager: { getSessionId: () => sessionId },
+    ...ctxOverrides,
+  };
+
+  return {
+    pi,
+    ctx,
+    sent,
+    fire: (eventName: string, event: unknown = {}, context = ctx) => handlers[eventName]?.(event, context),
+    emit: (eventName: string, event: unknown = {}) => emitter.emit(eventName, event),
   };
 }
 
@@ -35,6 +78,171 @@ describe("tool registration", () => {
     expect(status.isError).toBe(false);
     expect(status.content[0].text).toContain("nextActions");
     expect(status.details.nextActions.map((action: { action?: string }) => action.action)).toContain("status");
+  });
+});
+
+describe("Ralph loop registration", () => {
+  test("session-bound status lookup resolves an active charter", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-binding-"));
+    const created = await createCharter(project, { objective: "Bound charter", now: "2026-07-02T10:00:00.000Z", sessionId: "session-x" });
+
+    const status = await getCharterStatus(project, { sessionId: "session-x" });
+
+    expect(status.charterId).toBe(created.charterId);
+    expect(status.status).toBe("active");
+  });
+
+  test("all-idle sends one steer for an active charter", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-active-"));
+    const created = await createCharter(project, { objective: "Keep going", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(10);
+
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].message.customType).toBe("charter-ralph-continue");
+    expect(h.sent[0].message.content).toContain(`charter ${created.charterId} active`);
+    expect(h.sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
+  });
+
+  test("agent_end also schedules a steer for subagent-free sessions", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-agent-end-"));
+    await createCharter(project, { objective: "Plain loop", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+
+    h.fire("agent_end");
+    await delay(10);
+
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("debounce waits past agent_end all-idle emitted before ctx reports idle", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-agent-end-idle-"));
+    await createCharter(project, { objective: "Settle after agent_end", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    let idle = false;
+    const h = createRalphHarness(project, "s1", { isIdle: () => idle });
+    registerCharterRalphLoop(h.pi, { debounceMs: 5, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    idle = true;
+    await delay(20);
+
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("does not steer for paused, completed, or missing charters", async () => {
+    const pausedProject = await mkdtemp(join(tmpdir(), "pi-charter-ralph-paused-"));
+    const paused = await createCharter(pausedProject, { objective: "Paused", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    await pauseCharter(pausedProject, { charterId: paused.charterId, note: "wait" });
+    const pausedHarness = createRalphHarness(pausedProject);
+    registerCharterRalphLoop(pausedHarness.pi, { debounceMs: 1, minIntervalMs: 0 });
+    pausedHarness.fire("session_start");
+    pausedHarness.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+
+    const completedProject = await mkdtemp(join(tmpdir(), "pi-charter-ralph-completed-"));
+    const completed = await createCharter(completedProject, { objective: "Completed", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const state = await loadCharterState(completedProject, completed.charterId);
+    state.status = "completed";
+    await writeCharterState(charterDir(completedProject, completed.charterId), state);
+    const completedHarness = createRalphHarness(completedProject);
+    registerCharterRalphLoop(completedHarness.pi, { debounceMs: 1, minIntervalMs: 0 });
+    completedHarness.fire("session_start");
+    completedHarness.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+
+    const emptyProject = await mkdtemp(join(tmpdir(), "pi-charter-ralph-empty-"));
+    const emptyHarness = createRalphHarness(emptyProject);
+    registerCharterRalphLoop(emptyHarness.pi, { debounceMs: 1, minIntervalMs: 0 });
+    emptyHarness.fire("session_start");
+    emptyHarness.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+
+    await delay(10);
+
+    expect(pausedHarness.sent).toHaveLength(0);
+    expect(completedHarness.sent).toHaveLength(0);
+    expect(emptyHarness.sent).toHaveLength(0);
+  });
+
+  test("debounce collapses rapid idle events", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-debounce-"));
+    await createCharter(project, { objective: "Debounced", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 5, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(20);
+
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("min interval self-heals by rescheduling a suppressed idle check", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-min-interval-"));
+    await createCharter(project, { objective: "Rate limited", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    let now = 1_000;
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 0, minIntervalMs: 5, now: () => now });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: now });
+    await delay(5);
+    expect(h.sent).toHaveLength(1);
+
+    now = 1_001;
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: now });
+    await delay(1);
+    expect(h.sent).toHaveLength(1);
+
+    now = 1_006;
+    await delay(10);
+    expect(h.sent).toHaveLength(2);
+  });
+
+  test("running subagent tracking waits for completion before steering", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-running-subagent-"));
+    await createCharter(project, { objective: "Wait for child", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ASYNC_STARTED_EVENT, { runId: "child-1" });
+    h.fire("agent_end");
+    await delay(10);
+    expect(h.sent).toHaveLength(0);
+
+    h.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "child-1" });
+    await delay(10);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("stale context errors are caught and the next turn context recovers", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-stale-"));
+    await createCharter(project, { objective: "Recover", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const staleCtx = {
+      cwd: project,
+      isIdle: () => {
+        throw new Error("This extension ctx is stale after session replacement or reload.");
+      },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "s1" },
+    };
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+
+    h.fire("session_start", {}, staleCtx);
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(10);
+    expect(h.sent).toHaveLength(0);
+
+    h.fire("turn_end");
+    await delay(10);
+    expect(h.sent).toHaveLength(1);
   });
 });
 

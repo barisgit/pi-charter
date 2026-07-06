@@ -5,7 +5,8 @@ import { Type } from "typebox";
 import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
 import { CharterToolError } from "./errors";
 import { tickToolResult, refreshSessionSnapshots } from "./staleness";
-import { SUBAGENT_ALL_IDLE_EVENT } from "../infrastructure/subagent-bridge";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
+import { logger } from "../infrastructure/logger";
 import type { NextAction } from "../domain/types";
 import { buildCharterWidgetView, renderCharterWidget } from "../ui/widget";
 import { loadCharterWidgetStatus } from "../ui/widget-service";
@@ -29,6 +30,15 @@ type CharterInput = {
 
 const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 const WIDGET_KEY = "charter-detail";
+const RALPH_DEBOUNCE_MS = 3_000;
+const RALPH_MIN_INTERVAL_MS = 30_000;
+const RALPH_LOG_COMPONENT = "ralph-loop";
+
+export interface RegisterCharterRalphLoopOptions {
+  debounceMs?: number;
+  minIntervalMs?: number;
+  now?: () => number;
+}
 
 export function registerCharterTools(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -121,39 +131,130 @@ export function registerCharterStalenessHooks(pi: ExtensionAPI): void {
   });
 }
 
-export function registerCharterRalphLoop(pi: ExtensionAPI): void {
+export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
+  const runningSubagents = new Set<string>();
+  const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
+  const minIntervalMs = options.minIntervalMs ?? RALPH_MIN_INTERVAL_MS;
+  const now = options.now ?? (() => Date.now());
   let lastCtx: ExtensionContext | undefined;
+  let lastSentAt = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let sending = false;
+
   const rememberCtx = (_event: unknown, ctx: ExtensionContext) => {
     lastCtx = ctx;
   };
+
   pi.on("session_start", rememberCtx);
-  pi.on("turn_end", rememberCtx);
+  pi.on("turn_end", (event, ctx) => {
+    rememberCtx(event, ctx);
+    scheduleRalph("turn_end");
+  });
+  pi.on("agent_end", (event, ctx) => {
+    rememberCtx(event, ctx);
+    scheduleRalph("agent_end");
+  });
+  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+    const payload = raw as { runId?: string; id?: string } | undefined;
+    const id = payload?.runId ?? payload?.id;
+    if (id) runningSubagents.add(id);
+    logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
+  });
+  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+    const payload = raw as { runId?: string; id?: string } | undefined;
+    const id = payload?.runId ?? payload?.id;
+    if (id) runningSubagents.delete(id);
+    logger.debug("ralph: subagent complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
+    scheduleRalph("subagent-complete");
+  });
   pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
-    void maybeSendRalph();
+    scheduleRalph("subagent-all-idle");
   });
 
-  async function maybeSendRalph(): Promise<void> {
+  function scheduleRalph(trigger: string): void {
+    if (timer) clearTimeout(timer);
+    if (debounceMs <= 0) {
+      logger.debug("ralph: immediate check scheduled", { component: RALPH_LOG_COMPONENT, trigger });
+      void maybeSendRalph({ trigger });
+      return;
+    }
+    timer = setTimeout(() => {
+      timer = undefined;
+      void maybeSendRalph({ trigger, fromDebounce: true });
+    }, debounceMs);
+    logger.debug("ralph: debounce scheduled", { component: RALPH_LOG_COMPONENT, trigger, debounceMs });
+  }
+
+  async function maybeSendRalph(input: { trigger?: string; fromDebounce?: boolean } = {}): Promise<void> {
+    if (sending) {
+      logger.debug("ralph: skipped while send in progress", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
+      return;
+    }
+    if (runningSubagents.size > 0) {
+      logger.debug("ralph: skipped while subagents running", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, runningSubagents: runningSubagents.size });
+      return;
+    }
     const ctx = lastCtx;
-    if (!ctx) return;
-    if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
-    if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
-    const status = await getCharterStatus(ctx.cwd, { sessionId: ctx.sessionManager.getSessionId?.() }).catch(() => undefined);
-    if (!status || status.status !== "active") return;
-    const topBlocker = status.blockers[0] ?? "none";
-    const stale = status.criteria.filter((criterion) => criterion.stale).map((criterion) => criterion.id);
-    const content = [
-      `charter ${status.charterId} ${status.status}`,
-      `evidence pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}`,
-      `top-blocker=${topBlocker}`,
-      `stale=${stale.length ? stale.join(",") : "none"}`,
-      `ready-next=${status.readyNext.length ? status.readyNext.join(",") : "none"}`,
-    ].join("; ");
-    pi.sendMessage({
-      customType: RALPH_CUSTOM_TYPE,
-      content,
-      display: true,
-      details: { charterId: status.charterId },
-    }, { deliverAs: "steer", triggerTurn: true });
+    if (!ctx) {
+      logger.debug("ralph: skipped without context", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
+      return;
+    }
+
+    sending = true;
+    try {
+      if (typeof ctx.isIdle === "function" && !ctx.isIdle()) {
+        logger.debug("ralph: skipped while agent busy", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
+        return;
+      }
+      if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) {
+        logger.debug("ralph: skipped with pending messages", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
+        return;
+      }
+      const at = now();
+      if (minIntervalMs > 0 && at - lastSentAt < minIntervalMs) {
+        const remainingMs = minIntervalMs - (at - lastSentAt);
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          timer = undefined;
+          void maybeSendRalph({ trigger: "min-interval" });
+        }, remainingMs);
+        logger.debug("ralph: min-interval suppressed; rescheduling", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, remainingMs, minIntervalMs });
+        return;
+      }
+      const status = await getCharterStatus(ctx.cwd, { sessionId: ctx.sessionManager.getSessionId?.() }).catch((error) => {
+        logger.debug("ralph: status lookup skipped", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, error: error instanceof Error ? error.message : String(error) });
+        return undefined;
+      });
+      if (!status || status.status !== "active") {
+        logger.debug("ralph: skipped without active charter", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, status: status?.status });
+        return;
+      }
+      const topBlocker = status.blockers[0] ?? "none";
+      const stale = status.criteria.filter((criterion) => criterion.stale).map((criterion) => criterion.id);
+      const content = [
+        `charter ${status.charterId} ${status.status}`,
+        `evidence pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}`,
+        `top-blocker=${topBlocker}`,
+        `stale=${stale.length ? stale.join(",") : "none"}`,
+        `ready-next=${status.readyNext.length ? status.readyNext.join(",") : "none"}`,
+      ].join("; ");
+      pi.sendMessage({
+        customType: RALPH_CUSTOM_TYPE,
+        content,
+        display: true,
+        details: { charterId: status.charterId },
+      }, { deliverAs: "steer", triggerTurn: true });
+      lastSentAt = at;
+      logger.debug("ralph: message sent", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, charterId: status.charterId, payloadLength: content.length });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("stale after session replacement")) {
+        lastCtx = undefined;
+      }
+      logger.debug("ralph: loop skipped", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, error: message });
+    } finally {
+      sending = false;
+    }
   }
 }
 
