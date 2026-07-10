@@ -1,55 +1,84 @@
 # pi-charter
 
-`pi-charter` is a Pi extension for durable, charter-bound agent work. An agent starts from an objective, authors a charter workspace with `charter.md` and `criteria.md`, tracks Objective → Milestone → VAL criteria, and records evidence against those criteria.
+`pi-charter` is a Pi extension for durable, charter-bound agent work. It owns the charter contract, lifecycle, evidence record, artifacts, and final report; it does not choose or run a verifier.
 
-The implementation is live. `src/index.ts` is the extension composition root; code is the source of truth, with `CONTEXT.md` and ADRs documenting the model and boundaries.
+The live implementation is the source of truth. `src/index.ts` is the composition root, `CONTEXT.md` defines the domain language, and `docs/adr/0014-file-as-interface-redesign.md` records the current architecture.
 
-## Current status
+## Current architecture
 
-**Implemented, tested, bridged.** Test suite status: 275 pass / 0 fail; package scripts are `bun test` and `bun run check-types`.
+- One LLM-callable tool: `charter`.
+- Seven actions: `create`, `list`, `status`, `pause`, `resume`, `complete`, and `abandon`.
+- Lifecycle states: `active`, `paused`, `completed`, and `abandoned`.
+- One authored interface: `.charters/<id>/charter.md`.
+- Flat `### C<n>.` criteria with in-place `Evidence: pass|fail|none — <note>` lines.
+- Optional `Depends: C1, C2` lines are advisory ordering only.
+- Completion requires pass evidence with non-empty notes for every criterion, no stale pass evidence, an existing `REPORT.md`, and approval from the before-complete hook; the root agent curates the report as doctrine.
+- A charter with no criteria is open-ended and cannot complete; it runs until criteria are added, or the charter is paused or abandoned.
 
-- Three LLM-callable tools wired: `charter`, `charter_record`, `charter_status`.
-- Lifecycle FSM: `active` | `paused` | `completed` | `abandoned`, with completion gated by recorded criterion evidence.
-- Hook bus, drift views, session binding, widget, slash commands, CLI flags, and deterministic Ralph reprompt loop are registered from the live extension entrypoint.
-- `charter_record` records evidence only; pi-charter does not run verification commands.
-- pi-charter ships zero bundled personas. Bring your own review, QA, or planning subagents and record their outputs as evidence.
-- Per-project workspace: `<project>/.pi/charters/<charterId>/{charter.md, criteria.md, state.json, criterion-state.json, REPORT.md, events.jsonl, work/}`.
-- pi-subagents bridge wired: `expose-api` subscriber plus `async-started`/`async-complete` attribution to legacy-named `feature_started`/`feature_completed`/`feature_failed` events.
-- v1 `pi-goals` preserved at `docs/reference/v1-pi-goals/pi-goals/` for reference only.
-- Research and ADRs in `docs/research/2026-05-14-pi-charter-design/` and `docs/adr/`.
+Earlier multi-file, multi-tool, milestone-based architecture and legacy runtime paths are unsupported and are not read.
+
+## Workspace layout
+
+Each charter lives under the project root:
+
+```text
+.charters/<id>/
+├── charter.md    # objective, flat criteria, and current Evidence lines
+├── state.json    # current lifecycle/session binding and parser snapshot state
+├── events.jsonl  # append-only evidence, source-change, and lifecycle history
+├── work/         # verification artifacts, created as needed
+└── REPORT.md     # scaffolded on the first completion attempt, then curated
+```
+
+`charter.md` is the content interface and current evidence record. `state.json` carries runtime state, `events.jsonl` carries history, `work/` carries screenshots/recordings/output, and `REPORT.md` is the reviewable deliverable.
+
+## Tool surface
+
+```ts
+charter({
+  action: "create" | "list" | "status" | "pause" | "resume" | "complete" | "abandon",
+  id?,
+  objective?,
+  note?,
+})
+```
+
+Use `objective` for `create`. Omit `id` to address the session-bound charter; provide an id, unique prefix, or unique fragment to address another charter. `abandon` requires a note. Follow the returned `nextActions[]` rather than inferring legal transitions.
+
+## Slash commands and flags
+
+The registered slash commands are:
+
+- `/charter` — show status for the session-bound charter.
+- `/charter <id-fragment>` — show status for that charter.
+- `/charter create <objective>` — create and bind a charter.
+- `/charter list` — list charters.
+- `/charter status` — show status for the session-bound charter.
+- `/charter pause [note]` — pause the session-bound charter.
+- `/charter resume` — resume the session-bound charter.
+- `/charter complete [note]` — attempt completion.
+- `/charter abandon <note>` — abandon the charter.
+- `/charters` — open the charter picker/dashboard.
+
+The current runtime registers no pi-charter CLI flags.
+
+## Verification ownership
+
+pi-charter is verifier-agnostic. The charter-owning root agent defines durable assertions in `charter.md`, chooses any appropriate verification mechanism, and supplies an external verifier only the assertion, relevant context, and artifact destination under `.charters/<id>/work/`.
+
+The external verifier returns its result and artifact paths. The charter-owning root inspects those artifacts, decides what they prove, and writes the Evidence line. External verifiers do not own `charter.md`, `REPORT.md`, or lifecycle transitions.
+
+A failed verification ends that verification pass, not the charter lifecycle. The charter remains active unless explicitly paused or abandoned; record the failure when useful, fix the work, and run a new verification pass.
 
 ## Documentation map
 
 | Path | Purpose |
 |---|---|
-| `CONTEXT.md` | Domain language and boundaries for pi-charter. Read first. |
-| `docs/adr/` | Accepted architectural decisions and tradeoffs. |
-| `docs/implementation/` | Implementation-oriented specs: filesystem layout, tools, lifecycle, and evidence handling. |
-| `docs/research/2026-05-14-pi-charter-design/` | Full research and brainstorming archive. |
-| `docs/reference/v1-pi-goals/` | Old v1 implementation preserved for reference only. |
-| `docs/reference/pi-docs/extensions.md` | Pi extension API reference copied from local Pi docs. |
-| `src/index.ts` | Live extension composition root: registers flags, tools, commands, bridges, widget, and Ralph loop. |
-
-## Extension surface
-
-Three LLM-callable tools:
-
-- `charter` — lifecycle FSM: create, pause, resume, complete, abandon.
-- `charter_record` — evidence writes against VAL criteria.
-- `charter_status` — read-only status, drift views, and legal `nextActions[]`.
-
-Single slash tree:
-
-- `/charter` prints the usage hint; use `/charters` to inspect or manage active charters.
-- `/charter <objective>` hands the objective to the agent and tells it to run the charter workflow end-to-end. **Users describe intent; agents own charter creation** with `charter action=create`.
-- `/charters status|pause|resume|select|list` manages existing charters.
-
-CLI flags:
-
-- `pi --charter-objective "<text>"` hands the objective to the agent on turn 1; the agent calls `charter action=create`.
-- `pi --charter-resume <id>` rebinds before turn 1.
-
-No spec auto-detect, no `--charter-spec`, and no path parameter on creation. If a prompt says "use `docs/spec.md`", the agent reads it with normal file tools and authors `charter.md` plus `criteria.md` during planning.
+| `CONTEXT.md` | Current domain language and boundaries. |
+| `docs/adr/0014-file-as-interface-redesign.md` | Accepted file-as-interface architecture; supersedes earlier multi-file/tool decisions. |
+| `docs/adr/` | Decision history and supersession context. |
+| `skills/pi-charter/SKILL.md` | Agent workflow for owning a charter. |
+| `src/index.ts` | Live extension composition root. |
 
 ## Development
 

@@ -1,6 +1,6 @@
 ---
 name: pi-charter
-description: "Use for durable charter-bound agent work in pi-charter: create/list/status/pause/resume/complete/abandon, edit .charters/<id>/charter.md, record Evidence lines, and curate REPORT.md. Skip quick single-turn fixes."
+description: "Use for durable charter-bound agent work in pi-charter: create/list/status/pause/resume/complete/abandon, edit the charter file under .charters, record Evidence lines, and curate REPORT.md. Skip quick single-turn fixes."
 ---
 
 # pi-charter
@@ -45,11 +45,23 @@ Typical charter work is about three lifecycle tool calls. Everything contentful 
 
 Open-ended charter: if `## Criteria` has no live criteria, the charter can never complete. Use that only for intentionally unbounded work; later add criteria to make it completable.
 
+## Verification ownership
+
+pi-charter owns durable assertions and evidence records, not the verification mechanism. The charter-owning root remains responsible for `charter.md`, `REPORT.md`, artifacts, and lifecycle.
+
+When an external verifier is useful:
+
+1. Give it the criterion assertion, only the context needed to exercise it, and the artifact destination under `.charters/<id>/work/`.
+2. Ask it to return the observed result and artifact paths. Do not delegate edits to `charter.md`, report curation, or lifecycle calls.
+3. Inspect the returned artifacts yourself, decide what they prove, and write the Evidence line.
+
+A failed verification ends that pass, not the charter lifecycle. Record `Evidence: fail` when useful, fix the work, and start a new verification pass. Do not pause or abandon solely because a verifier reported failure.
+
 ## EVIDENCE DOCTRINE
 
 Prefer the strongest evidence that fits the criterion. Evidence proves the built thing works; it is not a diary entry.
 
-1. **Use it like a user.** Start the real app/server, drive the actual flow, and capture a screenshot or recording into `.charters/<id>/work/`. Use browser automation, a subagent, a terminal recorder, or desktop capture when that best matches the surface.
+1. **Use it like a user.** Start the real app/server, drive the actual flow, and capture a screenshot or recording into `.charters/<id>/work/`. Use whatever verifier and capture mechanism best matches the surface.
 2. **Observe the real system.** Capture real CLI output, endpoint responses, logs, database output, or generated files from the system under test. Save long output into `work/` and cite the path.
 3. **Run the checks.** Tests, typecheck, and lint are necessary but weakest. They are acceptable alone only for criteria that are purely about code behavior.
 
@@ -97,6 +109,3 @@ Rules:
 - `## Scope`, grouping headings, comments, and prose are inert unless they contain one of the parsed constructs above.
 - Unknown structure is not a work blocker; fix it when status warns, then continue.
 
-## Practical artifact hints
-
-If you need concrete capture commands for a surface, read `skills/pi-charter/references/qa.md`. Keep paths under `.charters/<id>/work/` and cite relative `work/...` paths in Evidence notes.
