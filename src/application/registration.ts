@@ -30,15 +30,14 @@ type CharterInput = {
 
 const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 const WIDGET_KEY = "charter-detail";
-// Give the user a real quiet window after every idle transition. This is not
-// merely event coalescing: it is the user-facing delay before Ralph starts the
-// next turn. Three seconds made interrupts and prompt composition impossible.
-const RALPH_DEBOUNCE_MS = 30_000;
-const RALPH_MIN_INTERVAL_MS = 30_000;
+const RALPH_DEBOUNCE_MS = 10_000;
+const RALPH_INTERRUPT_DELAY_MS = 60_000;
+const RALPH_MIN_INTERVAL_MS = 10_000;
 const RALPH_LOG_COMPONENT = "ralph-loop";
 
 export interface RegisterCharterRalphLoopOptions {
   debounceMs?: number;
+  interruptDelayMs?: number;
   minIntervalMs?: number;
   now?: () => number;
 }
@@ -137,10 +136,12 @@ export function registerCharterStalenessHooks(pi: ExtensionAPI): void {
 export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
   const runningSubagents = new Set<string>();
   const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
+  const interruptDelayMs = options.interruptDelayMs ?? RALPH_INTERRUPT_DELAY_MS;
   const minIntervalMs = options.minIntervalMs ?? RALPH_MIN_INTERVAL_MS;
   const now = options.now ?? (() => Date.now());
   let lastCtx: ExtensionContext | undefined;
   let lastSentAt = 0;
+  let interruptedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sending = false;
 
@@ -155,7 +156,10 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
   pi.on("agent_end", (event, ctx) => {
     rememberCtx(event, ctx);
-    scheduleRalph("agent_end");
+    const messages = (event as { messages?: Array<{ role?: string; stopReason?: string }> }).messages ?? [];
+    const interrupted = messages.some((message) => message.role === "assistant" && message.stopReason === "aborted");
+    if (interrupted) interruptedUntil = now() + interruptDelayMs;
+    scheduleRalph(interrupted ? "agent-end-interrupted" : "agent_end");
   });
   pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
     const payload = raw as { runId?: string; id?: string } | undefined;
@@ -176,7 +180,8 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
 
   function scheduleRalph(trigger: string): void {
     if (timer) clearTimeout(timer);
-    if (debounceMs <= 0) {
+    const delayMs = Math.max(debounceMs, interruptedUntil - now());
+    if (delayMs <= 0) {
       logger.debug("ralph: immediate check scheduled", { component: RALPH_LOG_COMPONENT, trigger });
       void maybeSendRalph({ trigger });
       return;
@@ -184,8 +189,8 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     timer = setTimeout(() => {
       timer = undefined;
       void maybeSendRalph({ trigger, fromDebounce: true });
-    }, debounceMs);
-    logger.debug("ralph: debounce scheduled", { component: RALPH_LOG_COMPONENT, trigger, debounceMs });
+    }, delayMs);
+    logger.debug("ralph: debounce scheduled", { component: RALPH_LOG_COMPONENT, trigger, delayMs, interrupted: interruptedUntil > now() });
   }
 
   async function maybeSendRalph(input: { trigger?: string; fromDebounce?: boolean } = {}): Promise<void> {

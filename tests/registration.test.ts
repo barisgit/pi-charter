@@ -120,6 +120,20 @@ describe("Ralph loop registration", () => {
     expect(h.sent).toHaveLength(1);
   });
 
+  test("an interrupted turn gets a longer quiet window", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-interrupted-"));
+    await createCharter(project, { objective: "Respect interruption", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, interruptDelayMs: 30, minIntervalMs: 0 });
+
+    h.fire("agent_end", { messages: [{ role: "assistant", stopReason: "aborted" }] });
+    await delay(10);
+    expect(h.sent).toHaveLength(0);
+
+    await delay(30);
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("debounce waits past agent_end all-idle emitted before ctx reports idle", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-agent-end-idle-"));
     await createCharter(project, { objective: "Settle after agent_end", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
