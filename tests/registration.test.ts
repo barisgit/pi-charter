@@ -126,9 +126,10 @@ describe("Ralph loop registration", () => {
     const h = createRalphHarness(project);
     registerCharterRalphLoop(h.pi, { debounceMs: 1, interruptDelayMs: 30, minIntervalMs: 0 });
 
-    const turn = new AbortController();
-    h.fire("tool_call", {}, { ...h.ctx, signal: turn.signal } as any);
-    turn.abort();
+    h.fire("tool_result", {
+      isError: true,
+      content: [{ type: "text", text: "Command aborted" }],
+    });
     h.fire("agent_end", { messages: [] });
     await delay(10);
     expect(h.sent).toHaveLength(0);

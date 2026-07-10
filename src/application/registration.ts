@@ -169,7 +169,15 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
   pi.on("message_update", (_event, ctx) => observeInterruption(ctx));
   pi.on("tool_call", (_event, ctx) => observeInterruption(ctx));
-  pi.on("tool_result", (_event, ctx) => observeInterruption(ctx));
+  pi.on("tool_result", (event, ctx) => {
+    observeInterruption(ctx);
+    const result = event as { isError?: boolean; content?: Array<{ type?: string; text?: string }> };
+    const text = result.content?.map((part) => part.text ?? "").join("\n") ?? "";
+    if (result.isError && /\b(?:command )?(?:aborted|cancelled)\b/i.test(text)) {
+      interruptedUntil = now() + interruptDelayMs;
+      scheduleRalph("tool-interrupted");
+    }
+  });
   pi.on("turn_end", (event, ctx) => {
     rememberCtx(event, ctx);
     observeInterruption(ctx);
