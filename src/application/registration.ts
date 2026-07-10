@@ -30,7 +30,10 @@ type CharterInput = {
 
 const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 const WIDGET_KEY = "charter-detail";
-const RALPH_DEBOUNCE_MS = 3_000;
+// Give the user a real quiet window after every idle transition. This is not
+// merely event coalescing: it is the user-facing delay before Ralph starts the
+// next turn. Three seconds made interrupts and prompt composition impossible.
+const RALPH_DEBOUNCE_MS = 30_000;
 const RALPH_MIN_INTERVAL_MS = 30_000;
 const RALPH_LOG_COMPONENT = "ralph-loop";
 
