@@ -144,14 +144,35 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   let interruptedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sending = false;
+  const observedSignals = new WeakSet<AbortSignal>();
 
   const rememberCtx = (_event: unknown, ctx: ExtensionContext) => {
     lastCtx = ctx;
   };
 
+  const observeInterruption = (ctx: ExtensionContext) => {
+    const signal = ctx.signal;
+    if (!signal || observedSignals.has(signal)) return;
+    observedSignals.add(signal);
+    const interrupted = () => {
+      interruptedUntil = now() + interruptDelayMs;
+      scheduleRalph("turn-interrupted");
+    };
+    if (signal.aborted) interrupted();
+    else signal.addEventListener("abort", interrupted, { once: true });
+  };
+
   pi.on("session_start", rememberCtx);
+  pi.on("agent_start", (event, ctx) => {
+    rememberCtx(event, ctx);
+    observeInterruption(ctx);
+  });
+  pi.on("message_update", (_event, ctx) => observeInterruption(ctx));
+  pi.on("tool_call", (_event, ctx) => observeInterruption(ctx));
+  pi.on("tool_result", (_event, ctx) => observeInterruption(ctx));
   pi.on("turn_end", (event, ctx) => {
     rememberCtx(event, ctx);
+    observeInterruption(ctx);
     scheduleRalph("turn_end");
   });
   pi.on("agent_end", (event, ctx) => {
