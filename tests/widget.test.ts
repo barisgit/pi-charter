@@ -22,9 +22,9 @@ const STATUS: CharterWidgetStatus & { createdAt: string } = {
   objective: "Ship runtime",
   openEnded: false,
   criteria: [
-    { id: "C1", title: "First criterion", evidence: "pass", note: "checked", stale: false, depends: [] },
-    { id: "C2", title: "Second criterion", evidence: "fail", note: "broken", stale: false, depends: [] },
-    { id: "C3", title: "Third criterion", evidence: "none", note: "", stale: false, depends: [] },
+    { id: "C1", title: "First criterion", evidence: "pass", note: "checked", stale: false, depends: [], failCount: 0 },
+    { id: "C2", title: "Second criterion", evidence: "fail", note: "broken", stale: false, depends: [], failCount: 0 },
+    { id: "C3", title: "Third criterion", evidence: "none", note: "", stale: false, depends: [], failCount: 0 },
   ],
   evidenceCounts: { pass: 1, fail: 1, none: 1 },
   blockers: ["C2 has fail evidence"],
@@ -70,7 +70,7 @@ describe("widget-state reducer", () => {
   });
 
   test("preserves the right border when a wide-character title is truncated", () => {
-    const criteria = [{ id: "C1", title: "修正する基準".repeat(8), evidence: "none" as const, note: "", stale: false, depends: [] }];
+    const criteria = [{ id: "C1", title: "修正する基準".repeat(8), evidence: "none" as const, note: "", stale: false, depends: [], failCount: 0 }];
     const vm = buildCharterWidgetView({ ...STATUS, criteria, evidenceCounts: { pass: 0, fail: 0, none: 1 }, readyNext: ["C1"] });
     const lines = renderCharterWidget({ vm: vm!, theme, width: 60 });
     expect(lines[2].endsWith("│")).toBe(true);

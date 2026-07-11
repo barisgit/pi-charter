@@ -41,7 +41,7 @@ export async function loadCharterSnapshot(input: SnapshotInput): Promise<Charter
 
 async function withListDates(projectDir: string, status: CharterStatusResult): Promise<CharterWidgetStatusWithDates> {
   const row = (await listCharters(projectDir)).find((entry) => entry.charterId === status.charterId);
-  return { ...status, createdAt: row?.createdAt, updatedAt: row?.updatedAt };
+  return { ...status, createdAt: row?.createdAt ?? status.createdAt, updatedAt: row?.updatedAt };
 }
 
 function slugFromId(charterId: string): string {

@@ -185,12 +185,12 @@ describe("Ralph loop registration", () => {
 
     h.fire("session_start");
     h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
-    await delay(25);
+    await delay(60);
 
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message.customType).toBe("charter-ralph-continue");
-    expect(h.sent[0].message.content).toContain(`charter ${created.charterId} active`);
-    expect(h.sent[0].message.content).toContain("criteria are still empty");
+    expect(h.sent[0].message.content).toContain(`Charter ${created.charterId} is still active`);
+    expect(h.sent[0].message.content).toContain("no criteria yet");
     expect(h.sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
   });
 
@@ -295,7 +295,7 @@ describe("Ralph loop registration", () => {
 
     h.fire("session_start");
     h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: now });
-    await delay(5);
+    await delay(25);
     expect(h.sent).toHaveLength(1);
 
     now = 1_001;
@@ -304,7 +304,7 @@ describe("Ralph loop registration", () => {
     expect(h.sent).toHaveLength(1);
 
     now = 1_006;
-    await delay(10);
+    await delay(40);
     expect(h.sent).toHaveLength(2);
   });
 

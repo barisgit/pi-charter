@@ -2,7 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids";
 import { readyCriteria, type ParsedCharterFile } from "../domain/charter-file";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, ensureWorkDir, listCharters, loadCharterState, loadParsedCharter, pathExists, reportPath, writeCharterState, writeTextAtomic } from "../infrastructure/store";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, ensureWorkDir, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, reportPath, writeCharterState, writeTextAtomic } from "../infrastructure/store";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
 import { criterionStaleness, refreshCharterSnapshot } from "./staleness";
@@ -25,12 +25,15 @@ export interface CriterionStatusView {
   note: string;
   stale: boolean;
   depends: string[];
+  /** Times this criterion's Evidence line has flipped to fail (from the journal). */
+  failCount: number;
 }
 
 export interface CharterStatusResult {
   charterId: string;
   status: CharterStatus;
   objective: string;
+  createdAt: string;
   openEnded: boolean;
   criteria: CriterionStatusView[];
   evidenceCounts: { pass: number; fail: number; none: number };
@@ -89,6 +92,7 @@ export async function getCharterStatus(
   const dir = charterDir(projectDir, charterId);
   const reportExists = await pathExists(reportPath(dir));
   const staleById = new Map(criterionStaleness(refreshed.state).map((entry) => [entry.id, entry.stale]));
+  const failCounts = countEvidenceFailures(await readEvents(dir));
   const criteria = refreshed.parsed.criteria.map((criterion) => ({
     id: criterion.id,
     title: criterion.title,
@@ -96,6 +100,7 @@ export async function getCharterStatus(
     note: criterion.evidence.note,
     stale: staleById.get(criterion.id) ?? false,
     depends: criterion.depends,
+    failCount: failCounts.get(criterion.id) ?? 0,
   }));
   const evidenceCounts = {
     pass: criteria.filter((criterion) => criterion.evidence === "pass").length,
@@ -107,6 +112,7 @@ export async function getCharterStatus(
     charterId,
     status: refreshed.state.status,
     objective: refreshed.state.objective,
+    createdAt: refreshed.state.createdAt,
     openEnded: refreshed.parsed.openEnded,
     criteria,
     evidenceCounts,
@@ -329,4 +335,16 @@ function toolError(message: string, action: string): CharterToolError {
   return new CharterToolError(message, {
     nextActions: [{ tool: "charter", action, hint: message }],
   });
+}
+
+export function countEvidenceFailures(events: import("../domain/types").CharterEvent[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    if (event.type !== "criterion_changed") continue;
+    if (event.field !== "evidence.status" || event.new !== "fail") continue;
+    const id = typeof event.criterion === "string" ? event.criterion : undefined;
+    if (!id) continue;
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
 }

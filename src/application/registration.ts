@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import { connect, type UtilsClient } from "pi-extension-utils";
 import { Type } from "typebox";
 import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
@@ -330,20 +331,29 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       }
       const topBlocker = status.blockers[0] ?? "none";
       const stale = status.criteria.filter((criterion) => criterion.stale).map((criterion) => criterion.id);
+      const repeatedFails = status.criteria.filter((criterion) => criterion.failCount >= 2 && criterion.evidence !== "pass").map((criterion) => `${criterion.id} failed ${criterion.failCount}x`);
+      const nextIds = status.readyNext.length ? status.readyNext : status.criteria.filter((criterion) => criterion.evidence !== "pass").map((criterion) => criterion.id);
+      const nextCriterion = status.criteria.find((criterion) => criterion.id === nextIds[0]);
       const content = [
-        `charter ${status.charterId} ${status.status}`,
-        ...(status.criteria.length === 0 ? ["criteria are still empty; add observable criteria to charter.md now"] : []),
-        `evidence pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}`,
-        `top-blocker=${topBlocker}`,
-        `stale=${stale.length ? stale.join(",") : "none"}`,
-        `ready-next=${status.readyNext.length ? status.readyNext.join(",") : "none"}`,
-      ].join("; ");
+        `Charter ${status.charterId} is still ${status.status} (running ${formatRunningTime(status.createdAt, at)}). You are its loop driver: pick the next criterion, do the work, verify it for real, then update the Evidence line in charter.md.`,
+        ...(status.criteria.length === 0 ? ["The charter has no criteria yet, so it can never complete. Add observable `### C<n>.` criteria to charter.md now."] : []),
+        `Evidence: pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}. Top blocker: ${topBlocker}.`,
+        ...(stale.length ? [`Stale evidence (source changed since verification): ${stale.join(", ")}. Re-verify before completing.`] : []),
+        ...(repeatedFails.length ? [`Repeated failures: ${repeatedFails.join(", ")}. Do not retry the same approach; change strategy or split the criterion.`] : []),
+        ...(nextCriterion ? [`Work next on ${nextCriterion.id}: ${nextCriterion.title}. Prefer strong evidence — use it like a user (artifact in work/) > observe the real system > run tests.`] : []),
+      ].join(" ");
       clearWidgetWarning(ctx);
       pi.sendMessage({
         customType: RALPH_CUSTOM_TYPE,
         content,
         display: true,
-        details: { charterId: status.charterId },
+        details: {
+          charterId: status.charterId,
+          evidenceCounts: status.evidenceCounts,
+          topBlocker,
+          stale,
+          readyNext: status.readyNext,
+        },
       }, { deliverAs: "steer", triggerTurn: true });
       lastSentAt = at;
       logger.debug("ralph: message sent", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, charterId: status.charterId, payloadLength: content.length });
@@ -359,8 +369,23 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   }
 }
 
-export function registerCharterRalphMessageRenderer(_pi: ExtensionAPI): void {
-  // The default renderer is enough for the condensed one-line Ralph steer.
+export function registerCharterRalphMessageRenderer(pi: ExtensionAPI): void {
+  pi.registerMessageRenderer(RALPH_CUSTOM_TYPE, (message, options, theme) => {
+    const details = (message.details ?? {}) as { charterId?: string; evidenceCounts?: { pass: number; fail: number; none: number }; topBlocker?: string; stale?: string[]; readyNext?: string[] };
+    const counts = details.evidenceCounts;
+    const summary = [
+      details.charterId ?? "charter",
+      counts ? `${counts.pass}/${counts.pass + counts.fail + counts.none} pass` : undefined,
+      details.readyNext?.length ? `next ${details.readyNext.join(",")}` : undefined,
+      details.stale?.length ? `stale ${details.stale.join(",")}` : undefined,
+    ].filter(Boolean).join(" · ");
+    let text = theme.fg("warning", "↻ ralph ") + theme.fg("muted", summary);
+    if (options.expanded) {
+      const content = typeof message.content === "string" ? message.content : "";
+      if (content) text += "\n" + theme.fg("dim", content);
+    }
+    return new Text(text, 0, 0);
+  });
 }
 
 export function registerCharterFlags(_pi: ExtensionAPI): void {
@@ -517,6 +542,7 @@ export function formatCharterStatusText(status: CharterStatusResult): string {
   const lines = [
     `charter ${status.charterId} ${status.status}`,
     `objective: ${status.objective}`,
+    `running: ${formatRunningTime(status.createdAt, Date.now())}`,
     `evidence: pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}`,
   ];
   if (status.openEnded) lines.push("open-ended: no criteria; complete is not legal");
@@ -525,7 +551,8 @@ export function formatCharterStatusText(status: CharterStatusResult): string {
     for (const criterion of status.criteria) {
       const stale = criterion.stale ? " stale" : "";
       const deps = criterion.depends.length ? ` depends=${criterion.depends.join(",")}` : "";
-      lines.push(`- ${criterion.id} ${criterion.evidence}${stale}${deps}: ${criterion.title}`);
+      const fails = criterion.failCount >= 2 && criterion.evidence !== "pass" ? ` failed=${criterion.failCount}x` : "";
+      lines.push(`- ${criterion.id} ${criterion.evidence}${stale}${deps}${fails}: ${criterion.title}`);
     }
   }
   if (status.blockers.length > 0) lines.push(`blockers: ${status.blockers.join("; ")}`);
@@ -541,6 +568,17 @@ function toolText(text: string, nextActions: NextAction[], data?: unknown, isErr
     content: [{ type: "text" as const, text: `${text}\nnextActions: ${JSON.stringify(nextActions)}` }],
     details: { nextActions, data },
   };
+}
+
+export function formatRunningTime(createdAt: string, nowMs: number): string {
+  const created = Date.parse(createdAt);
+  const elapsedMs = Number.isFinite(created) ? Math.max(0, nowMs - created) : 0;
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function parseCommand(args: string): CharterInput {
