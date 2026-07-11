@@ -9,9 +9,9 @@ const BASE: ReducerInput = {
   status: "active",
   createdAt: "2026-07-02T10:00:00.000Z",
   criteria: [
-    { id: "C1", evidence: "pass" },
-    { id: "C2", evidence: "fail" },
-    { id: "C3", evidence: "none" },
+    { id: "C1", title: "First criterion", evidence: "pass" },
+    { id: "C2", title: "Second criterion", evidence: "fail" },
+    { id: "C3", title: "Third criterion", evidence: "none" },
   ],
   now: Date.parse("2026-07-02T11:00:00.000Z"),
 };
@@ -43,6 +43,38 @@ describe("widget-state reducer", () => {
     expect(vm.bar).toEqual({ pass: 1, running: 1, total: 3 });
     expect(vm.displayName).toBe("ship-runtime");
     expect(vm.isPlanning).toBe(false);
+    expect(vm.nextCriterion).toEqual({ id: "C2", title: "Second criterion", evidence: "fail" });
+  });
+
+  test("active and paused headers expose distinct state labels", () => {
+    const active = renderCharterWidget({ vm: buildCharterWidgetView(STATUS)!, theme, width: 80 });
+    const paused = renderCharterWidget({ vm: buildCharterWidgetView({ ...STATUS, status: "paused" })!, theme, width: 80 });
+    expect(active[0]).toContain("active ·");
+    expect(paused[0]).toContain("paused ·");
+  });
+
+  test("renders an amber Ralph countdown row inside the widget", () => {
+    const vm = { ...buildCharterWidgetView(STATUS)!, ralphRemainingMs: 10_000 };
+    const colors: Array<{ color: string; text: string }> = [];
+    const coloredTheme = { fg: (color: string, text: string) => { colors.push({ color, text }); return text; } };
+    const lines = renderCharterWidget({ vm, theme: coloredTheme, width: 80 });
+    expect(lines).toHaveLength(5);
+    expect(lines[3]).toContain("Ralph continues in 10s");
+    expect(colors).toContainEqual({ color: "warning", text: "Ralph continues in 10s" });
+  });
+
+  test("prompts for the first criterion when the charter is empty", () => {
+    const vm = buildCharterWidgetView({ ...STATUS, criteria: [], evidenceCounts: { pass: 0, fail: 0, none: 0 }, readyNext: [] });
+    const lines = renderCharterWidget({ vm: vm!, theme, width: 80 });
+    expect(lines[2]).toContain("Next: add the first criterion");
+  });
+
+  test("preserves the right border when a wide-character title is truncated", () => {
+    const criteria = [{ id: "C1", title: "修正する基準".repeat(8), evidence: "none" as const, note: "", stale: false, depends: [] }];
+    const vm = buildCharterWidgetView({ ...STATUS, criteria, evidenceCounts: { pass: 0, fail: 0, none: 1 }, readyNext: ["C1"] });
+    const lines = renderCharterWidget({ vm: vm!, theme, width: 60 });
+    expect(lines[2].endsWith("│")).toBe(true);
+    expect(visibleWidth(lines[2])).toBe(60);
   });
 
   test("terminal status renders as terminal", () => {
@@ -52,7 +84,7 @@ describe("widget-state reducer", () => {
 });
 
 describe("charter widget old visual shell", () => {
-  test("renders boxed header, progress bar, empty detail slot, and footer", () => {
+  test("renders boxed header, progress bar, next incomplete criterion, and footer", () => {
     const vm = buildCharterWidgetView(STATUS, Date.parse("2026-07-02T11:00:00.000Z"));
     expect(vm).toBeDefined();
     const lines = renderCharterWidget({ vm: vm!, theme, width: 100 });
@@ -60,6 +92,7 @@ describe("charter widget old visual shell", () => {
     expect(lines[0]).toContain("╭");
     expect(lines[0]).toContain("ship-runtime");
     expect(lines[1]).toContain("1/3");
+    expect(lines[2]).toContain("Next: C2 — Second criterion");
     expect(lines[3]).toContain("╰");
     expect(visibleWidth(lines[0])).toBeLessThanOrEqual(100);
   });

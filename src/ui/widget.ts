@@ -10,7 +10,7 @@
  * change, 120ms animation timer while any subagent is running).
  */
 
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { CharterStatus } from "../domain/types";
 import type { CharterStatusResult } from "../application/service";
 import { buildViewModel, type CharterWidgetVM, type PlanningStep, type PlanningVM, type ValState } from "./widget-state";
@@ -19,6 +19,27 @@ export type CharterWidgetStatus = CharterStatusResult;
 
 interface ThemeLike {
   fg(color: string, text: string): string;
+}
+
+function renderNextCriterion(width: number, vm: CharterWidgetVM, theme: ThemeLike): string {
+  const detail = vm.nextCriterion
+    ? `${vm.nextCriterion.id} — ${vm.nextCriterion.title}`
+    : vm.bar.total === 0
+      ? "add the first criterion"
+      : "all criteria complete";
+  const available = Math.max(1, width - 12);
+  const clipped = truncateToWidth(detail, available);
+  const color = vm.nextCriterion?.evidence === "fail" ? "error" : vm.bar.total === 0 ? "warning" : "accent";
+  const prefix = theme.fg(color, "Next:");
+  const text = theme.fg(color, clipped);
+  return wrapInBox(`  ${prefix} ${text}`, 8 + visibleWidth(clipped), width, theme);
+}
+
+function renderRalphCountdown(width: number, remainingMs: number, theme: ThemeLike): string {
+  const seconds = Math.max(1, Math.ceil(remainingMs / 1_000));
+  const message = `Ralph continues in ${seconds}s`;
+  const text = theme.fg("warning", message);
+  return wrapInBox(`  ${text}`, 2 + message.length, width, theme);
 }
 
 export interface TuiLike {
@@ -95,10 +116,13 @@ export function renderCharterWidget(opts: RenderOptions): string[] {
       planning: opts.vm.planning,
     });
   }
-  const headerTail = formatElapsed(opts.vm.elapsedMs);
-  lines.push(renderHeader(width, displayName, headerTail, opts.theme, "accent"));
+  const headerTail = `${statusLabel(opts.vm.status)} · ${formatElapsed(opts.vm.elapsedMs)}`;
+  lines.push(renderHeader(width, displayName, headerTail, opts.theme, statusColor(opts.vm.status)));
   lines.push(renderBarLine(width, opts.vm.bar, opts.theme));
-  lines.push(renderEmptyBoxLine(width, opts.theme));
+  lines.push(renderNextCriterion(width, opts.vm, opts.theme));
+  if (opts.vm.status === "active" && (opts.vm.ralphRemainingMs ?? 0) > 0) {
+    lines.push(renderRalphCountdown(width, opts.vm.ralphRemainingMs!, opts.theme));
+  }
   lines.push(renderFooter(width, opts.theme));
   return lines.map((line) => truncateToWidth(line, width));
 }

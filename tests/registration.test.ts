@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createCharter, getCharterStatus, pauseCharter } from "../src/application/service";
-import { registerCharterCommands, registerCharterRalphLoop, registerCharterTools, registerCharterWidget } from "../src/application/registration";
+import { RALPH_WIDGET_WARNING_EVENT, registerCharterCommands, registerCharterRalphLoop, registerCharterTools, registerCharterWidget } from "../src/application/registration";
 import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
 
@@ -24,6 +24,8 @@ function createRalphHarness(project: string, sessionId = "s1", ctxOverrides: Rec
   const handlers: Record<string, (event: unknown, context: any) => void | Promise<void>> = {};
   const emitter = new EventEmitter();
   const sent: Array<{ message: any; options: any }> = [];
+  const notifications: Array<{ message: string; type?: string }> = [];
+  const widgetWarnings: unknown[] = [];
   const pi = {
     on: (eventName: string, handler: (event: unknown, context: any) => void | Promise<void>) => {
       handlers[eventName] = handler;
@@ -40,11 +42,13 @@ function createRalphHarness(project: string, sessionId = "s1", ctxOverrides: Rec
       sent.push({ message, options });
     },
   } as any;
+  pi.events.on(RALPH_WIDGET_WARNING_EVENT, (payload: unknown) => widgetWarnings.push(payload));
   const ctx = {
     cwd: project,
     isIdle: () => true,
     hasPendingMessages: () => false,
     sessionManager: { getSessionId: () => sessionId },
+    ui: { notify: (message: string, type?: string) => { notifications.push({ message, type }); } },
     ...ctxOverrides,
   };
 
@@ -52,6 +56,8 @@ function createRalphHarness(project: string, sessionId = "s1", ctxOverrides: Rec
     pi,
     ctx,
     sent,
+    notifications,
+    widgetWarnings,
     fire: (eventName: string, event: unknown = {}, context = ctx) => handlers[eventName]?.(event, context),
     emit: (eventName: string, event: unknown = {}) => emitter.emit(eventName, event),
   };
@@ -79,6 +85,85 @@ describe("tool registration", () => {
     expect(status.content[0].text).toContain("nextActions");
     expect(status.details.nextActions.map((action: { action?: string }) => action.action)).toContain("status");
   });
+
+  test("warns the user shortly before Ralph continues", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-warning-"));
+    await createCharter(project, { objective: "Warn first", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 500, warningLeadMs: 300, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(250);
+
+    expect(h.notifications).toHaveLength(0);
+    expect(h.widgetWarnings).toHaveLength(1);
+    expect(h.sent).toHaveLength(0);
+
+    await delay(350);
+    expect(h.sent).toHaveLength(1);
+  });
+
+  test("a warning callback ignores a context made stale by reload", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-stale-warning-"));
+    await createCharter(project, { objective: "Ignore stale warning", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const staleCtx = {
+      cwd: project,
+      isIdle: () => { throw new Error("This extension ctx is stale after session replacement or reload."); },
+      hasPendingMessages: () => false,
+      sessionManager: { getSessionId: () => "s1" },
+      ui: { notify: () => undefined },
+    };
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 30, warningLeadMs: 20, minIntervalMs: 0 });
+
+    h.fire("session_start", {}, staleCtx);
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(20);
+
+    expect(h.widgetWarnings).toHaveLength(0);
+    h.fire("session_shutdown");
+  });
+
+  test("reload shutdown cancels pending Ralph work and bridge listeners", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-reload-"));
+    await createCharter(project, { objective: "Reload safely", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 30, warningLeadMs: 10, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    h.fire("session_shutdown");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(50);
+
+    expect(h.notifications).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("refreshes the widget on its own timer", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-widget-timer-"));
+    await createCharter(project, { objective: "Ticking widget", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const handlers: Record<string, (event: unknown, ctx: any) => Promise<void> | void> = {};
+    let setCount = 0;
+    const ctx = {
+      cwd: project,
+      hasUI: true,
+      sessionManager: { getSessionId: () => "s1" },
+      ui: { setWidget: () => { setCount++; } },
+    };
+    const pi = {
+      events: fakeEvents(),
+      on: (name: string, handler: (event: unknown, context: any) => Promise<void> | void) => { handlers[name] = handler; return () => undefined; },
+    } as any;
+
+    registerCharterWidget(pi, { refreshMs: 10 });
+    await handlers.session_start({}, ctx);
+    await delay(25);
+    handlers.session_shutdown({}, ctx);
+
+    expect(setCount).toBeGreaterThanOrEqual(2);
+  });
 });
 
 describe("Ralph loop registration", () => {
@@ -100,11 +185,12 @@ describe("Ralph loop registration", () => {
 
     h.fire("session_start");
     h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
-    await delay(10);
+    await delay(25);
 
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message.customType).toBe("charter-ralph-continue");
     expect(h.sent[0].message.content).toContain(`charter ${created.charterId} active`);
+    expect(h.sent[0].message.content).toContain("criteria are still empty");
     expect(h.sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
   });
 
@@ -249,6 +335,7 @@ describe("Ralph loop registration", () => {
       },
       hasPendingMessages: () => false,
       sessionManager: { getSessionId: () => "s1" },
+      ui: { notify: () => undefined },
     };
     const h = createRalphHarness(project);
     registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });

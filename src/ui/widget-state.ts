@@ -26,6 +26,8 @@ export interface CharterWidgetVM {
   isPlanning: boolean;
   elapsedMs: number;
   bar: { pass: number; running: number; total: number };
+  nextCriterion?: { id: string; title: string; evidence: CriterionStatusLike["evidence"] };
+  ralphRemainingMs?: number;
   /** Only set when isPlanning is true. */
   planning?: PlanningVM;
 }
@@ -67,7 +69,7 @@ export interface ReducerInput {
   now?: number;
 }
 
-export type CriterionStatusLike = Pick<CriterionStatusView, "id" | "evidence">;
+export type CriterionStatusLike = Pick<CriterionStatusView, "id" | "title" | "evidence">;
 
 export function buildViewModel(input: ReducerInput): CharterWidgetVM {
   const now = input.now ?? Date.now();
@@ -89,7 +91,12 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
     isPlanning: false,
     elapsedMs: Math.max(0, now - createdMs),
     bar: { pass, running, total: input.criteria.length },
+    nextCriterion: toNextCriterion(input.criteria.find((criterion) => criterion.evidence !== "pass")),
   };
+}
+
+function toNextCriterion(criterion: CriterionStatusLike | undefined): CharterWidgetVM["nextCriterion"] {
+  return criterion ? { id: criterion.id, title: criterion.title, evidence: criterion.evidence } : undefined;
 }
 
 function parseIsoOrFallback(iso: string | undefined, fallback: number): number {

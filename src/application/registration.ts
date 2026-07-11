@@ -30,13 +30,17 @@ type CharterInput = {
 
 const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 const WIDGET_KEY = "charter-detail";
-const RALPH_DEBOUNCE_MS = 10_000;
-const RALPH_INTERRUPT_DELAY_MS = 60_000;
+export const RALPH_WIDGET_WARNING_EVENT = "pi-charter:ralph-warning";
+export const RALPH_WIDGET_WARNING_CLEAR_EVENT = "pi-charter:ralph-warning-clear";
+const RALPH_DEBOUNCE_MS = 20_000;
+const RALPH_WARNING_LEAD_MS = 10_000;
+const RALPH_INTERRUPT_DELAY_MS = 3 * 60_000;
 const RALPH_MIN_INTERVAL_MS = 10_000;
 const RALPH_LOG_COMPONENT = "ralph-loop";
 
 export interface RegisterCharterRalphLoopOptions {
   debounceMs?: number;
+  warningLeadMs?: number;
   interruptDelayMs?: number;
   minIntervalMs?: number;
   now?: () => number;
@@ -136,6 +140,7 @@ export function registerCharterStalenessHooks(pi: ExtensionAPI): void {
 export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
   const runningSubagents = new Set<string>();
   const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
+  const warningLeadMs = options.warningLeadMs ?? RALPH_WARNING_LEAD_MS;
   const interruptDelayMs = options.interruptDelayMs ?? RALPH_INTERRUPT_DELAY_MS;
   const minIntervalMs = options.minIntervalMs ?? RALPH_MIN_INTERVAL_MS;
   const now = options.now ?? (() => Date.now());
@@ -143,11 +148,17 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   let lastSentAt = 0;
   let interruptedUntil = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let warningTimer: ReturnType<typeof setTimeout> | undefined;
   let sending = false;
+  let disposed = false;
   const observedSignals = new WeakSet<AbortSignal>();
 
   const rememberCtx = (_event: unknown, ctx: ExtensionContext) => {
     lastCtx = ctx;
+  };
+
+  const clearWidgetWarning = (ctx: ExtensionContext) => {
+    pi.events.emit(RALPH_WIDGET_WARNING_CLEAR_EVENT, { sessionId: ctx.sessionManager.getSessionId?.() });
   };
 
   const observeInterruption = (ctx: ExtensionContext) => {
@@ -165,10 +176,17 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   pi.on("session_start", rememberCtx);
   pi.on("agent_start", (event, ctx) => {
     rememberCtx(event, ctx);
+    clearWidgetWarning(ctx);
     observeInterruption(ctx);
   });
-  pi.on("message_update", (_event, ctx) => observeInterruption(ctx));
-  pi.on("tool_call", (_event, ctx) => observeInterruption(ctx));
+  pi.on("message_update", (_event, ctx) => {
+    clearWidgetWarning(ctx);
+    observeInterruption(ctx);
+  });
+  pi.on("tool_call", (_event, ctx) => {
+    clearWidgetWarning(ctx);
+    observeInterruption(ctx);
+  });
   pi.on("tool_result", (event, ctx) => {
     observeInterruption(ctx);
     const result = event as { isError?: boolean; content?: Array<{ type?: string; text?: string }> };
@@ -190,25 +208,39 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     if (interrupted) interruptedUntil = now() + interruptDelayMs;
     scheduleRalph(interrupted ? "agent-end-interrupted" : "agent_end");
   });
-  pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+  const stopAsyncStarted = pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
     const payload = raw as { runId?: string; id?: string } | undefined;
     const id = payload?.runId ?? payload?.id;
     if (id) runningSubagents.add(id);
     logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
   });
-  pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+  const stopAsyncComplete = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
     const payload = raw as { runId?: string; id?: string } | undefined;
     const id = payload?.runId ?? payload?.id;
     if (id) runningSubagents.delete(id);
     logger.debug("ralph: subagent complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
     scheduleRalph("subagent-complete");
   });
-  pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
+  const stopAllIdle = pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
     scheduleRalph("subagent-all-idle");
+  });
+  pi.on("session_shutdown", () => {
+    disposed = true;
+    if (timer) clearTimeout(timer);
+    if (warningTimer) clearTimeout(warningTimer);
+    timer = undefined;
+    warningTimer = undefined;
+    lastCtx = undefined;
+    runningSubagents.clear();
+    stopAsyncStarted?.();
+    stopAsyncComplete?.();
+    stopAllIdle?.();
   });
 
   function scheduleRalph(trigger: string): void {
+    if (disposed) return;
     if (timer) clearTimeout(timer);
+    if (warningTimer) clearTimeout(warningTimer);
     const delayMs = Math.max(debounceMs, interruptedUntil - now());
     if (delayMs <= 0) {
       logger.debug("ralph: immediate check scheduled", { component: RALPH_LOG_COMPONENT, trigger });
@@ -219,10 +251,40 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       timer = undefined;
       void maybeSendRalph({ trigger, fromDebounce: true });
     }, delayMs);
+    const warningDelayMs = delayMs - warningLeadMs;
+    if (warningLeadMs > 0 && warningDelayMs > 0) {
+      warningTimer = setTimeout(() => {
+        warningTimer = undefined;
+        void warnBeforeRalph(warningLeadMs);
+      }, warningDelayMs);
+    }
     logger.debug("ralph: debounce scheduled", { component: RALPH_LOG_COMPONENT, trigger, delayMs, interrupted: interruptedUntil > now() });
   }
 
+  async function warnBeforeRalph(remainingMs: number): Promise<void> {
+    if (disposed) return;
+    const ctx = lastCtx;
+    if (!ctx || runningSubagents.size > 0) return;
+    try {
+      if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
+      if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
+      const sessionId = ctx.sessionManager.getSessionId?.();
+      const status = await getCharterStatus(ctx.cwd, { sessionId }).catch(() => undefined);
+      if (!status || status.status !== "active") return;
+      pi.events.emit(RALPH_WIDGET_WARNING_EVENT, {
+        sessionId,
+        charterId: status.charterId,
+        deadlineAt: now() + remainingMs,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("stale after session replacement")) lastCtx = undefined;
+      logger.debug("ralph: warning skipped", { component: RALPH_LOG_COMPONENT, error: message });
+    }
+  }
+
   async function maybeSendRalph(input: { trigger?: string; fromDebounce?: boolean } = {}): Promise<void> {
+    if (disposed) return;
     if (sending) {
       logger.debug("ralph: skipped while send in progress", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
       return;
@@ -270,11 +332,13 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       const stale = status.criteria.filter((criterion) => criterion.stale).map((criterion) => criterion.id);
       const content = [
         `charter ${status.charterId} ${status.status}`,
+        ...(status.criteria.length === 0 ? ["criteria are still empty; add observable criteria to charter.md now"] : []),
         `evidence pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}`,
         `top-blocker=${topBlocker}`,
         `stale=${stale.length ? stale.join(",") : "none"}`,
         `ready-next=${status.readyNext.length ? status.readyNext.join(",") : "none"}`,
       ].join("; ");
+      clearWidgetWarning(ctx);
       pi.sendMessage({
         customType: RALPH_CUSTOM_TYPE,
         content,
@@ -303,8 +367,26 @@ export function registerCharterFlags(_pi: ExtensionAPI): void {
   // Flags were tied to the old multi-file model; hard-cut runtime has no flags.
 }
 
-export function registerCharterWidget(pi: ExtensionAPI): void {
+export interface RegisterCharterWidgetOptions {
+  refreshMs?: number;
+  warningRefreshMs?: number;
+  now?: () => number;
+}
+
+export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharterWidgetOptions = {}): void {
   let client: UtilsClient | undefined;
+  let lastCtx: ExtensionContext | undefined;
+  let warningDeadlineAt: number | undefined;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let warningRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  const refreshMs = options.refreshMs ?? 10_000;
+  const warningRefreshMs = options.warningRefreshMs ?? 1_000;
+  const now = options.now ?? (() => Date.now());
+
+  const stopWarningRefresh = (): void => {
+    if (warningRefreshTimer) clearInterval(warningRefreshTimer);
+    warningRefreshTimer = undefined;
+  };
 
   const getClient = (ctx: ExtensionContext): UtilsClient => {
     client ??= connect(pi as never, { ctx: ctx as never, clientId: "pi-charter" });
@@ -319,11 +401,17 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
     if (!ctx.hasUI) return;
     const sessionId = ctx.sessionManager.getSessionId?.();
     const status = await loadCharterWidgetStatus(ctx.cwd, { sessionId });
-    const vm = buildCharterWidgetView(status);
+    const vm = buildCharterWidgetView(status, now());
     if (!vm) {
       clear(ctx);
       return;
     }
+    const remainingMs = warningDeadlineAt === undefined ? 0 : Math.max(0, warningDeadlineAt - now());
+    if (warningDeadlineAt !== undefined && remainingMs === 0) {
+      warningDeadlineAt = undefined;
+      stopWarningRefresh();
+    }
+    vm.ralphRemainingMs = remainingMs > 0 ? remainingMs : undefined;
     const factory: Parameters<UtilsClient["widgets"]["set"]>[2] = (_tui, theme) => ({
       render: (width: number) => renderCharterWidget({ width, theme, vm }),
       invalidate: () => {},
@@ -331,16 +419,70 @@ export function registerCharterWidget(pi: ExtensionAPI): void {
     getClient(ctx).widgets.set("aboveEditor", WIDGET_KEY, factory, { order: 80 });
   };
 
+  const safeRefresh = async (ctx: ExtensionContext): Promise<void> => {
+    try {
+      await refresh(ctx);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("stale after session replacement")) lastCtx = undefined;
+      logger.debug("widget: refresh skipped", { component: "charter-widget", error: message });
+    }
+  };
+
+  const matchesLastSession = (sessionId: string | undefined): boolean => {
+    if (!lastCtx) return false;
+    try {
+      return sessionId === lastCtx.sessionManager.getSessionId?.();
+    } catch {
+      lastCtx = undefined;
+      return false;
+    }
+  };
+
   pi.on("session_start", async (_event, ctx) => {
-    await refresh(ctx);
+    lastCtx = ctx;
+    await safeRefresh(ctx);
+    if (!refreshTimer && refreshMs > 0) {
+      refreshTimer = setInterval(() => {
+        if (lastCtx) void safeRefresh(lastCtx);
+      }, refreshMs);
+    }
   });
   pi.on("tool_result", async (_event, ctx) => {
-    await refresh(ctx);
+    lastCtx = ctx;
+    await safeRefresh(ctx);
   });
   pi.on("turn_end", async (_event, ctx) => {
+    lastCtx = ctx;
     await refresh(ctx);
   });
+  const stopWarning = pi.events.on(RALPH_WIDGET_WARNING_EVENT, (raw: unknown) => {
+    const payload = raw as { sessionId?: string; deadlineAt?: number };
+    if (!matchesLastSession(payload.sessionId)) return;
+    warningDeadlineAt = payload.deadlineAt;
+    if (lastCtx) void safeRefresh(lastCtx);
+    stopWarningRefresh();
+    if (warningRefreshMs > 0) {
+      warningRefreshTimer = setInterval(() => {
+        if (lastCtx) void safeRefresh(lastCtx);
+      }, warningRefreshMs);
+    }
+  });
+  const stopWarningClear = pi.events.on(RALPH_WIDGET_WARNING_CLEAR_EVENT, (raw: unknown) => {
+    const payload = raw as { sessionId?: string };
+    if (!matchesLastSession(payload.sessionId)) return;
+    warningDeadlineAt = undefined;
+    stopWarningRefresh();
+    if (lastCtx) void safeRefresh(lastCtx);
+  });
   pi.on("session_shutdown", () => {
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = undefined;
+    stopWarningRefresh();
+    lastCtx = undefined;
+    warningDeadlineAt = undefined;
+    stopWarning?.();
+    stopWarningClear?.();
     client?.dispose();
     client = undefined;
   });
