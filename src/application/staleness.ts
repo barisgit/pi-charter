@@ -5,7 +5,7 @@ import type { CharterState, CriterionSnapshot } from "../domain/types";
 
 export interface CriterionStaleness {
   id: string;
-  evidenceSeq: number;
+  statusSeq: number;
   stale: boolean;
 }
 
@@ -29,7 +29,7 @@ export async function refreshCharterSnapshot(
 
   const seq = options.seq ?? consumeSeq(state);
   const ts = new Date().toISOString();
-  const nextSnapshot = mergeEvidenceSeqs(state.criteriaSnapshot, snapshotFromParsed(parsed, seq), seq);
+  const nextSnapshot = mergeStatusSeqs(state.criteriaSnapshot, snapshotFromParsed(parsed, seq), seq);
   for (const event of diffCriteria(state.criteriaSnapshot, nextSnapshot, state.charterId, seq, ts, options.source ?? "external")) {
     await appendEvent(dir, event);
   }
@@ -110,8 +110,8 @@ export async function tickToolResult(
 export function criterionStaleness(state: CharterState): CriterionStaleness[] {
   return state.criteriaSnapshot.map((criterion) => ({
     id: criterion.id,
-    evidenceSeq: criterion.evidenceSeq,
-    stale: criterion.evidence.status === "pass" && criterion.evidenceSeq < state.latestSourceSeq,
+    statusSeq: criterion.statusSeq,
+    stale: criterion.status.value === "pass" && criterion.statusSeq < state.latestSourceSeq,
   }));
 }
 
@@ -125,7 +125,7 @@ function consumeSeq(state: CharterState): number {
   return seq;
 }
 
-function mergeEvidenceSeqs(
+function mergeStatusSeqs(
   previous: CriterionSnapshot[],
   next: CriterionSnapshot[],
   changedSeq: number,
@@ -133,8 +133,8 @@ function mergeEvidenceSeqs(
   const byId = new Map(previous.map((criterion) => [criterion.id, criterion]));
   return next.map((criterion) => {
     const old = byId.get(criterion.id);
-    const evidenceChanged = !old || old.evidence.status !== criterion.evidence.status || old.evidence.note !== criterion.evidence.note;
-    return { ...criterion, evidenceSeq: evidenceChanged ? changedSeq : old.evidenceSeq };
+    const statusChanged = !old || old.status.value !== criterion.status.value || old.status.note !== criterion.status.note;
+    return { ...criterion, statusSeq: statusChanged ? changedSeq : old.statusSeq };
   });
 }
 
@@ -157,8 +157,8 @@ function diffCriteria(
     }
     pushIfChanged(events, charterId, seq, ts, criterion.id, "title", old.title, criterion.title, source);
     pushIfChanged(events, charterId, seq, ts, criterion.id, "depends", old.depends, criterion.depends, source);
-    pushIfChanged(events, charterId, seq, ts, criterion.id, "evidence.status", old.evidence.status, criterion.evidence.status, source);
-    pushIfChanged(events, charterId, seq, ts, criterion.id, "evidence.note", old.evidence.note, criterion.evidence.note, source);
+    pushIfChanged(events, charterId, seq, ts, criterion.id, "status.value", old.status.value, criterion.status.value, source);
+    pushIfChanged(events, charterId, seq, ts, criterion.id, "status.note", old.status.note, criterion.status.note, source);
   }
   for (const criterion of oldSnapshot) {
     if (!newById.has(criterion.id)) {

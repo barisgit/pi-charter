@@ -2,6 +2,8 @@
 
 Status: accepted; supersedes ADR-0010 and ADR-0011; amends ADR-0012 and ADR-0013
 
+> **Amended by ADR-0015.** The single-file/tool/lifecycle design remains current, but ADR-0015 supersedes this ADR's criterion grammar and authoring guidance: canonical criteria now use one unified `Status:` line, optional References, and substantive criterion bodies. `Evidence:` is legacy input only.
+
 ## Context
 
 A design review against the 2026 agent landscape (Codex `/goal`, Claude Code `/goal` and `/loop`, Factory Missions, spec-driven frameworks) found that pi-charter's core bets are validated — durable objective, runtime idle-reprompt (smart-Ralph), evidence-gated completion — but its ergonomics are the industry outlier. An agent had to perform ~6–7 ceremony steps (create, author two markdown files against a bespoke grammar, satisfy parse warnings, read status) before the first line of real work, and drive evidence through an RPC-style tool schema agents repeatedly fumbled. Codex and Claude Code reach the same loop with one command.

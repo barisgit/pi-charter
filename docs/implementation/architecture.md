@@ -1,78 +1,27 @@
 # Architecture
 
-pi-charter is a headless-first Pi extension that keeps an agent aligned to a durable charter while leaving execution agency in the root session.
+## Boundary
+
+pi-charter is a Pi extension for durable outcome contracts. The agent is the loop driver; the extension persists and projects the charter, observes file/tool boundaries, computes staleness, and enforces lifecycle legality. It does not plan implementation tasks, run verification commands, or dispatch an execution scheduler.
 
 ## Layers
 
-```text
-Pi extension entrypoint
-  ├── Application layer
-  │   ├── tools: charter / charter_record / charter_status
-  │   ├── commands: /charter tree
-  │   ├── event handlers: session binding, subagent attribution, Ralph, hooks, widget refresh
-  │   └── nextActions FSM for active / paused / completed / abandoned
-  ├── Domain layer
-  │   ├── Charter / Mission state
-  │   ├── CharterStatus FSM
-  │   ├── Objective → Milestone → VAL criteria model and status views
-  │   ├── Criteria and descriptive verifier annotations
-  │   └── Flat evidence records
-  └── Infrastructure layer
-      ├── filesystem store under <project>/.pi/charters/<charterId>/
-      ├── session binding files under ~/.pi/agent/sessions/<sid>/charter.json
-      ├── append-only events and atomic file writes
-      ├── subagent metadata passthrough
-      └── deterministic Ralph reprompting
-```
+1. **Authored contract** — `.charters/<id>/charter.md` contains Objective, optional References and Scope, and flat criteria. Each criterion has one canonical `Status:` line.
+2. **Domain parser** — `src/domain/charter-file.ts` tolerantly parses known grammar and treats unknown structure as inert prose. Existing `Evidence:` lines are decoded only as a legacy input alias.
+3. **Application services** — lifecycle operations, completion blockers, report scaffolding, source-change recording, staleness, and Ralph steering.
+4. **Infrastructure** — atomic file writes, timestamp-sortable ids, state/event persistence, and legacy sidecar normalization.
+5. **Projections** — terse tool status, compact widget, and `/charters` dashboard. These all consume the same criterion Status model.
 
-## Core primitives
+## Runtime flow
 
-1. **Charter authoring files** — `charter.md` holds Objective, Scope and constraints, Mission Boundaries, and optional Commands; `criteria.md` holds the VAL register grouped under milestone headings.
-2. **Criterion register** — Objective → Milestone → VAL is the persisted decomposition. There is no feature DAG, `plan/<featureId>.md`, or computed `plan.json` sidecar in the live runtime.
-3. **Evidence log** — append-only flat evidence JSON files under `work/<feature-or-_charter>/evidence/<stamp>/`, written by `charter_record action=evidence` after the agent or a user-owned subagent performs the check.
-4. **State sidecars** — `state.json` stores lifecycle/session metadata and `criterion-state.json` stores latest VAL outcomes and evidence pointers. `feature-state.json` is vestigial only: it appears in comments/protected-file lists, not as a live reader/writer sidecar.
-5. **REPORT.md gate** — scaffolded at the first completion attempt and required to have non-empty content under every heading before completion.
-6. **Ralph reprompt** — status-driven continuation when the root and async children are idle.
+At every relevant tool-result boundary, the runtime re-reads `charter.md`, diffs the parsed criteria against the previous snapshot, appends field changes to `events.jsonl`, updates sequence counters in `state.json`, and refreshes projections. Source modifications advance a global source sequence. A pass is stale when its Status sequence predates that source sequence.
 
-## Control model
+## Deep boundaries
 
-The root agent is the loop driver. pi-charter only surfaces the current charter, drift views, legal next actions, and descriptive verifier/command annotations. It does not run checks, dispatch verifier personas, or run a worker scheduler.
+- `charter.md` owns durable why, what, boundaries, criterion semantics, and current criterion activity.
+- `pi-dag-tasks` owns tactical execution steps and dependencies.
+- `state.json` owns lifecycle/session/snapshot mechanics, never authored criterion truth.
+- `events.jsonl` owns append-only history.
+- `REPORT.md` curates already-recorded charter content and verification artifacts.
 
-## Integration points
-
-- **Pi tools**: three LLM-callable tools: `charter` (`create`, `pause`, `resume`, `complete`, `abandon`), `charter_record` (`evidence` only), and `charter_status`.
-- **Slash command**: one `/charter` tree.
-- **Flags**: `--charter-objective`, `--charter-resume` via `pi.registerFlag()`.
-- **Hooks**: live transition hooks are `charter:before_complete` and `charter:before_abandon`. `charter:before_lock_plan` remains defined in the hook type surface but is vestigial and has no live emitter because the lock-plan flow is gone. There is no `before_amend_charter` or `before_force_complete` hook.
-- **Subagents**: user-owned agents may be delegated by the root session; charter records their evidence provenance but ships no bundled personas or persona registration mechanism.
-- **Reminders/status**: deterministic Ralph reprompting and compact status widget are live. Reminder-bus helpers exist as remnants but are not part of the active entrypoint registration path.
-
-## Workspace layout
-
-```text
-<project>/.pi/charters/
-├── index.json
-└── <charterId>/
-    ├── charter.md
-    ├── criteria.md
-    ├── state.json
-    ├── criterion-state.json
-    ├── REPORT.md
-    ├── events.jsonl
-    ├── architecture.md                    # optional
-    ├── prompts/ralph/<case>.md            # optional override
-    ├── qa-briefs/*.md                     # optional status display inputs
-    └── work/<feature-or-_charter>/evidence/<stamp>/evidence.json
-
-~/.pi/agent/sessions/<sid>/charter.json    # reverse session binding
-```
-
-The runtime does not create or consume `plan/`, `plan.json`, `feature-state.json`, `handoffs/`, `result.json`, or `notes.md`.
-
-## Non-goals for v1 implementation
-
-- No auto-spawn worker pool.
-- No spec path parameter or spec auto-detection.
-- No cross-project global mission dashboard.
-- No rich TUI first; headless tools and status first.
-- No AgentContract YAML interop in the first cut, but leave room for projection.
+See ADR-0014 and ADR-0015.

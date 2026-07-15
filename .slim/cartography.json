@@ -1,7 +1,7 @@
 {
   "metadata": {
     "version": "1.0.0",
-    "last_run": "2026-05-17T18:32:39.598945Z",
+    "last_run": "2026-07-14T17:15:45.181256Z",
     "root": "/Users/blaz/Programming_local/Projects/pi-extensions/pi-charter",
     "include_patterns": [
       "src/**/*.ts"
@@ -17,36 +17,34 @@
     "exceptions": []
   },
   "file_hashes": {
-    "src/application/async-bridge-service.ts": "d08b54e677b7b5fe401921efff126c65",
-    "src/application/binding-service.ts": "91c3ac11a4a390907cee9d684d0971dd",
-    "src/application/drift-service.ts": "e971aa7a429966c290979d106a252a86",
-    "src/application/evaluator-service.ts": "5bd56562605e217e5180e5e8f310c90f",
-    "src/application/hooks.ts": "73a00d3ca6484c7a9254aabe2385e34a",
-    "src/application/plan-service.ts": "4b62e7da14fdd72e28fe6ce9ddc01780",
-    "src/application/record-service.ts": "d830e0be4bc6c6726d0eaf9a5e355e6d",
-    "src/application/registration.ts": "838236904dcdb5d5c3d11093a12dd522",
-    "src/application/reminders-bridge.ts": "b3a817e16ebb512274f11a73f84b4859",
-    "src/application/service.ts": "23338c08f8444bb8fef77a06576cedbb",
-    "src/domain/charter-md.ts": "547a2458a3bd4f3f2f6e12b9780dff96",
-    "src/domain/feature-md.ts": "653643453b0869b63cb0e394c041c8cf",
-    "src/domain/trust-rank.ts": "f049b24c555c945ad69d0d21b2d6ba31",
-    "src/domain/types.ts": "8744dc8df2242ce319ff51ddd23cdf3f",
-    "src/index.ts": "02ddf913f2c9f6d32ae00629371cad95",
-    "src/infrastructure/store.ts": "bf097c90643ec43441b5f7f4dc38275e",
-    "src/infrastructure/subagent-bridge.ts": "5defdc5e4c2cc178a292d926c59f649c",
-    "src/ui/charter-picker.ts": "cc70765df29b933f1744d64dfd25fd9d",
-    "src/ui/charter-selection.ts": "6f4559c503d95b4438787d72ca443cd0",
-    "src/ui/multi-charter-widget.ts": "7d58acbe46aa5de78d46a9b3651d073c",
-    "src/ui/widget-service.ts": "518ef46c6a4894ad03b7a32b1abd8b07",
-    "src/ui/widget-state.ts": "460fa71ce75f4adbc4f14ac8cecb93f0",
-    "src/ui/widget.ts": "6e31f312d2770caee97402b4094dfe32"
+    "src/application/errors.ts": "ffb733938c6d3416894ec18dcb9c4f16",
+    "src/application/hooks.ts": "d2095ac3e6eb48e8baedb6ab44b816d4",
+    "src/application/registration.ts": "5962fa8656ebb9007f31bd7ac9825d15",
+    "src/application/service.ts": "ffa39fc6fd37b2f22e4944078ba8c85a",
+    "src/application/staleness.ts": "3e147838513f0cd4bf40e9587182f588",
+    "src/application/version.ts": "e7cd8ce07b0ca6bf3882a8da71562bcc",
+    "src/domain/charter-file.ts": "986d0e373935157b5b5e07f216020003",
+    "src/domain/ids.ts": "43b2c88859aa5f0cd0cdd03ae9967def",
+    "src/domain/template.ts": "a32f7ac2358c627ac005dc9287adef54",
+    "src/domain/types.ts": "31f031a424da18d8aaf68ad983f27af4",
+    "src/index.ts": "cdd22179cbb7662a65fc8cf808cf99bd",
+    "src/infrastructure/logger.ts": "293fdb29fd3a9c7c496504ed177a8508",
+    "src/infrastructure/store.ts": "dccd3426bc0e53baa4cffb5045bfb117",
+    "src/infrastructure/subagent-bridge.ts": "64470a2dac08ec61df4539b566beff1d",
+    "src/ui/charter-picker-constants.ts": "987027c8c7c38d2542a39cd109c03825",
+    "src/ui/charter-picker.ts": "a4031d31707e7dc78702f018921c91f4",
+    "src/ui/charter-selection.ts": "c5e6057a32171fe8a876eb4e90efb3b0",
+    "src/ui/picker-snapshot.ts": "84d0c9c79618d199b771f9f81458a07a",
+    "src/ui/widget-service.ts": "a0a20b6b90a672b4a1b1c0f30aa76681",
+    "src/ui/widget-state.ts": "231b8410f6c4d7902ef1b2b41b1e1bee",
+    "src/ui/widget.ts": "2428b3264321d75fc59c039c136f7a25"
   },
   "folder_hashes": {
-    "src": "66fd3a2ae8f0fb8c8e92a3c4d86b2c8d",
-    "src/application": "608608e3f55d3f750ec8bf17be3b8100",
+    "src/application": "c6a1a7f1edc6342d7d996e019e8c9082",
     ".": "",
-    "src/ui": "e2727f84ce653428eb0de4f48bfaab5e",
-    "src/domain": "45130a1fcff1b5f19d07615875194bc0",
-    "src/infrastructure": "11de20d3ab8ffa49bb5cbaa41d3bec7d"
+    "src/domain": "c9ad8e71405c7cac7fad38ade758bc65",
+    "src/infrastructure": "ab43b068f8f77d2540469ab223db86a1",
+    "src/ui": "21e9f86c91380a8a786acd156468ed84",
+    "src": "f3946704c505d9dc3686f618dc783ac8"
   }
 }

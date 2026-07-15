@@ -1,5 +1,7 @@
 # v1 to v2 charter migration
 
+> **Superseded historical guidance.** Current pi-charter never reads `.pi/charters/` and performs no migration. See ADR-0014, ADR-0015, and `docs/implementation/filesystem-layout.md`.
+
 pi-charter v2 intentionally does not rewrite existing v1 charter directories.
 
 A v1-shaped charter is detected when `charter.md` still has a `## Criteria` section with `### VAL-*` entries and `criterion-state.json` exists. When detected, tools report `migration.replan_required` for mutating plan/record/complete actions.

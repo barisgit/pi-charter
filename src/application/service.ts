@@ -1,7 +1,7 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids";
-import { readyCriteria, type ParsedCharterFile } from "../domain/charter-file";
+import { readyCriteria, type CriterionStatus, type ParsedCharterFile } from "../domain/charter-file";
 import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, ensureWorkDir, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, reportPath, writeCharterState, writeTextAtomic } from "../infrastructure/store";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
@@ -21,11 +21,12 @@ export interface CharterServiceResult<T = unknown> {
 export interface CriterionStatusView {
   id: string;
   title: string;
-  evidence: "pass" | "fail" | "none";
+  body: string;
+  status: CriterionStatus;
   note: string;
   stale: boolean;
   depends: string[];
-  /** Times this criterion's Evidence line has flipped to fail (from the journal). */
+  /** Times this criterion's Status line has changed to fail (from the journal). */
   failCount: number;
 }
 
@@ -33,10 +34,12 @@ export interface CharterStatusResult {
   charterId: string;
   status: CharterStatus;
   objective: string;
+  references: string;
+  scope: string;
   createdAt: string;
   openEnded: boolean;
   criteria: CriterionStatusView[];
-  evidenceCounts: { pass: number; fail: number; none: number };
+  statusCounts: Record<CriterionStatus, number>;
   blockers: string[];
   warnings: string[];
   readyNext: string[];
@@ -66,7 +69,7 @@ export async function createCharter(
   return {
     charterId,
     status: created.state.status,
-    message: `Created charter ${charterId}. Edit ${created.charterDir}/charter.md to add criteria or evidence.`,
+    message: `Created charter ${charterId}. Edit ${created.charterDir}/charter.md to add criteria and update Status lines.`,
     data: created.state,
     nextActions: nextActionsFor(created.state, undefined, false),
   };
@@ -92,30 +95,35 @@ export async function getCharterStatus(
   const dir = charterDir(projectDir, charterId);
   const reportExists = await pathExists(reportPath(dir));
   const staleById = new Map(criterionStaleness(refreshed.state).map((entry) => [entry.id, entry.stale]));
-  const failCounts = countEvidenceFailures(await readEvents(dir));
+  const failCounts = countStatusFailures(await readEvents(dir));
   const criteria = refreshed.parsed.criteria.map((criterion) => ({
     id: criterion.id,
     title: criterion.title,
-    evidence: criterion.evidence.status,
-    note: criterion.evidence.note,
+    body: criterion.body,
+    status: criterion.status.value,
+    note: criterion.status.note,
     stale: staleById.get(criterion.id) ?? false,
     depends: criterion.depends,
     failCount: failCounts.get(criterion.id) ?? 0,
   }));
-  const evidenceCounts = {
-    pass: criteria.filter((criterion) => criterion.evidence === "pass").length,
-    fail: criteria.filter((criterion) => criterion.evidence === "fail").length,
-    none: criteria.filter((criterion) => criterion.evidence === "none").length,
+  const statusCounts: Record<CriterionStatus, number> = {
+    pending: criteria.filter((criterion) => criterion.status === "pending").length,
+    "in-progress": criteria.filter((criterion) => criterion.status === "in-progress").length,
+    blocked: criteria.filter((criterion) => criterion.status === "blocked").length,
+    pass: criteria.filter((criterion) => criterion.status === "pass").length,
+    fail: criteria.filter((criterion) => criterion.status === "fail").length,
   };
   const blockers = completionBlockers(refreshed.state, refreshed.parsed, reportExists);
   return {
     charterId,
     status: refreshed.state.status,
-    objective: refreshed.state.objective,
+    objective: refreshed.parsed.objective || refreshed.state.objective,
+    references: refreshed.parsed.references,
+    scope: refreshed.parsed.scope,
     createdAt: refreshed.state.createdAt,
     openEnded: refreshed.parsed.openEnded,
     criteria,
-    evidenceCounts,
+    statusCounts,
     blockers,
     warnings: refreshed.parsed.warnings,
     readyNext: readyCriteria(refreshed.parsed).map((criterion) => criterion.id),
@@ -260,10 +268,9 @@ function completionBlockers(state: CharterState, parsed: ParsedCharterFile, repo
   const stale = new Set(criterionStaleness(state).filter((entry) => entry.stale).map((entry) => entry.id));
   const blockers: string[] = [];
   for (const criterion of parsed.criteria) {
-    if (criterion.evidence.status === "none") blockers.push(`${criterion.id} has no evidence`);
-    if (criterion.evidence.status === "fail") blockers.push(`${criterion.id} has fail evidence`);
-    if (criterion.evidence.status === "pass" && criterion.evidence.note.trim().length === 0) blockers.push(`${criterion.id} pass evidence has empty note`);
-    if (stale.has(criterion.id)) blockers.push(`${criterion.id} pass evidence is stale`);
+    if (criterion.status.value !== "pass") blockers.push(`${criterion.id} status is ${criterion.status.value}`);
+    if (criterion.status.value === "pass" && criterion.status.note.trim().length === 0) blockers.push(`${criterion.id} pass status has empty note`);
+    if (stale.has(criterion.id)) blockers.push(`${criterion.id} pass status is stale`);
   }
   if (!reportExists) blockers.push("REPORT.md missing");
   return blockers;
@@ -276,7 +283,7 @@ function nextActionsFor(state: CharterState, parsed: ParsedCharterFile | undefin
     { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted." },
   ];
   const actions: NextAction[] = [
-    { tool: "charter", action: "status", hint: "Inspect current evidence, blockers, and ready criteria." },
+    { tool: "charter", action: "status", hint: "Inspect criterion statuses, blockers, and ready criteria." },
     { tool: "charter", action: "pause", hint: "Pause if this work should stop temporarily." },
     { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted." },
   ];
@@ -284,7 +291,7 @@ function nextActionsFor(state: CharterState, parsed: ParsedCharterFile | undefin
     actions.push({
       tool: "charter",
       action: "complete",
-      hint: reportExists ? "Complete once every criterion has fresh pass evidence." : "Attempt complete to scaffold REPORT.md once criteria pass.",
+      hint: reportExists ? "Complete once every criterion has a fresh pass status with an evidence note." : "Attempt complete to scaffold REPORT.md once criteria pass.",
     });
   }
   return actions;
@@ -297,9 +304,15 @@ async function activeChartersForSession(projectDir: string, sessionId?: string) 
 
 async function renderReportScaffold(dir: string, parsed: ParsedCharterFile): Promise<string> {
   const artifacts = await listWorkArtifacts(dir);
-  const lines = ["# Charter Report", "", "## Objective", "", parsed.objective || "(objective missing)", "", "## Criteria", ""];
+  const lines = ["# Charter Report", "", "## Objective", "", parsed.objective || "(objective missing)", ""];
+  if (parsed.references) lines.push("## References", "", parsed.references, "");
+  if (parsed.scope) lines.push("## Scope", "", parsed.scope, "");
+  lines.push("## Criteria", "");
   for (const criterion of parsed.criteria) {
-    lines.push(`### ${criterion.id}. ${criterion.title}`, "", `Evidence: ${criterion.evidence.status} — ${criterion.evidence.note}`.trim(), "");
+    lines.push(`### ${criterion.id}. ${criterion.title}`, "");
+    if (criterion.body) lines.push(criterion.body, "");
+    if (criterion.depends.length) lines.push(`Depends: ${criterion.depends.join(", ")}`);
+    lines.push(`Status: ${criterion.status.value}${criterion.status.note ? ` — ${criterion.status.note}` : ""}`, "");
   }
   if (artifacts.length > 0) {
     lines.push("## Artifacts", "");
@@ -337,11 +350,11 @@ function toolError(message: string, action: string): CharterToolError {
   });
 }
 
-export function countEvidenceFailures(events: import("../domain/types").CharterEvent[]): Map<string, number> {
+export function countStatusFailures(events: import("../domain/types").CharterEvent[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const event of events) {
     if (event.type !== "criterion_changed") continue;
-    if (event.field !== "evidence.status" || event.new !== "fail") continue;
+    if ((event.field !== "status.value" && event.field !== "evidence.status") || event.new !== "fail") continue;
     const id = typeof event.criterion === "string" ? event.criterion : undefined;
     if (!id) continue;
     counts.set(id, (counts.get(id) ?? 0) + 1);

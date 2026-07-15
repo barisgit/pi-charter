@@ -23,16 +23,17 @@ interface ThemeLike {
 
 function renderNextCriterion(width: number, vm: CharterWidgetVM, theme: ThemeLike): string {
   const detail = vm.nextCriterion
-    ? `${vm.nextCriterion.id} — ${vm.nextCriterion.title}`
+    ? `${vm.nextCriterion.id} [${vm.nextCriterion.status}] — ${vm.nextCriterion.title}`
     : vm.bar.total === 0
       ? "add the first criterion"
       : "all criteria complete";
-  const available = Math.max(1, width - 12);
+  const color = vm.nextCriterion?.status === "fail" || vm.nextCriterion?.status === "blocked" ? "error" : vm.bar.total === 0 ? "warning" : "accent";
+  const label = vm.nextCriterion?.status === "in-progress" ? "Current:" : vm.nextCriterion?.status === "blocked" ? "Blocked:" : "Next:";
+  const available = Math.max(1, width - visibleWidth(label) - 7);
   const clipped = truncateToWidth(detail, available);
-  const color = vm.nextCriterion?.evidence === "fail" ? "error" : vm.bar.total === 0 ? "warning" : "accent";
-  const prefix = theme.fg(color, "Next:");
+  const prefix = theme.fg(color, label);
   const text = theme.fg(color, clipped);
-  return wrapInBox(`  ${prefix} ${text}`, 8 + visibleWidth(clipped), width, theme);
+  return wrapInBox(`  ${prefix} ${text}`, 3 + visibleWidth(label) + visibleWidth(clipped), width, theme);
 }
 
 function renderRalphCountdown(width: number, remainingMs: number, theme: ThemeLike): string {
@@ -136,7 +137,7 @@ function statusColor(status: CharterStatus): string {
 
 /**
  * Planning-phase render: pipeline of 5 steps with state glyphs, inline
- * detail counts, and a next-action hint. No criteria bar (no evidence yet) and no
+ * detail counts, and a next-action hint. No criteria bar (no statuses yet) and no
  * task rows (the task tracker above the widget already shows them).
  */
 function renderPlanningView(opts: {

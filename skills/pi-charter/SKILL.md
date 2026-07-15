@@ -1,111 +1,106 @@
 ---
 name: pi-charter
-description: "Use for durable charter-bound agent work in pi-charter: create/list/status/pause/resume/complete/abandon, edit the charter file under .charters, record Evidence lines, and curate REPORT.md. Skip quick single-turn fixes."
+description: "Use for durable charter-bound agent work in pi-charter: create/list/status/pause/resume/complete/abandon, edit charter.md under .charters, update criterion Status lines, capture verification artifacts, and curate REPORT.md. Skip quick single-turn fixes."
 ---
 
 # pi-charter
 
-Use this skill when work should be bound to a durable charter: multi-turn implementation, long-running verification, resumable work, or a user explicitly asks for a charter. For quick single-file or single-turn fixes, work normally.
+Use this skill for durable, multi-turn, resumable work or whenever the user explicitly requests a charter. Work normally for quick fixes.
 
-`CONTEXT.md`, `docs/adr/0014-file-as-interface-redesign.md`, `AGENTS.md`, and `src/domain/template.ts` are the binding sources. If this skill conflicts with them, follow those files.
+`CONTEXT.md`, ADR-0014, ADR-0015, `AGENTS.md`, and `src/domain/template.ts` are binding. Follow them if this skill drifts.
 
-## 1. Create only when ready
+## Create only when ready
 
-Create a charter when the agent already has enough information to author meaningful criteria and start work.
-
-- If scope, success criteria, or permission is unclear, ask the user before creating.
-- Do not create a charter as a waiting room for unanswered questions. There is no separate waiting state.
-- Once active, keep working until completed, paused, or abandoned.
-- If a user answer is needed mid-charter, pause and put the question in `note`:
-  `charter({ action: "pause", note: "Need user decision: ..." })`.
-- Use `charter({ action: "status" })` when unsure about lifecycle state or blockers. Follow `nextActions[]` from tool returns.
-
-Tool surface:
+Create once scope and success are clear enough to author meaningful criteria and begin. Do not use a charter as a waiting room for unanswered questions. If a consequential user decision becomes necessary mid-charter, pause with the question in `note`.
 
 ```ts
 charter({ action: "create" | "list" | "status" | "pause" | "resume" | "complete" | "abandon", id?, objective?, note? })
 ```
 
-## 2. Lifecycle walkthrough
+Follow every returned `nextActions[]`; do not memorize lifecycle legality.
 
-Typical charter work is about three lifecycle tool calls. Everything contentful is normal work plus direct edits to `.charters/<id>/charter.md`.
+## Author the durable contract
 
-1. Create: `charter({ action: "create", objective: "Ship X with verified behavior Y" })`.
-2. Open `.charters/<id>/charter.md`.
-3. Edit `charter.md`: refine `## Objective`/`## Scope` if needed, then author live criteria under `## Criteria` as `### C1. ...` with `Evidence: none`.
-4. Implement normally: inspect, edit code, delegate recon or QA when useful, run the real app or commands.
-5. Verify one criterion at a time using the strongest appropriate evidence.
-6. Save artifacts produced during verification into `.charters/<id>/work/`.
-7. Inspect each artifact yourself before citing it.
-8. Edit the criterion's Evidence line in `charter.md`, for example: `Evidence: pass — drove login on dev server; screenshot: work/c1-login.png (2026-07-02)`.
-9. Continue implementation and evidence edits until every criterion has `pass` evidence with a non-empty note.
-10. Attempt complete: `charter({ action: "complete", note: "All criteria verified; report curated." })`.
-11. If completion rejects stale evidence because source changed after a pass note, re-verify the listed criteria, update their Evidence lines, then call `complete` again.
-12. If the first complete attempt scaffolds `REPORT.md`, curate it from the objective, criteria, Evidence notes, and already-captured artifacts; then retry `complete`.
+After `create`, edit `.charters/<id>/charter.md` directly.
 
-Open-ended charter: if `## Criteria` has no live criteria, the charter can never complete. Use that only for intentionally unbounded work; later add criteria to make it completable.
-
-## Verification ownership
-
-pi-charter owns durable assertions and evidence records, not the verification mechanism. The charter-owning root remains responsible for `charter.md`, `REPORT.md`, artifacts, and lifecycle.
-
-When an external verifier is useful:
-
-1. Give it the criterion assertion, only the context needed to exercise it, and the artifact destination under `.charters/<id>/work/`.
-2. Ask it to return the observed result and artifact paths. Do not delegate edits to `charter.md`, report curation, or lifecycle calls.
-3. Inspect the returned artifacts yourself, decide what they prove, and write the Evidence line.
-
-A failed verification ends that pass, not the charter lifecycle. Record `Evidence: fail` when useful, fix the work, and start a new verification pass. Do not pause or abandon solely because a verifier reported failure.
-
-## EVIDENCE DOCTRINE
-
-Prefer the strongest evidence that fits the criterion. Evidence proves the built thing works; it is not a diary entry.
-
-1. **Use it like a user.** Start the real app/server, drive the actual flow, and capture a screenshot or recording into `.charters/<id>/work/`. Use whatever verifier and capture mechanism best matches the surface.
-2. **Observe the real system.** Capture real CLI output, endpoint responses, logs, database output, or generated files from the system under test. Save long output into `work/` and cite the path.
-3. **Run the checks.** Tests, typecheck, and lint are necessary but weakest. They are acceptable alone only for criteria that are purely about code behavior.
-
-Before citing an artifact, inspect it yourself: open the screenshot, replay the recording, or read the saved output. If it does not show the built thing working, the criterion is not verified.
-
-Wrong example: for a TUI app criterion, recording a terminal that only runs tests and greps source files. That proves checks ran; it does not prove the TUI was used. Record the actual TUI session instead.
-
-Evidence line pattern:
+- Make `## Objective` descriptive enough to preserve why the work matters, the intended outcome, and important constraints.
+- Add optional `## References` for durable pointers to specs, plans, handoffs, ADRs, docs, or code. Do not put mutable progress there.
+- Add optional `## Scope` for in/out boundaries.
+- Under `## Criteria`, write independently meaningful observable outcomes, not tactical implementation steps. A substantial charter often needs roughly 10–20 criteria; narrow work may need fewer. Never pad the count.
+- Give each criterion a concise title and enough prose to preserve expected behavior, boundaries, and important cases.
+- Use `Depends:` only as advisory ordering.
+- Use exactly one live record per criterion:
 
 ```markdown
-Evidence: pass — <what you did, what it showed, artifact path(s), date>
-Evidence: fail — <what failed, where to inspect, date>
-Evidence: none
+Status: pending|in-progress|blocked|pass|fail — <note>
 ```
 
-Keep `none` until verification really happened. Do not backfill artifacts at report time.
+Status meanings:
 
-## REPORT.md is the deliverable
+- `pending`: meaningful work has not begun; note optional.
+- `in-progress`: current work; note what is happening.
+- `blocked`: cannot advance; note the concrete blocker.
+- `pass`: verified; note required and must say what was observed.
+- `fail`: verification failed; note required and must say what failed and why.
 
-`REPORT.md` is scaffolded on the first `complete` attempt. Treat it as the PR-pasteable showcase of the work.
+Do not add a separate evidence or activity field. pi-dag-tasks owns tactical execution steps; the charter owns durable outcomes and criterion activity.
 
-- Curate from evidence already captured during verification.
-- Link useful screenshots, recordings, logs, and output saved under `work/`.
-- Explain what changed, why it satisfies the criteria, and how to review it.
-- Never capture new evidence just to fill the report. If a report needs an artifact that does not exist, return to the criterion, verify properly, save the artifact, update its Evidence line, then curate the report.
+A charter with no live criteria is open-ended and can never complete. Use that only for intentionally unbounded work.
 
-## Grammar reference
+## Work and verify
 
-The parser only cares about these constructs in `charter.md`:
+1. Mark current criteria `in-progress` as work begins; use `blocked` only for a real blocker.
+2. Implement normally. Delegate bounded recon or QA when useful, but the root owner edits `charter.md`, curates `REPORT.md`, and performs lifecycle calls.
+3. Verify each criterion with the strongest fitting evidence.
+4. Save artifacts captured at verification time under `.charters/<id>/work/` and inspect them before citation.
+5. Update the same Status line to `pass` or `fail` with the observation and artifact paths.
+6. Continue until every criterion is `pass` with a non-empty evidence note.
+
+A failed check ends that verification pass, not the charter lifecycle. Record `fail`, fix the work, and verify again. Do not pause or abandon merely because verification failed.
+
+## Evidence doctrine
+
+Evidence proves the built thing works; it is not a diary entry.
+
+1. **Use it like a user.** Drive the real UI or flow and capture a screenshot or recording in `work/`.
+2. **Observe the real system.** Capture actual CLI output, endpoint responses, logs, database output, or generated files.
+3. **Run the checks.** Tests, typecheck, and lint are necessary but weakest; they may suffice for purely code-level criteria.
+
+Do not backfill artifacts at report time. If an artifact does not show the criterion working, it is not evidence for that criterion.
+
+```markdown
+Status: in-progress — implementing the real login flow
+Status: blocked — test account access is unavailable
+Status: pass — drove login on dev server; screenshot: work/c1-login.png (2026-07-14)
+Status: fail — callback returned 500; response saved at work/c1-callback.txt (2026-07-14)
+```
+
+Staleness is computed globally. A `pass` recorded before a later source change remains advisory in status/Ralph but hard-blocks completion until the criterion is re-verified and its Status line updated.
+
+## Complete and curate REPORT.md
+
+Call `charter({ action: "complete" })` when all criteria pass. The first attempt scaffolds `REPORT.md` from the Objective, References, Scope, criterion bodies, dependencies, and Status notes, then asks you to curate it.
+
+Treat `REPORT.md` as the reviewable deliverable:
+
+- explain what changed and why it satisfies the criteria;
+- link useful artifacts already captured under `work/`;
+- keep it reviewable and PR-pasteable;
+- do not create new evidence merely to fill the report.
+
+After curation, retry `complete`. If completion reports stale passes, re-verify those criteria first.
+
+## Parsed grammar
 
 ```markdown
 ## Objective
+## References
+## Scope
 ## Criteria
-### C<n>. <title>
+### C<n>. <concise observable title>
+<criterion body>
 Depends: C1, C2
-Evidence: pass|fail|none — <note>
+Status: pending|in-progress|blocked|pass|fail — <note>
 ```
 
-Rules:
-
-- `## Objective` and `## Criteria` are required sections.
-- Criteria are flat `### C<n>.` headings.
-- `Depends:` is optional and advisory only; it never gates evidence or completion.
-- Exactly one `Evidence:` line belongs under each criterion.
-- `## Scope`, grouping headings, comments, and prose are inert unless they contain one of the parsed constructs above.
-- Unknown structure is not a work blocker; fix it when status warns, then continue.
-
+`## References`, `## Scope`, criterion bodies, and `Depends:` are optional. Criteria are flat. Unknown structure and grouping headings are inert; parser breakage produces warnings rather than blocking work.

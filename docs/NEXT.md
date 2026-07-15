@@ -1,6 +1,6 @@
 # NEXT — morning handoff
 
-> **Superseded historical snapshot.** This is a point-in-time handoff from an early (v1/v2-era) session. It describes a tool surface and layout that no longer exist — `charter_manage`/`charter_plan`, `force_complete`/`amend_charter`/`handoff_apply`, the `planning` state, `plan/<featureId>.md`/`plan.json`/`feature-state.json`, a four-event hook bus, `registerCharterPersonas`, and the "53 tests" count. For current (v3) behavior see `CONTEXT.md`, `docs/v3-handoff-brief.md`, and `docs/implementation/{architecture,lifecycle,tool-contracts,filesystem-layout}.md`. Kept only for narrative history.
+> **Superseded historical snapshot.** This point-in-time v1/v2 handoff describes tools and files that no longer exist. For current behavior see `CONTEXT.md`, ADR-0014, ADR-0015, and `docs/implementation/`. Kept only for narrative history.
 
 ## What shipped this session
 

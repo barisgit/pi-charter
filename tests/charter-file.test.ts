@@ -22,13 +22,13 @@ Migrate the parser to streaming without breaking the public API.
 
 All existing parser fixtures pass against the streaming implementation.
 
-Evidence: pass — bun test parser: 42/42 pass (2026-07-02)
+Status: pass — bun test parser: 42/42 pass (2026-07-02)
 
 ### C2. Memory stays flat on large inputs
 
 Run bench:memory with the 500MB fixture. Budget: <100MB.
 
-Evidence: fail — peak RSS 340MB, buffers full blocks before emit
+Status: fail — peak RSS 340MB, buffers full blocks before emit
 (2026-07-02)
 
 ### C3. No public API change
@@ -36,15 +36,56 @@ Depends: C1
 
 check-types clean against the published .d.ts.
 
-Evidence: none
+Status: pending
 
 ### C4. Docs updated with new streaming notes
 Depends: C1, C3
 
-Evidence: none
+Status: pending
 `;
 
 describe("charter.md parser", () => {
+  test("parses rich sections and unified criterion statuses", () => {
+    const parsed = parseCharterFile([
+      "## Objective",
+      "",
+      "Deliver a durable outcome with enough detail to resume later.",
+      "",
+      "## References",
+      "",
+      "- `docs/spec.md` — canonical requirements",
+      "",
+      "## Scope",
+      "",
+      "- In: runtime and UI",
+      "- Out: task scheduling",
+      "",
+      "## Criteria",
+      "",
+      "### C1. Active work is visible",
+      "Status: in-progress — implementing the compact widget",
+      "",
+      "The widget names the criteria being worked on without rendering the full charter.",
+      "",
+      "### C2. Verified work records evidence",
+      "",
+      "The note captures the observed result and artifact path.",
+      "Status: pass — drove the picker; screenshot: work/picker.png",
+    ].join("\n"));
+
+    expect(parsed.references).toContain("docs/spec.md");
+    expect(parsed.scope).toContain("runtime and UI");
+    expect(parsed.criteria[0].status).toEqual({
+      value: "in-progress",
+      note: "implementing the compact widget",
+    });
+    expect(parsed.criteria[0].body).toContain("widget names the criteria");
+    expect(parsed.criteria[1].status).toEqual({
+      value: "pass",
+      note: "drove the picker; screenshot: work/picker.png",
+    });
+  });
+
   test("parses objective and criteria from the sample", () => {
     const parsed = parseCharterFile(SAMPLE);
     expect(parsed.objective).toContain("Migrate the parser to streaming");
@@ -53,14 +94,18 @@ describe("charter.md parser", () => {
     expect(parsed.warnings).toEqual([]);
   });
 
-  test("evidence statuses and notes", () => {
-    const byId = new Map(parseCharterFile(SAMPLE).criteria.map((c) => [c.id, c]));
-    expect(byId.get("C1")!.evidence.status).toBe("pass");
-    expect(byId.get("C1")!.evidence.note).toContain("42/42");
-    expect(byId.get("C2")!.evidence.status).toBe("fail");
+  test("legacy Evidence lines map into unified statuses", () => {
+    const legacy = SAMPLE
+      .replace("Status: pass — bun test parser: 42/42 pass (2026-07-02)", "Evidence: pass — bun test parser: 42/42 pass (2026-07-02)")
+      .replace("Status: fail — peak RSS 340MB, buffers full blocks before emit", "Evidence: fail — peak RSS 340MB, buffers full blocks before emit")
+      .replaceAll("Status: pending", "Evidence: none");
+    const byId = new Map(parseCharterFile(legacy).criteria.map((c) => [c.id, c]));
+    expect(byId.get("C1")!.status.value).toBe("pass");
+    expect(byId.get("C1")!.status.note).toContain("42/42");
+    expect(byId.get("C2")!.status.value).toBe("fail");
     // multi-line note reads until next heading
-    expect(byId.get("C2")!.evidence.note).toContain("(2026-07-02)");
-    expect(byId.get("C3")!.evidence.status).toBe("none");
+    expect(byId.get("C2")!.status.note).toContain("(2026-07-02)");
+    expect(byId.get("C3")!.status.value).toBe("pending");
   });
 
   test("depends and body extraction", () => {
@@ -74,7 +119,7 @@ describe("charter.md parser", () => {
     const ready = readyCriteria(parseCharterFile(SAMPLE)).map((c) => c.id);
     expect(ready).toContain("C2"); // failed, no deps
     expect(ready).toContain("C3"); // C1 passed
-    expect(ready).not.toContain("C4"); // blocked on C3 (none)
+    expect(ready).not.toContain("C4"); // blocked on C3 (pending)
     expect(ready).not.toContain("C1"); // already pass
   });
 
@@ -89,9 +134,9 @@ describe("charter.md parser", () => {
       [
         "## Criteria",
         "### C1. Something",
-        "Evidence: maybe — dunno",
+        "Status: maybe — dunno",
         "### C1. Duplicate",
-        "Evidence: none",
+        "Status: pending",
         "### C2. Dangling and self dep",
         "Depends: C2, C9",
         "### C3. Missing evidence line",
@@ -99,20 +144,20 @@ describe("charter.md parser", () => {
       ].join("\n"),
     );
     expect(parsed.criteria.map((c) => c.id)).toEqual(["C1", "C2", "C3"]);
-    expect(parsed.criteria[0].evidence.status).toBe("none");
-    expect(parsed.warnings.join("\n")).toContain("must start with pass, fail, or none");
+    expect(parsed.criteria[0].status.value).toBe("pending");
+    expect(parsed.warnings.join("\n")).toContain("Status line must start with pending, in-progress, blocked, pass, or fail");
     expect(parsed.warnings.join("\n")).toContain("duplicate criterion id C1");
     expect(parsed.warnings.join("\n")).toContain("unknown C9");
     expect(parsed.warnings.join("\n")).toContain("references itself");
-    expect(parsed.warnings.join("\n")).toContain("C3: missing Evidence line");
+    expect(parsed.warnings.join("\n")).toContain("C3: missing Status line");
     expect(parsed.warnings.join("\n")).toContain("missing `## Objective`");
   });
 
   test("pass with empty note warns", () => {
     const parsed = parseCharterFile(
-      "## Objective\nX\n## Criteria\n### C1. T\nEvidence: pass\n",
+      "## Objective\nX\n## Criteria\n### C1. T\nStatus: pass\n",
     );
-    expect(parsed.criteria[0].evidence.status).toBe("pass");
+    expect(parsed.criteria[0].status.value).toBe("pass");
     expect(parsed.warnings.join("\n")).toContain("empty note");
   });
 
@@ -122,10 +167,10 @@ describe("charter.md parser", () => {
         "## Objective\nX\n## Criteria",
         "### C1. A",
         "Depends: C2",
-        "Evidence: none",
+        "Status: pending",
         "### C2. B",
         "Depends: C1",
-        "Evidence: none",
+        "Status: pending",
       ].join("\n"),
     );
     const cycles = parsed.warnings.filter((w) => w.includes("cycle"));
@@ -138,10 +183,10 @@ describe("charter.md parser", () => {
         "## Objective\nX\n## Criteria",
         "## Parser work",
         "### C1. A",
-        "Evidence: pass — ok",
+        "Status: pass — ok",
         "## Docs",
         "### C2. B",
-        "Evidence: none",
+        "Status: pending",
       ].join("\n"),
     );
     expect(parsed.criteria.map((c) => c.id)).toEqual(["C1", "C2"]);
@@ -159,9 +204,13 @@ describe("template", () => {
     expect(parsed.warnings).toEqual([]);
   });
 
-  test("template teaches grammar and evidence hierarchy", () => {
+  test("template teaches the single Status grammar and richer authoring guidance", () => {
     const md = renderCharterTemplate("Do the thing.");
-    expect(md).toContain("Evidence: pass|fail|none");
+    expect(md).toContain("Status: pending|in-progress|blocked|pass|fail");
+    expect(md).not.toMatch(/^\s*Evidence:/m);
+    expect(md).toContain("## References");
+    expect(md).toContain("10–20 criteria");
+    expect(md).toContain("expected behavior, boundaries");
     expect(md).toContain("Use it like a user");
     expect(md).toContain("open-ended");
     expect(md).toContain("work/");

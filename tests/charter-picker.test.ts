@@ -35,18 +35,20 @@ function snapshot(id: string, overrides: Partial<PickerSnapshot> = {}): PickerSn
       totalCount: 3,
     },
     objective: "Ship a focused picker render implementation.",
+    references: "docs/spec.md",
+    scope: "In: picker. Out: unrelated commands.",
     blockingForComplete: [],
     plan: {
       status: "in_progress",
       passCount: 1,
       totalCount: 2,
       criteria: [
-        { criterionId: "C1", titleFromH3: "First criterion", depends: [], outcome: "pass" },
-        { criterionId: "C2", titleFromH3: "Second criterion", depends: ["C1"], outcome: null },
+        { criterionId: "C1", titleFromH3: "First criterion", body: "First body.", depends: [], status: "pass", note: "checked", stale: false },
+        { criterionId: "C2", titleFromH3: "Second criterion", body: "Second body.", depends: ["C1"], status: "pending", note: "", stale: false },
       ],
     },
-    recentEvidence: [
-      { ts: "2026-05-15T09:10:00.000Z", criterionId: "C1", outcome: "pass", recordedBy: "tester" },
+    recentStatus: [
+      { ts: "2026-05-15T09:10:00.000Z", criterionId: "C1", status: "pass", note: "tester" },
     ],
     ...overrides,
   };
@@ -133,7 +135,7 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     const picker = makePicker();
     const right = rightPane(picker.render(160));
     // Picker renders either "Blocking complete" or "Ready to complete" depending on state.
-    const labels = ["Objective", /Blocking complete|Ready to complete/, "Plan", "Recent evidence"];
+    const labels = ["Objective", /Blocking complete|Ready to complete/, "Criteria", "Recent status"];
     let last = -1;
     for (const label of labels) {
       const index = typeof label === "string" ? right.indexOf(label) : right.search(label);
@@ -159,10 +161,14 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     expect(right).toContain("## Evidence");
     expect(right).toContain("work/output.txt");
     // Inline: the regular panes stay visible above the report.
-    expect(right).toContain("Recent evidence");
-    expect(right).toContain("Plan");
+    expect(right).toContain("Recent status");
+    expect(right).toContain("Criteria");
+    expect(right).toContain("docs/spec.md");
+    expect(right).toContain("In: picker. Out: unrelated commands.");
+    expect(right).toContain("First body.");
+    expect(right).toContain("Note: checked");
     // Report renders after the live panes.
-    expect(right.indexOf("REPORT.md")).toBeGreaterThan(right.indexOf("Recent evidence"));
+    expect(right.indexOf("REPORT.md")).toBeGreaterThan(right.indexOf("Recent status"));
   });
 
   test("terminal charter without REPORT.md falls back to live-work panes", () => {
@@ -176,8 +182,8 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
 
     const right = rightPane(picker.render(160));
     expect(right).toContain("Objective");
-    expect(right).toMatch(/Plan\s+1\/2/);
-    expect(right).toContain("Recent evidence");
+    expect(right).toMatch(/Criteria\s+1\/2/);
+    expect(right).toContain("Recent status");
     expect(right).not.toContain("REPORT.md");
   });
 
@@ -190,8 +196,8 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
 
     const right = rightPane(picker.render(160));
     expect(right).toContain("REPORT.md scaffolded — fill before complete");
-    expect(right).toContain("Plan");
-    expect(right).toContain("Recent evidence");
+    expect(right).toContain("Criteria");
+    expect(right).toContain("Recent status");
     expect(right).not.toContain("# Draft report");
     expect(right).not.toContain("## Evidence");
   });
@@ -201,9 +207,13 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     let lines = picker.render(160);
     expect(lines.join("\n")).toContain("█");
     expect(lines.join("\n")).toContain("░");
-    expect(lines.join("\n")).toMatch(/Plan\s+1\/2\s+in_progress/);
-    expect(lines.join("\n")).toMatch(/C1\s\sFirst criterion/);
-    expect(lines.join("\n")).toMatch(/C2\s\sSecond criterion\s+← C1/);
+    expect(lines.join("\n")).toMatch(/Criteria\s+1\/2\s+in_progress/);
+    expect(lines.join("\n")).toMatch(/C1 \[pass\]\s\sFirst criterion/);
+    expect(lines.join("\n")).toMatch(/C2 \[pending\]\s\sSecond criterion\s+← C1/);
+    const criterionRows = rightPane(lines).split("\n").filter((line) => /[✓○] C[12] /.test(line));
+    expect(criterionRows).toHaveLength(2);
+    expect(criterionRows.every((line) => /^[✓○] C[12] /.test(line))).toBe(true);
+    expect(rightPane(lines).split("\n").find((line) => line.includes("First body."))).toStartWith("  First body.");
     expect(lines.join("\n")).not.toContain("VAL");
     expect(lines.join("\n")).not.toContain("f1-render");
     expect(lines.join("\n")).not.toContain("m1");
@@ -212,11 +222,11 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     picker.handleInput("\t");
     picker.handleInput(" ");
     lines = picker.render(160);
-    expect(lines.join("\n")).not.toMatch(/C1\s\sFirst criterion/);
+    expect(lines.join("\n")).not.toMatch(/C1 \[pass\]\s\sFirst criterion/);
 
     picker.handleInput(" ");
     lines = picker.render(160);
-    expect(lines.join("\n")).toMatch(/C1\s\sFirst criterion/);
+    expect(lines.join("\n")).toMatch(/C1 \[pass\]\s\sFirst criterion/);
   });
 
   test("renders objective truncation hint and expansion", () => {
@@ -354,12 +364,12 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     expect(cursorRow(picker.render(80))).toContain("alpha");
   });
 
-  test("right pane uses available space for evidence and wraps fields", () => {
-    const manyEvidence = Array.from({ length: 8 }, (_, i) => ({
+  test("right pane uses available space for status updates and wraps fields", () => {
+    const manyStatus = Array.from({ length: 8 }, (_, i) => ({
       ts: `2026-05-15T09:${String(10 + i).padStart(2, "0")}:00.000Z`,
       criterionId: `C${i + 10}`,
-      outcome: "pass" as const,
-      recordedBy: `subagent:charter-reviewer:session-${i}`,
+      status: "pass" as const,
+      note: `subagent:charter-reviewer:session-${i}`,
     }));
     const longCriterion = "A very long criterion title that should wrap instead of disappearing past the right border";
     const picker = makePicker({ snapshots: new Map([["alpha", snapshot("alpha", {
@@ -367,9 +377,9 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
         status: "completed",
         passCount: 1,
         totalCount: 1,
-        criteria: [{ criterionId: "C99", titleFromH3: longCriterion, depends: [], outcome: "pass" }],
+        criteria: [{ criterionId: "C99", titleFromH3: longCriterion, body: "Detailed behavior remains visible.", depends: [], status: "pass", note: "checked", stale: false }],
       },
-      recentEvidence: manyEvidence,
+      recentStatus: manyStatus,
     })]]) });
     picker.handleInput("\t");
     const right = picker.render(120).slice(1, -1).map(rightCell).join("\n");

@@ -1,5 +1,7 @@
 # pi-charter v3 — handoff brief
 
+> **Superseded historical snapshot.** ADR-0014 replaced the v3 multi-file/tool surface, and ADR-0015 replaced its criterion state/evidence model. For current behavior see `CONTEXT.md` and `docs/implementation/`.
+
 Status: lock-list complete, doctrine committed (0fa7431 ADR-0010, ba27cff ADR-0011 + ADR-0012 + CONTEXT.md rewrite), ready for implementation.
 
 ## What v3 is

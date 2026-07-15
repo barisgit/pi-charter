@@ -370,6 +370,15 @@ function buildDetailLines(
     lines.push(...objectiveLines.map((line) => `  ${line}`));
   }
 
+  if (snapshot.references) {
+    lines.push("", sectionHeading("References", "accent"));
+    lines.push(...wrapText(snapshot.references, Math.max(1, width - 2)).map((line) => `  ${line}`));
+  }
+  if (snapshot.scope) {
+    lines.push("", sectionHeading("Scope", "accent"));
+    lines.push(...wrapText(snapshot.scope, Math.max(1, width - 2)).map((line) => `  ${line}`));
+  }
+
   const isTerminal = TERMINAL_STATUSES.has(snapshot.header.status);
   if (!isTerminal && snapshot.report) lines.push(theme.fg("dim", "  REPORT.md scaffolded — fill before complete"));
 
@@ -397,25 +406,25 @@ function buildDetailLines(
     }
   }
 
-  // Plan section.
+  // Criteria section.
   lines.push("");
   lines.push(planHeading(theme, snapshot));
   if (expand.allExpanded) {
     for (const criterion of snapshot.plan.criteria) lines.push(...criterionLines(theme, criterion, width));
   }
 
-  // Recent evidence section.
+  // Recent status section.
   lines.push("");
-  lines.push(sectionHeading("Recent evidence"));
+  lines.push(sectionHeading("Recent status"));
   const remainingRows = Math.max(5, bodyHeight - lines.length - 1);
-  const evidenceShown = snapshot.recentEvidence.slice(0, Math.max(5, remainingRows));
-  for (const evidence of evidenceShown) lines.push(...evidenceLines(theme, evidence, width));
-  if (snapshot.recentEvidence.length > evidenceShown.length) {
-    lines.push(theme.fg("dim", `… +${snapshot.recentEvidence.length - evidenceShown.length} more`));
+  const statusShown = snapshot.recentStatus.slice(0, Math.max(5, remainingRows));
+  for (const status of statusShown) lines.push(...statusLines(theme, status, width));
+  if (snapshot.recentStatus.length > statusShown.length) {
+    lines.push(theme.fg("dim", `… +${snapshot.recentStatus.length - statusShown.length} more`));
   }
 
   // REPORT.md section: appended inline for terminal charters, after the
-  // regular panes (objective/blocking/plan/evidence stay visible above).
+  // regular panes (objective/blocking/criteria/status stay visible above).
   if (isTerminal && snapshot.report) {
     lines.push("");
     lines.push(sectionHeading("REPORT.md", "accent"));
@@ -448,25 +457,32 @@ function renderMarkdownLines(theme: ThemeLike, markdown: string, width: number):
 function planHeading(theme: ThemeLike, snapshot: PickerSnapshot): string {
   const counter = theme.fg(passCountColor(snapshot.plan.passCount, snapshot.plan.totalCount), `${snapshot.plan.passCount}/${snapshot.plan.totalCount}`);
   const statusWord = theme.fg(planStatusColor(snapshot.plan.status), snapshot.plan.status);
-  return `${theme.bold(theme.fg("accent", "Plan"))} ${counter} ${statusWord}`;
+  return `${theme.bold(theme.fg("accent", "Criteria"))} ${counter} ${statusWord}`;
 }
 
 function criterionLines(theme: ThemeLike, criterion: PlanCriterionNode, width: number): string[] {
-  const glyph = criterion.outcome === "pass"
+  const glyph = criterion.status === "pass"
     ? theme.fg("success", "✓")
-    : criterion.outcome === "fail"
+    : criterion.status === "fail" || criterion.status === "blocked"
       ? theme.fg("error", "✗")
-      : theme.fg("dim", "○");
-  const head = `        ${glyph} ${criterion.criterionId}`;
+      : criterion.status === "in-progress"
+        ? theme.fg("accent", "◐")
+        : theme.fg("dim", "○");
+  const stale = criterion.stale ? " stale" : "";
+  const head = `${glyph} ${criterion.criterionId} [${criterion.status}${stale}]`;
   const dependsPlain = formatDepends(criterion.depends);
   const depends = dependsPlain ? ` ${theme.fg("dim", dependsPlain)}` : "";
-  if (!criterion.titleFromH3) return [depends ? `${head}  ${depends.trimStart()}` : head];
+  const lines: string[] = [];
+  if (!criterion.titleFromH3) lines.push(depends ? `${head}  ${depends.trimStart()}` : head);
   const titleWidth = Math.max(8, width - visibleWidth(head) - 2 - visibleWidth(dependsPlain) - (dependsPlain ? 1 : 0));
   const wrapped = wrapText(criterion.titleFromH3, titleWidth);
-  return [
-    `${head}  ${wrapped[0] ?? ""}${depends}`,
-    ...wrapped.slice(1).map((line) => `          ${line}`),
-  ];
+  if (criterion.titleFromH3) {
+    lines.push(`${head}  ${wrapped[0] ?? ""}${depends}`);
+    lines.push(...wrapped.slice(1).map((line) => `  ${line}`));
+  }
+  if (criterion.body) lines.push(...wrapText(criterion.body, Math.max(8, width - 2)).map((line) => theme.fg("muted", `  ${line}`)));
+  if (criterion.note) lines.push(...wrapText(criterion.note, Math.max(8, width - 8)).map((line, index) => theme.fg("dim", `  ${index === 0 ? "Note: " : "      "}${line}`)));
+  return lines;
 }
 
 function formatDepends(depends: string[]): string {
@@ -477,11 +493,11 @@ function formatDepends(depends: string[]): string {
   return `← ${shown}${extra}`;
 }
 
-function evidenceLines(theme: ThemeLike, evidence: PickerSnapshot["recentEvidence"][number], width: number): string[] {
-  const outcomeColor: ThemeColorName = evidence.outcome === "pass" ? "success" : evidence.outcome === "fail" ? "error" : "warning";
-  const outcome = theme.fg(outcomeColor, evidence.outcome.padEnd(4));
-  const prefix = `${theme.fg("muted", formatTime(evidence.ts))}  ${evidence.criterionId.padEnd(3)}  ${outcome}`;
-  const by = compactRecordedBy(evidence.recordedBy);
+function statusLines(theme: ThemeLike, status: PickerSnapshot["recentStatus"][number], width: number): string[] {
+  const statusColor: ThemeColorName = status.status === "pass" ? "success" : status.status === "fail" || status.status === "blocked" ? "error" : "warning";
+  const renderedStatus = theme.fg(statusColor, status.status.padEnd(11));
+  const prefix = `${theme.fg("muted", formatTime(status.ts))}  ${status.criterionId.padEnd(3)}  ${renderedStatus}`;
+  const by = compactRecordedBy(status.note || "No note");
   const indentWidth = visibleWidth(prefix) + 2;
   const byWidth = Math.max(8, width - indentWidth);
   const wrapped = wrapText(by, byWidth);

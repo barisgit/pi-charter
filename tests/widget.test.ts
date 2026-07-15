@@ -9,9 +9,9 @@ const BASE: ReducerInput = {
   status: "active",
   createdAt: "2026-07-02T10:00:00.000Z",
   criteria: [
-    { id: "C1", title: "First criterion", evidence: "pass" },
-    { id: "C2", title: "Second criterion", evidence: "fail" },
-    { id: "C3", title: "Third criterion", evidence: "none" },
+    { id: "C1", title: "First criterion", status: "pass" },
+    { id: "C2", title: "Second criterion", status: "in-progress" },
+    { id: "C3", title: "Third criterion", status: "pending" },
   ],
   now: Date.parse("2026-07-02T11:00:00.000Z"),
 };
@@ -20,14 +20,16 @@ const STATUS: CharterWidgetStatus & { createdAt: string } = {
   charterId: "20260702-120000-ship-runtime",
   status: "active",
   objective: "Ship runtime",
+  references: "",
+  scope: "",
   openEnded: false,
   criteria: [
-    { id: "C1", title: "First criterion", evidence: "pass", note: "checked", stale: false, depends: [], failCount: 0 },
-    { id: "C2", title: "Second criterion", evidence: "fail", note: "broken", stale: false, depends: [], failCount: 0 },
-    { id: "C3", title: "Third criterion", evidence: "none", note: "", stale: false, depends: [], failCount: 0 },
+    { id: "C1", title: "First criterion", body: "", status: "pass", note: "checked", stale: false, depends: [], failCount: 0 },
+    { id: "C2", title: "Second criterion", body: "", status: "in-progress", note: "working", stale: false, depends: [], failCount: 0 },
+    { id: "C3", title: "Third criterion", body: "", status: "pending", note: "", stale: false, depends: [], failCount: 0 },
   ],
-  evidenceCounts: { pass: 1, fail: 1, none: 1 },
-  blockers: ["C2 has fail evidence"],
+  statusCounts: { pass: 1, fail: 0, pending: 1, blocked: 0, "in-progress": 1 },
+  blockers: ["C2 status is in-progress"],
   warnings: [],
   readyNext: ["C3"],
   reportExists: false,
@@ -38,12 +40,12 @@ const STATUS: CharterWidgetStatus & { createdAt: string } = {
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
 describe("widget-state reducer", () => {
-  test("maps ADR-0014 evidence counts into the old pass/accent/pending bar slots", () => {
+  test("maps unified statuses into pass/active/pending bar slots", () => {
     const vm = buildViewModel(BASE);
     expect(vm.bar).toEqual({ pass: 1, running: 1, total: 3 });
     expect(vm.displayName).toBe("ship-runtime");
     expect(vm.isPlanning).toBe(false);
-    expect(vm.nextCriterion).toEqual({ id: "C2", title: "Second criterion", evidence: "fail" });
+    expect(vm.nextCriterion).toEqual({ id: "C2", title: "Second criterion", status: "in-progress" });
   });
 
   test("active and paused headers expose distinct state labels", () => {
@@ -64,14 +66,14 @@ describe("widget-state reducer", () => {
   });
 
   test("prompts for the first criterion when the charter is empty", () => {
-    const vm = buildCharterWidgetView({ ...STATUS, criteria: [], evidenceCounts: { pass: 0, fail: 0, none: 0 }, readyNext: [] });
+    const vm = buildCharterWidgetView({ ...STATUS, criteria: [], statusCounts: { pass: 0, fail: 0, pending: 0, blocked: 0, "in-progress": 0 }, readyNext: [] });
     const lines = renderCharterWidget({ vm: vm!, theme, width: 80 });
     expect(lines[2]).toContain("Next: add the first criterion");
   });
 
   test("preserves the right border when a wide-character title is truncated", () => {
-    const criteria = [{ id: "C1", title: "修正する基準".repeat(8), evidence: "none" as const, note: "", stale: false, depends: [], failCount: 0 }];
-    const vm = buildCharterWidgetView({ ...STATUS, criteria, evidenceCounts: { pass: 0, fail: 0, none: 1 }, readyNext: ["C1"] });
+    const criteria = [{ id: "C1", title: "修正する基準".repeat(8), body: "", status: "pending" as const, note: "", stale: false, depends: [], failCount: 0 }];
+    const vm = buildCharterWidgetView({ ...STATUS, criteria, statusCounts: { pass: 0, fail: 0, pending: 1, blocked: 0, "in-progress": 0 }, readyNext: ["C1"] });
     const lines = renderCharterWidget({ vm: vm!, theme, width: 60 });
     expect(lines[2].endsWith("│")).toBe(true);
     expect(visibleWidth(lines[2])).toBe(60);
@@ -92,7 +94,7 @@ describe("charter widget old visual shell", () => {
     expect(lines[0]).toContain("╭");
     expect(lines[0]).toContain("ship-runtime");
     expect(lines[1]).toContain("1/3");
-    expect(lines[2]).toContain("Next: C2 — Second criterion");
+    expect(lines[2]).toContain("Current: C2 [in-progress] — Second criterion");
     expect(lines[3]).toContain("╰");
     expect(visibleWidth(lines[0])).toBeLessThanOrEqual(100);
   });

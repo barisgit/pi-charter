@@ -1,5 +1,7 @@
 # pi-charter persona contract
 
+> **Superseded historical contract.** Current pi-charter has no persona configuration or orchestration layer; the agent is the loop driver and may independently use pi-subagents. See ADR-0014 and `docs/implementation/architecture.md`.
+
 pi-charter ships **zero bundled personas**. Every persona role is fulfilled by a
 Bring-Your-Own-Agent (BYOA) pi-subagents agent that you name in global config;
 the charter runtime never registers, bundles, or spawns personas of its own.

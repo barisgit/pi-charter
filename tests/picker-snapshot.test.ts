@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 import { abandonCharter, createCharter, getCharterStatus, pauseCharter } from "../src/application/service";
-import { buildPickerRows, buildPickerSnapshot, evidenceSummary, listAllCharters } from "../src/ui/picker-snapshot";
-import { charterDir, charterFilePath, loadCharterState, reportPath, writeCharterState } from "../src/infrastructure/store";
+import { buildPickerRows, buildPickerSnapshot, statusSummary, listAllCharters } from "../src/ui/picker-snapshot";
+import { appendEvent, charterDir, charterFilePath, loadCharterState, reportPath, writeCharterState } from "../src/infrastructure/store";
 
 const CRITERIA = `# Charter: newest
 
@@ -15,18 +15,18 @@ Ship the picker.
 ## Criteria
 
 ### C1. Passing check
-Evidence: pass — ok
+Status: pass — ok
 
 ### C2. Failing check
 Depends: C1
-Evidence: fail — nope
+Status: fail — nope
 
 ### C3. Missing check
-Evidence: none
+Status: pending
 `;
 
 describe("picker snapshot", () => {
-  test("projects sorted charter rows with state, evidence, stale, binding, and open-ended markers", async () => {
+  test("projects sorted charter rows with criterion status, stale, binding, and open-ended markers", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-snapshot-"));
     const old = await createCharter(project, { objective: "Watch deployments", now: "2026-07-01T09:00:00.000Z", sessionId: "other" });
     await pauseCharter(project, { charterId: old.charterId, sessionId: "other" });
@@ -45,21 +45,34 @@ describe("picker snapshot", () => {
       status: "active",
       slug: "ship-the-picker",
       sessionBound: true,
-      evidenceCounts: { pass: 1, fail: 1, none: 1 },
+      statusCounts: { pass: 1, fail: 1, pending: 1, blocked: 0, "in-progress": 0 },
       staleCount: 1,
       criteriaCount: 3,
       openEnded: false,
       age: "2h",
-    });
-    expect(evidenceSummary(rows[0])).toBe("pass=1 fail=1 none=1 stale=1");
+  });
+    expect(statusSummary(rows[0])).toBe("pass=1 active=0 blocked=0 fail=1 pending=1 stale=1");
     expect(rows[1]).toMatchObject({
       status: "paused",
       slug: "watch-deployments",
       sessionBound: false,
-      evidenceCounts: { pass: 0, fail: 0, none: 0 },
+      statusCounts: { pass: 0, fail: 0, pending: 0, blocked: 0, "in-progress": 0 },
       openEnded: true,
     });
-    expect(evidenceSummary(rows[1])).toContain("open-ended");
+    expect(statusSummary(rows[1])).toContain("open-ended");
+  });
+
+  test("recent status uses the note recorded with that historical transition", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-history-"));
+    const created = await createCharter(project, { objective: "History", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
+    await writeFile(charterFilePath(charterDir(project, created.charterId)), `## Objective\n\nHistory.\n\n## Criteria\n\n### C1. Works\nStatus: pass — current success note\n`, "utf8");
+    const dir = charterDir(project, created.charterId);
+    await appendEvent(dir, { type: "criterion_changed", ts: "2026-07-02T10:10:00.000Z", charterId: created.charterId, seq: 7, criterion: "C1", field: "status.value", old: "in-progress", new: "fail" });
+    await appendEvent(dir, { type: "criterion_changed", ts: "2026-07-02T10:10:00.000Z", charterId: created.charterId, seq: 7, criterion: "C1", field: "status.note", old: "working", new: "failed then" });
+
+    const snapshot = await buildPickerSnapshot(project, created.charterId);
+    expect(snapshot?.recentStatus[0]).toMatchObject({ criterionId: "C1", status: "fail", note: "failed then" });
+    expect(snapshot?.recentStatus[0]?.note).not.toBe("current success note");
   });
 
   test("builds a flat detail plan from ADR-0014 criteria", async () => {
@@ -75,19 +88,19 @@ describe("picker snapshot", () => {
       passCount: 1,
       totalCount: 3,
     });
-    expect(snapshot?.objective).toBe("Ship the picker");
+    expect(snapshot?.objective).toBe("Ship the picker.");
     expect(snapshot?.blockingForComplete.length).toBeGreaterThan(0);
     expect(snapshot?.plan).toEqual({
       status: "in_progress",
       passCount: 1,
       totalCount: 3,
       criteria: [
-        { criterionId: "C1", titleFromH3: "Passing check", depends: [], outcome: "pass" },
-        { criterionId: "C2", titleFromH3: "Failing check", depends: ["C1"], outcome: "fail" },
-        { criterionId: "C3", titleFromH3: "Missing check", depends: [], outcome: null },
+        { criterionId: "C1", titleFromH3: "Passing check", body: "", depends: [], status: "pass", note: "ok", stale: false },
+        { criterionId: "C2", titleFromH3: "Failing check", body: "", depends: ["C1"], status: "fail", note: "nope", stale: false },
+        { criterionId: "C3", titleFromH3: "Missing check", body: "", depends: [], status: "pending", note: "", stale: false },
       ],
     });
-    expect(snapshot?.recentEvidence.map((row) => row.criterionId)).toEqual(["C1", "C2"]);
+    expect(snapshot?.recentStatus.map((row) => row.criterionId)).toEqual(["C1", "C2", "C3"]);
   });
 
   test("includes REPORT.md content when present", async () => {

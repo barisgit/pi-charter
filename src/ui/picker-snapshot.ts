@@ -1,15 +1,15 @@
 /**
  * Picker data layer.
  *
- * Keeps the old picker snapshot/row shapes so the restored visual renderer can
- * stay byte-for-byte familiar, but projects them from ADR-0014 .charters/
- * state.json + charter.md status projections.
+ * Projects charter.md's authored content and unified criterion statuses for
+ * the interactive dashboard.
  */
 
 import { readFile } from "node:fs/promises";
 import { getCharterStatus, type CharterStatusResult } from "../application/service";
 import { charterDir, listCharters, loadCharterState, readEvents, reportPath } from "../infrastructure/store";
 import type { CharterStatus } from "../domain/types";
+import type { CriterionStatus } from "../domain/charter-file";
 
 export interface PickerSnapshot {
   charterId: string;
@@ -21,10 +21,18 @@ export interface PickerSnapshot {
     totalCount: number;
   };
   objective: string;
+  references: string;
+  scope: string;
   blockingForComplete: string[];
   plan: PlanSummaryNode;
-  recentEvidence: EvidenceRow[];
+  recentStatus: StatusRow[];
   report?: ReportSnapshot;
+}
+
+function normalizeStatus(value: unknown): CriterionStatus | undefined {
+  if (value === "none") return "pending";
+  if (value === "pending" || value === "in-progress" || value === "blocked" || value === "pass" || value === "fail") return value;
+  return undefined;
 }
 
 export interface ReportSnapshot {
@@ -41,15 +49,18 @@ export interface PlanSummaryNode {
 export interface PlanCriterionNode {
   criterionId: string;
   titleFromH3: string;
+  body: string;
   depends: string[];
-  outcome: "pass" | "fail" | "partial" | null;
+  status: CriterionStatus;
+  note: string;
+  stale: boolean;
 }
 
-export interface EvidenceRow {
+export interface StatusRow {
   ts: string;
   criterionId: string;
-  outcome: "pass" | "fail" | "partial";
-  recordedBy: string;
+  status: CriterionStatus;
+  note: string;
 }
 
 export interface CharterListRow {
@@ -73,10 +84,10 @@ export interface CharterPickerRow {
   createdAt: string;
   updatedAt: string;
   sessionBound: boolean;
-  evidenceCounts: { pass: number; fail: number; none: number };
+  statusCounts: Record<CriterionStatus, number>;
   staleCount: number;
   criteriaCount: number;
-  criteria: Array<{ id: string; title: string; evidence: "pass" | "fail" | "none"; stale: boolean }>;
+  criteria: Array<{ id: string; title: string; status: CriterionStatus; stale: boolean }>;
   openEnded: boolean;
   age: string;
 }
@@ -127,13 +138,13 @@ export async function buildPickerSnapshot(
   }
 
   const totalCount = status.criteria.length;
-  const passCount = status.evidenceCounts.pass;
+  const passCount = status.statusCounts.pass;
   const createdMs = Date.parse(state.createdAt);
   const endIso = state.completedAt ?? state.terminatedAt;
   const endMs = endIso ? Date.parse(endIso) : Date.now();
   const elapsedMs = Number.isFinite(createdMs) && Number.isFinite(endMs) ? Math.max(0, endMs - createdMs) : 0;
   const plan = buildPlan(status);
-  const recentEvidence = await collectRecentEvidence(projectDir, status, state.updatedAt);
+  const recentStatus = await collectRecentStatus(projectDir, status, state.updatedAt);
   const report = await loadReportSnapshot(projectDir, charterId);
 
   return {
@@ -146,9 +157,11 @@ export async function buildPickerSnapshot(
       totalCount,
     },
     objective: status.objective,
+    references: status.references,
+    scope: status.scope,
     blockingForComplete: status.blockers,
     plan,
-    recentEvidence,
+    recentStatus,
     ...(report ? { report } : {}),
   };
 }
@@ -184,13 +197,13 @@ export async function buildPickerRows(projectDir: string, options: PickerSnapsho
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         sessionBound: Boolean(options.sessionId && row.sessionId === options.sessionId),
-        evidenceCounts: status.evidenceCounts,
+        statusCounts: status.statusCounts,
         staleCount: status.criteria.filter((criterion) => criterion.stale).length,
         criteriaCount: status.criteria.length,
         criteria: status.criteria.map((criterion) => ({
           id: criterion.id,
           title: criterion.title,
-          evidence: criterion.evidence,
+          status: criterion.status,
           stale: criterion.stale,
         })),
         openEnded: status.openEnded,
@@ -213,7 +226,7 @@ async function loadListRow(projectDir: string, charterId: string): Promise<Chart
       charterId,
       name: charterDisplayName(slugFromId(charterId), charterId),
       status: status.status,
-      passCount: status.evidenceCounts.pass,
+      passCount: status.statusCounts.pass,
       totalCount: status.criteria.length,
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,
@@ -231,10 +244,13 @@ function buildPlan(status: CharterStatusResult): PlanSummaryNode {
   const criteria: PlanCriterionNode[] = status.criteria.map((criterion) => ({
     criterionId: criterion.id,
     titleFromH3: criterion.title === criterion.id ? "" : criterion.title,
+    body: criterion.body,
     depends: criterion.depends,
-    outcome: normalizeOutcome(criterion.evidence),
+    status: criterion.status,
+    note: criterion.note,
+    stale: criterion.stale,
   }));
-  const passCount = status.evidenceCounts.pass;
+  const passCount = status.statusCounts.pass;
   return {
     status: derivePlanStatus(criteria),
     passCount,
@@ -245,14 +261,9 @@ function buildPlan(status: CharterStatusResult): PlanSummaryNode {
 
 function derivePlanStatus(criteria: PlanCriterionNode[]): "completed" | "in_progress" | "pending" {
   if (criteria.length === 0) return "pending";
-  if (criteria.every((criterion) => criterion.outcome === "pass")) return "completed";
-  if (criteria.every((criterion) => criterion.outcome === null)) return "pending";
+  if (criteria.every((criterion) => criterion.status === "pass")) return "completed";
+  if (criteria.every((criterion) => criterion.status === "pending")) return "pending";
   return "in_progress";
-}
-
-function normalizeOutcome(value: string | undefined): "pass" | "fail" | "partial" | null {
-  if (value === "pass" || value === "fail") return value;
-  return null;
 }
 
 async function loadReportSnapshot(projectDir: string, charterId: string): Promise<ReportSnapshot | undefined> {
@@ -263,27 +274,31 @@ async function loadReportSnapshot(projectDir: string, charterId: string): Promis
   }
 }
 
-async function collectRecentEvidence(projectDir: string, status: CharterStatusResult, updatedAt: string): Promise<EvidenceRow[]> {
-  const rows: EvidenceRow[] = [];
+async function collectRecentStatus(projectDir: string, status: CharterStatusResult, updatedAt: string): Promise<StatusRow[]> {
+  const rows: StatusRow[] = [];
   try {
     const events = await readEvents(charterDir(projectDir, status.charterId));
+    const notesByChange = new Map<string, string>();
     for (const event of events) {
-      if (event.field !== "evidence.status" && event.field !== "evidence.note") continue;
-      const criterionId = typeof event.criterionId === "string" ? event.criterionId : "";
-      const next = typeof event.next === "string" ? event.next : undefined;
-      const outcome = normalizeOutcome(next);
-      if (!criterionId || !outcome) continue;
-      rows.push({ ts: typeof event.ts === "string" ? event.ts : updatedAt, criterionId, outcome, recordedBy: "charter.md" });
+      if (event.field !== "status.note" && event.field !== "evidence.note") continue;
+      if (typeof event.criterion !== "string" || typeof event.new !== "string") continue;
+      notesByChange.set(`${event.criterion}:${String(event.seq ?? "")}`, event.new);
+    }
+    for (const event of events) {
+      if (event.field !== "status.value" && event.field !== "evidence.status") continue;
+      const criterionId = typeof event.criterion === "string" ? event.criterion : "";
+      const next = normalizeStatus(event.new);
+      if (!criterionId || !next) continue;
+      const note = notesByChange.get(`${criterionId}:${String(event.seq ?? "")}`) ?? "";
+      rows.push({ ts: typeof event.ts === "string" ? event.ts : updatedAt, criterionId, status: next, note });
     }
   } catch {
-    // Fall back to current Evidence lines below.
+    // Fall back to current Status lines below.
   }
 
   if (rows.length === 0) {
     for (const criterion of status.criteria) {
-      const outcome = normalizeOutcome(criterion.evidence);
-      if (!outcome) continue;
-      rows.push({ ts: updatedAt, criterionId: criterion.id, outcome, recordedBy: criterion.note || "Evidence line" });
+      rows.push({ ts: updatedAt, criterionId: criterion.id, status: criterion.status, note: criterion.note });
     }
   }
   rows.sort((a, b) => compareDesc(a.ts, b.ts));
@@ -304,11 +319,13 @@ export function slugFromId(charterId: string): string {
   return match?.[1] ?? charterId;
 }
 
-export function evidenceSummary(row: Pick<CharterPickerRow, "evidenceCounts" | "staleCount" | "openEnded">): string {
+export function statusSummary(row: Pick<CharterPickerRow, "statusCounts" | "staleCount" | "openEnded">): string {
   const parts = [
-    `pass=${row.evidenceCounts.pass}`,
-    `fail=${row.evidenceCounts.fail}`,
-    `none=${row.evidenceCounts.none}`,
+    `pass=${row.statusCounts.pass}`,
+    `active=${row.statusCounts["in-progress"]}`,
+    `blocked=${row.statusCounts.blocked}`,
+    `fail=${row.statusCounts.fail}`,
+    `pending=${row.statusCounts.pending}`,
   ];
   if (row.staleCount > 0) parts.push(`stale=${row.staleCount}`);
   if (row.openEnded) parts.push("open-ended");

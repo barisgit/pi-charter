@@ -52,13 +52,43 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     name: "charter",
     label: "Charter",
     description: "Manage pi-charter file-as-interface lifecycle actions.",
-    promptSnippet: "Use charter({action,id?,objective?,note?}); edit charter.md directly for criteria and evidence.",
+    renderShell: "self",
+    promptSnippet: "Lifecycle: charter({action,id?,objective?,note?}). File interface: .charters/<id>/charter.md.",
     promptGuidelines: [
-      "There is exactly one pi-charter tool: charter.",
-      "Edit .charters/<id>/charter.md directly to add criteria and Evidence lines.",
-      "Follow returned nextActions instead of relying on removed legacy tools."
+      "Edit charter.md directly; each criterion has one `Status: pending|in-progress|blocked|pass|fail — <note>` line.",
+      "Use each result's next actions; they are the legal lifecycle transitions.",
     ],
     parameters: CharterParams,
+    renderCall(args, theme) {
+      const action = args.action ?? "...";
+      let text = theme.fg("toolTitle", theme.bold("charter"));
+      text += ` ${theme.fg("accent", action)}`;
+      if (action === "create" && args.objective) {
+        text += ` ${theme.fg("muted", JSON.stringify(compactInline(args.objective, 64)))}`;
+      } else if (args.id) {
+        text += ` ${theme.fg("muted", compactInline(args.id, 48))}`;
+      }
+      if (action !== "create" && args.note) {
+        text += ` ${theme.fg("dim", JSON.stringify(compactInline(args.note, 64)))}`;
+      }
+      return new Text(text, 0, 0);
+    },
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      if (isPartial) return new Text(theme.fg("dim", "working"), 0, 0);
+      const details = (result.details ?? {}) as { nextActions?: NextAction[]; data?: unknown };
+      const raw = result.content
+        .filter((part): part is Extract<(typeof result.content)[number], { type: "text" }> => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+      const message = raw.split(/\nnext:/, 1)[0] ?? raw;
+      const isError = context.isError || (result as { isError?: boolean }).isError === true;
+      const summary = isError
+        ? `error: ${compactInline(message, 160)}`
+        : charterResultSummary(context.args as CharterInput, details.data, message);
+      let text = theme.fg(isError ? "error" : "muted", summary);
+      if (expanded && raw) text += `\n${theme.fg("dim", raw)}`;
+      return new Text(text, 0, 0);
+    },
     async execute(_toolCallId, params: CharterInput, _signal, _onUpdate, ctx) {
       try {
         const result = await runCharterAction(ctx.cwd, params, ctx.sessionManager.getSessionId?.());
@@ -72,6 +102,41 @@ export function registerCharterTools(pi: ExtensionAPI): void {
       }
     },
   });
+}
+
+function compactInline(value: string, maxLength: number): string {
+  const inline = value.replace(/\s+/g, " ").trim();
+  return inline.length <= maxLength ? inline : `${inline.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function charterResultSummary(args: CharterInput, data: unknown, fallback: string): string {
+  const record = data && typeof data === "object" ? data as Record<string, unknown> : undefined;
+  const charterId = typeof record?.charterId === "string" ? record.charterId : undefined;
+  if (args.action === "list" && Array.isArray(data)) return `${data.length} charter${data.length === 1 ? "" : "s"}`;
+  if (args.action === "status" && record) {
+    const counts = record.statusCounts as CharterStatusResult["statusCounts"] | undefined;
+    const criteria = Array.isArray(record.criteria) ? record.criteria : [];
+    const status = typeof record.status === "string" ? record.status : "status";
+    const parts = [`${status}${charterId ? ` ${charterId}` : ""}`];
+    if (counts) {
+      parts.push(`${counts.pass}/${criteria.length} pass`);
+      if (counts.blocked) parts.push(`${counts.blocked} blocked`);
+      if (counts.fail) parts.push(`${counts.fail} fail`);
+    }
+    const ready = Array.isArray(record.readyNext) ? record.readyNext.filter((value): value is string => typeof value === "string") : [];
+    if (ready.length) parts.push(`next ${ready.join(",")}`);
+    return parts.join(" · ");
+  }
+  const verbs: Partial<Record<CharterInput["action"], string>> = {
+    create: "created",
+    pause: "paused",
+    resume: "resumed",
+    complete: "completed",
+    abandon: "abandoned",
+  };
+  const verb = verbs[args.action];
+  if (verb) return `${verb}${charterId ? ` ${charterId}` : ""}`;
+  return compactInline(fallback, 160);
 }
 
 export function registerCharterCommands(pi: ExtensionAPI): void {
@@ -174,7 +239,39 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     else signal.addEventListener("abort", interrupted, { once: true });
   };
 
-  pi.on("session_start", rememberCtx);
+  let stopAsyncStarted: (() => void) | undefined;
+  let stopAsyncComplete: (() => void) | undefined;
+  let stopAllIdle: (() => void) | undefined;
+
+  const subscribeToSubagentEvents = () => {
+    if (stopAsyncStarted || stopAsyncComplete || stopAllIdle) return;
+    stopAsyncStarted = pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
+      const payload = raw as { runId?: string; id?: string } | undefined;
+      const id = payload?.runId ?? payload?.id;
+      if (id) runningSubagents.add(id);
+      logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
+    });
+    stopAsyncComplete = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
+      const payload = raw as { runId?: string; id?: string } | undefined;
+      const id = payload?.runId ?? payload?.id;
+      if (id) runningSubagents.delete(id);
+      logger.debug("ralph: subagent complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
+      scheduleRalph("subagent-complete");
+    });
+    stopAllIdle = pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
+      scheduleRalph("subagent-all-idle");
+    });
+  };
+
+  subscribeToSubagentEvents();
+  pi.on("session_start", (event, ctx) => {
+    disposed = false;
+    lastSentAt = 0;
+    interruptedUntil = 0;
+    sending = false;
+    rememberCtx(event, ctx);
+    subscribeToSubagentEvents();
+  });
   pi.on("agent_start", (event, ctx) => {
     rememberCtx(event, ctx);
     clearWidgetWarning(ctx);
@@ -209,22 +306,6 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     if (interrupted) interruptedUntil = now() + interruptDelayMs;
     scheduleRalph(interrupted ? "agent-end-interrupted" : "agent_end");
   });
-  const stopAsyncStarted = pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
-    const payload = raw as { runId?: string; id?: string } | undefined;
-    const id = payload?.runId ?? payload?.id;
-    if (id) runningSubagents.add(id);
-    logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
-  });
-  const stopAsyncComplete = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
-    const payload = raw as { runId?: string; id?: string } | undefined;
-    const id = payload?.runId ?? payload?.id;
-    if (id) runningSubagents.delete(id);
-    logger.debug("ralph: subagent complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
-    scheduleRalph("subagent-complete");
-  });
-  const stopAllIdle = pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
-    scheduleRalph("subagent-all-idle");
-  });
   pi.on("session_shutdown", () => {
     disposed = true;
     if (timer) clearTimeout(timer);
@@ -236,6 +317,9 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     stopAsyncStarted?.();
     stopAsyncComplete?.();
     stopAllIdle?.();
+    stopAsyncStarted = undefined;
+    stopAsyncComplete = undefined;
+    stopAllIdle = undefined;
   });
 
   function scheduleRalph(trigger: string): void {
@@ -329,19 +413,44 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         logger.debug("ralph: skipped without active charter", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, status: status?.status });
         return;
       }
-      const topBlocker = status.blockers[0] ?? "none";
       const stale = status.criteria.filter((criterion) => criterion.stale).map((criterion) => criterion.id);
-      const repeatedFails = status.criteria.filter((criterion) => criterion.failCount >= 2 && criterion.evidence !== "pass").map((criterion) => `${criterion.id} failed ${criterion.failCount}x`);
-      const nextIds = status.readyNext.length ? status.readyNext : status.criteria.filter((criterion) => criterion.evidence !== "pass").map((criterion) => criterion.id);
-      const nextCriterion = status.criteria.find((criterion) => criterion.id === nextIds[0]);
-      const content = [
-        `Charter ${status.charterId} is still ${status.status} (running ${formatRunningTime(status.createdAt, at)}). You are its loop driver: pick the next criterion, do the work, verify it for real, then update the Evidence line in charter.md.`,
-        ...(status.criteria.length === 0 ? ["The charter has no criteria yet, so it can never complete. Add observable `### C<n>.` criteria to charter.md now."] : []),
-        `Evidence: pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}. Top blocker: ${topBlocker}.`,
-        ...(stale.length ? [`Stale evidence (source changed since verification): ${stale.join(", ")}. Re-verify before completing.`] : []),
-        ...(repeatedFails.length ? [`Repeated failures: ${repeatedFails.join(", ")}. Do not retry the same approach; change strategy or split the criterion.`] : []),
-        ...(nextCriterion ? [`Work next on ${nextCriterion.id}: ${nextCriterion.title}. Prefer strong evidence — use it like a user (artifact in work/) > observe the real system > run tests.`] : []),
-      ].join(" ");
+      const repeatedFails = status.criteria.filter((criterion) => criterion.failCount >= 2 && criterion.status !== "pass").map((criterion) => `${criterion.id} failed ${criterion.failCount}x`);
+      const nextIds = status.readyNext.length ? status.readyNext : status.criteria.filter((criterion) => criterion.status !== "pass").map((criterion) => criterion.id);
+      const candidates = nextIds.map((id) => status.criteria.find((criterion) => criterion.id === id)).filter((criterion): criterion is CharterStatusResult["criteria"][number] => Boolean(criterion));
+      const nextCriterion = candidates.find((criterion) => criterion.status === "in-progress")
+        ?? candidates.find((criterion) => criterion.status === "fail")
+        ?? candidates.find((criterion) => criterion.status === "pending")
+        ?? candidates[0];
+      const blocked = status.criteria.find((criterion) => criterion.status === "blocked");
+      const topBlocker = blocked ? `${blocked.id}${blocked.note ? `: ${blocked.note}` : ""}` : "none";
+      const charterFile = `.charters/${status.charterId}/charter.md`;
+      let content: string;
+      if (status.criteria.length === 0) {
+        content = `Charter ${charterFile}: no criteria yet; cannot complete. Add ### C<n> + Status lines there.`;
+      } else {
+        const counts = [`${status.statusCounts.pass}/${status.criteria.length} pass`];
+        for (const key of ["in-progress", "blocked", "fail", "pending"] as const) {
+          if (status.statusCounts[key] > 0) counts.push(`${status.statusCounts[key]} ${key}`);
+        }
+        const parts = [`Charter ${charterFile}: ${counts.join(", ")}.`];
+        const missingNotes = status.criteria.filter((criterion) => criterion.status === "pass" && !criterion.note.trim()).map((criterion) => criterion.id);
+        if (stale.length) {
+          parts.push(`Reverify stale ${stale.join(",")}; update Status there.`);
+        } else if (missingNotes.length) {
+          parts.push(`Add verification notes to ${missingNotes.join(",")} Status there.`);
+        } else if (status.statusCounts.pass === status.criteria.length) {
+          parts.push(status.reportExists
+            ? "Next: charter complete."
+            : "Next: charter complete (scaffolds REPORT.md); curate it, then retry.");
+        } else if (nextCriterion?.status === "blocked") {
+          parts.push(`Unblock ${topBlocker}.`);
+        } else if (nextCriterion) {
+          parts.push(`Next ${nextCriterion.id}: ${nextCriterion.title}. Work, verify (use > observe > tests), update Status there.`);
+        }
+        if (blocked && nextCriterion?.id !== blocked.id) parts.push(`Blocked ${topBlocker}.`);
+        if (repeatedFails.length) parts.push(`Repeated ${repeatedFails.join(",")}; change approach or split.`);
+        content = parts.join(" ");
+      }
       clearWidgetWarning(ctx);
       pi.sendMessage({
         customType: RALPH_CUSTOM_TYPE,
@@ -349,7 +458,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         display: true,
         details: {
           charterId: status.charterId,
-          evidenceCounts: status.evidenceCounts,
+          statusCounts: status.statusCounts,
           topBlocker,
           stale,
           readyNext: status.readyNext,
@@ -371,11 +480,11 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
 
 export function registerCharterRalphMessageRenderer(pi: ExtensionAPI): void {
   pi.registerMessageRenderer(RALPH_CUSTOM_TYPE, (message, options, theme) => {
-    const details = (message.details ?? {}) as { charterId?: string; evidenceCounts?: { pass: number; fail: number; none: number }; topBlocker?: string; stale?: string[]; readyNext?: string[] };
-    const counts = details.evidenceCounts;
+    const details = (message.details ?? {}) as { charterId?: string; statusCounts?: { pass: number; fail: number; pending: number; blocked: number; "in-progress": number }; topBlocker?: string; stale?: string[]; readyNext?: string[] };
+    const counts = details.statusCounts;
     const summary = [
       details.charterId ?? "charter",
-      counts ? `${counts.pass}/${counts.pass + counts.fail + counts.none} pass` : undefined,
+      counts ? `${counts.pass}/${counts.pass + counts.fail + counts.pending + counts.blocked + counts["in-progress"]} pass` : undefined,
       details.readyNext?.length ? `next ${details.readyNext.join(",")}` : undefined,
       details.stale?.length ? `stale ${details.stale.join(",")}` : undefined,
     ].filter(Boolean).join(" · ");
@@ -539,33 +648,38 @@ async function runCharterAction(
 }
 
 export function formatCharterStatusText(status: CharterStatusResult): string {
-  const lines = [
-    `charter ${status.charterId} ${status.status}`,
-    `objective: ${status.objective}`,
-    `running: ${formatRunningTime(status.createdAt, Date.now())}`,
-    `evidence: pass=${status.evidenceCounts.pass} fail=${status.evidenceCounts.fail} none=${status.evidenceCounts.none}`,
-  ];
-  if (status.openEnded) lines.push("open-ended: no criteria; complete is not legal");
-  if (status.criteria.length > 0) {
-    lines.push("criteria:");
-    for (const criterion of status.criteria) {
-      const stale = criterion.stale ? " stale" : "";
-      const deps = criterion.depends.length ? ` depends=${criterion.depends.join(",")}` : "";
-      const fails = criterion.failCount >= 2 && criterion.evidence !== "pass" ? ` failed=${criterion.failCount}x` : "";
-      lines.push(`- ${criterion.id} ${criterion.evidence}${stale}${deps}${fails}: ${criterion.title}`);
-    }
+  const total = status.criteria.length;
+  const countParts = [`${status.statusCounts.pass}/${total} pass`];
+  for (const key of ["in-progress", "blocked", "fail", "pending"] as const) {
+    const count = status.statusCounts[key];
+    if (count > 0) countParts.push(`${count} ${key}`);
   }
-  if (status.blockers.length > 0) lines.push(`blockers: ${status.blockers.join("; ")}`);
+  const lines = [
+    `${status.charterId} ${status.status} · ${countParts.join(" · ")}`,
+    `objective: ${status.objective.replace(/\s+/g, " ").trim()}`,
+  ];
+  if (status.openEnded) lines.push("open-ended: no criteria; cannot complete");
+  for (const criterion of status.criteria) {
+    if (criterion.status === "pass" && !criterion.stale && criterion.note.trim()) continue;
+    const stale = criterion.stale ? " stale" : "";
+    const fails = criterion.failCount >= 2 && criterion.status !== "pass" ? ` ${criterion.failCount}x` : "";
+    const missingNote = criterion.status === "pass" && !criterion.note.trim() ? " note-missing" : "";
+    const note = criterion.note ? ` — ${criterion.note}` : "";
+    lines.push(`${criterion.id} ${criterion.status}${stale}${fails}${missingNote}: ${criterion.title}${note}`);
+  }
+  if (!status.openEnded && !status.reportExists) lines.push("report: missing");
   if (status.warnings.length > 0) lines.push(`warnings: ${status.warnings.join("; ")}`);
-  lines.push(`ready-next: ${status.readyNext.length ? status.readyNext.join(", ") : "none"}`);
-  lines.push(`nextActions: ${status.nextActions.map((action) => action.action ?? action.tool).join(", ") || "none"}`);
+  lines.push(`ready: ${status.readyNext.length ? status.readyNext.join(",") : "none"}`);
   return lines.join("\n");
 }
 
 function toolText(text: string, nextActions: NextAction[], data?: unknown, isError = false) {
+  const next = nextActions.map((action) =>
+    action.tool === "charter" && action.action ? action.action : [action.tool, action.action].filter(Boolean).join("."),
+  ).join(",") || "none";
   return {
     isError,
-    content: [{ type: "text" as const, text: `${text}\nnextActions: ${JSON.stringify(nextActions)}` }],
+    content: [{ type: "text" as const, text: `${text}\nnext: ${next}` }],
     details: { nextActions, data },
   };
 }

@@ -195,13 +195,13 @@ export function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
-export function snapshotFromParsed(parsed: ParsedCharterFile, evidenceSeq: number): CriterionSnapshot[] {
+export function snapshotFromParsed(parsed: ParsedCharterFile, statusSeq: number): CriterionSnapshot[] {
   return parsed.criteria.map((criterion) => ({
     id: criterion.id,
     title: criterion.title,
     depends: criterion.depends,
-    evidence: { ...criterion.evidence },
-    evidenceSeq,
+    status: { ...criterion.status },
+    statusSeq,
   }));
 }
 
@@ -248,7 +248,9 @@ function normalizeCharterState(value: unknown): CharterState {
     nextSeq: typeof raw.nextSeq === "number" && raw.nextSeq > 0 ? Math.floor(raw.nextSeq) : 1,
     latestSourceSeq: typeof raw.latestSourceSeq === "number" && raw.latestSourceSeq >= 0 ? Math.floor(raw.latestSourceSeq) : 0,
     snapshotHash: typeof raw.snapshotHash === "string" ? raw.snapshotHash : "",
-    criteriaSnapshot: Array.isArray(raw.criteriaSnapshot) ? raw.criteriaSnapshot.filter(isCriterionSnapshot) : [],
+    criteriaSnapshot: Array.isArray(raw.criteriaSnapshot)
+      ? raw.criteriaSnapshot.map(normalizeCriterionSnapshot).filter((criterion): criterion is CriterionSnapshot => criterion !== undefined)
+      : [],
   };
 }
 
@@ -256,17 +258,36 @@ function isStatus(value: unknown): value is CharterState["status"] {
   return value === "active" || value === "paused" || value === "completed" || value === "abandoned";
 }
 
-function isCriterionSnapshot(value: unknown): value is CriterionSnapshot {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+function normalizeCriterionSnapshot(value: unknown): CriterionSnapshot | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
+  if (typeof raw.id !== "string" || typeof raw.title !== "string" || !Array.isArray(raw.depends)) return undefined;
+  const depends = raw.depends.filter((item): item is string => typeof item === "string");
+  const status = raw.status as Record<string, unknown> | undefined;
+  if (status && isCriterionStatus(status.value) && typeof status.note === "string" && typeof raw.statusSeq === "number") {
+    return { id: raw.id, title: raw.title, depends, status: { value: status.value, note: status.note }, statusSeq: raw.statusSeq };
+  }
+
+  // ADR-0014 compatibility: normalize old sidecars in memory and write only
+  // the unified Status shape on the next state update.
   const evidence = raw.evidence as Record<string, unknown> | undefined;
-  return (
-    typeof raw.id === "string" &&
-    typeof raw.title === "string" &&
-    Array.isArray(raw.depends) &&
-    evidence !== undefined &&
+  if (
+    evidence &&
     (evidence.status === "pass" || evidence.status === "fail" || evidence.status === "none") &&
     typeof evidence.note === "string" &&
     typeof raw.evidenceSeq === "number"
-  );
+  ) {
+    return {
+      id: raw.id,
+      title: raw.title,
+      depends,
+      status: { value: evidence.status === "none" ? "pending" : evidence.status, note: evidence.note },
+      statusSeq: raw.evidenceSeq,
+    };
+  }
+  return undefined;
+}
+
+function isCriterionStatus(value: unknown): value is CriterionSnapshot["status"]["value"] {
+  return value === "pending" || value === "in-progress" || value === "blocked" || value === "pass" || value === "fail";
 }

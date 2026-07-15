@@ -1,4 +1,4 @@
-import type { ParsedEvidence } from "./charter-file";
+import type { ParsedCriterionStatus } from "./charter-file";
 
 export type CharterStatus = "active" | "paused" | "completed" | "abandoned";
 
@@ -18,9 +18,9 @@ export interface CriterionSnapshot {
   id: string;
   title: string;
   depends: string[];
-  evidence: ParsedEvidence;
-  /** Sequence at which the current Evidence line was observed. */
-  evidenceSeq: number;
+  status: ParsedCriterionStatus;
+  /** Sequence at which the current Status line was observed. */
+  statusSeq: number;
 }
 
 export interface CharterState {

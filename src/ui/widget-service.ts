@@ -52,7 +52,7 @@ function slugFromId(charterId: string): string {
 /**
  * In-memory tracker kept for compatibility with the old widget host API. The
  * ADR-0014 runtime does not currently bind subagent runs to criteria, so the
- * status projection's fail Evidence occupies the old accent/running segment.
+ * unified status projection uses the accent/running segment for active or failed work.
  */
 export class RunningSubagentRegistry {
   private subs = new Map<string, RunningSubagent>();
