@@ -61,7 +61,6 @@ export interface UiLike {
 export const BAR_GLYPHS = { pass: "█", running: "▓", pending: "░" } as const;
 export const BEAD_GLYPHS = { pass: "▰", running: "▰", pending: "▱" } as const;
 export const BEAD_MIN_BUDGET = 4;
-export const MIN_TERMINAL_WIDTH = 60;
 export const BOX_KEY = "pi-charter";
 
 const SPINNER_TICK_MS = 120;
@@ -98,7 +97,7 @@ export function buildCharterWidgetView(status: CharterWidgetStatus | undefined, 
 }
 
 export function renderCharterWidget(opts: RenderOptions): string[] {
-  const width = Math.max(MIN_TERMINAL_WIDTH, opts.width);
+  const width = opts.width;
   const displayName = opts.vm.displayName;
   const lines: string[] = [];
   if (opts.vm.isTerminal) {

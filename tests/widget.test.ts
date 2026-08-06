@@ -79,6 +79,13 @@ describe("widget-state reducer", () => {
     expect(visibleWidth(lines[2])).toBe(60);
   });
 
+  test("keeps every line within a narrow terminal width", () => {
+    const width = 45;
+    const vm = buildCharterWidgetView(STATUS)!;
+    const lines = renderCharterWidget({ vm, theme, width });
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+  });
+
   test("terminal status renders as terminal", () => {
     const vm = buildViewModel({ ...BASE, status: "completed" });
     expect(vm.isTerminal).toBe(true);
