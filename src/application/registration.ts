@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
 import { CharterToolError } from "./errors";
 import { tickToolResult, refreshSessionSnapshots } from "./staleness";
-import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
 import { logger } from "../infrastructure/logger";
 import type { NextAction } from "../domain/types";
 import { buildCharterWidgetView, renderCharterWidget } from "../ui/widget";
@@ -240,16 +240,23 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   };
 
   let stopAsyncStarted: (() => void) | undefined;
+  let stopAsyncRunComplete: (() => void) | undefined;
   let stopAsyncComplete: (() => void) | undefined;
   let stopAllIdle: (() => void) | undefined;
 
   const subscribeToSubagentEvents = () => {
-    if (stopAsyncStarted || stopAsyncComplete || stopAllIdle) return;
+    if (stopAsyncStarted || stopAsyncRunComplete || stopAsyncComplete || stopAllIdle) return;
     stopAsyncStarted = pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
       const payload = raw as { runId?: string; id?: string } | undefined;
       const id = payload?.runId ?? payload?.id;
       if (id) runningSubagents.add(id);
       logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
+    });
+    stopAsyncRunComplete = pi.events.on(SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, (raw: unknown) => {
+      const payload = raw as { runId?: string; id?: string } | undefined;
+      const id = payload?.runId ?? payload?.id;
+      if (id) runningSubagents.delete(id);
+      logger.debug("ralph: subagent run complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
     });
     stopAsyncComplete = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (raw: unknown) => {
       const payload = raw as { runId?: string; id?: string } | undefined;
@@ -315,9 +322,11 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     lastCtx = undefined;
     runningSubagents.clear();
     stopAsyncStarted?.();
+    stopAsyncRunComplete?.();
     stopAsyncComplete?.();
     stopAllIdle?.();
     stopAsyncStarted = undefined;
+    stopAsyncRunComplete = undefined;
     stopAsyncComplete = undefined;
     stopAllIdle = undefined;
   });
@@ -354,7 +363,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return;
       if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
       const sessionId = ctx.sessionManager.getSessionId?.();
-      const status = await getCharterStatus(ctx.cwd, { sessionId }).catch(() => undefined);
+      const status = await getBoundCharterStatus(ctx.cwd, sessionId).catch(() => undefined);
       if (!status || status.status !== "active") return;
       pi.events.emit(RALPH_WIDGET_WARNING_EVENT, {
         sessionId,
@@ -405,7 +414,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         logger.debug("ralph: min-interval suppressed; rescheduling", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, remainingMs, minIntervalMs });
         return;
       }
-      const status = await getCharterStatus(ctx.cwd, { sessionId: ctx.sessionManager.getSessionId?.() }).catch((error) => {
+      const status = await getBoundCharterStatus(ctx.cwd, ctx.sessionManager.getSessionId?.()).catch((error) => {
         logger.debug("ralph: status lookup skipped", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, error: error instanceof Error ? error.message : String(error) });
         return undefined;
       });

@@ -8,7 +8,7 @@ import { createCharter, getCharterStatus, pauseCharter } from "../src/applicatio
 import { RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterRalphLoop, registerCharterTools, registerCharterWidget } from "../src/application/registration";
 import type { CharterStatusResult } from "../src/application/service";
 import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store";
-import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
 
 function fakeEvents() {
   return {
@@ -303,6 +303,20 @@ describe("Ralph loop registration", () => {
     expect(h.sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
   });
 
+  test("does not warn or steer for a sole active charter bound to another session", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-unbound-"));
+    await createCharter(project, { objective: "Other session", now: "2026-07-02T10:00:00.000Z", sessionId: "other" });
+    const h = createRalphHarness(project, "current");
+    registerCharterRalphLoop(h.pi, { debounceMs: 30, warningLeadMs: 20, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(50);
+
+    expect(h.widgetWarnings).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
   test("all-pass Ralph names the report/completion transition", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-complete-"));
     const created = await createCharter(project, { objective: "Finish cleanly", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
@@ -484,6 +498,21 @@ describe("Ralph loop registration", () => {
     expect(h.sent).toHaveLength(1);
   });
 
+  test("child run completion releases Ralph after all subagents become idle", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-child-run-complete-"));
+    await createCharter(project, { objective: "Resume after parallel child", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+
+    h.fire("session_start");
+    h.emit(SUBAGENT_ASYNC_STARTED_EVENT, { runId: "child-1" });
+    h.emit(SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, { runId: "child-1" });
+    h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
+    await delay(10);
+
+    expect(h.sent).toHaveLength(1);
+  });
+
   test("stale context errors are caught and the next turn context recovers", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-stale-"));
     await createCharter(project, { objective: "Recover", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
@@ -592,6 +621,6 @@ describe("widget registration", () => {
     const component = widget({}, { fg: (_color: string, text: string) => text });
     const line = component.render(48)[0];
     expect(line).toContain("widget-charter");
-    expect(visibleWidth(line)).toBe(60);
+    expect(visibleWidth(line)).toBe(48);
   });
 });

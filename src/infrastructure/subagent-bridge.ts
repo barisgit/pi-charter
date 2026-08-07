@@ -11,4 +11,5 @@
  */
 export const SUBAGENT_ALL_IDLE_EVENT = "subagent:all-idle";
 export const SUBAGENT_ASYNC_STARTED_EVENT = "subagent:async-started";
+export const SUBAGENT_ASYNC_RUN_COMPLETE_EVENT = "subagent:async-run-complete";
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
