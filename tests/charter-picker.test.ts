@@ -418,7 +418,7 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     expect(dividerIndex(wide.render(160))).toBeGreaterThan(wideInitial);
   });
 
-  test("bare /charters opens a true fullscreen custom UI (no overlay options)", async () => {
+  test("bare /charters opens as a focused fullscreen overlay", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-picker-wire-"));
     try {
       const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> | void }>();
@@ -443,10 +443,11 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
         },
         sessionManager: { getSessionId: () => undefined },
       });
-      // client.ui.fullscreen() runs the picker via ctx.ui.custom with NO overlay
-      // options — a TRUE fullscreen lease, not an anchored overlay.
       expect(customCalls).toHaveLength(1);
-      expect(customCalls[0]!.options).toBeUndefined();
+      expect(customCalls[0]!.options).toEqual({
+        overlay: true,
+        overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+      });
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

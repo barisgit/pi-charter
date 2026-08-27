@@ -581,7 +581,10 @@ describe("command registration", () => {
     });
 
     expect(customCalls).toHaveLength(1);
-    expect((customCalls[0] as { options: unknown }).options).toBeUndefined();
+    expect((customCalls[0] as { options: unknown }).options).toEqual({
+      overlay: true,
+      overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+    });
     expect((await loadCharterState(project, created.charterId)).sessionId).toBe("other");
   });
 });
