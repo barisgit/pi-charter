@@ -284,7 +284,9 @@ describe("createCharterPickerOverlay rendering and navigation", () => {
     // Switch to beta: its detail must open at the top, not inherit alpha's scroll.
     picker.handleInput("\t"); // back to list focus
     picker.handleInput("j"); // select beta
-    expect(detailRow0(picker.render(80))).toBe(freshTop);
+    const selectedTop = detailRow0(picker.render(80));
+    // The final cell may contain pi-extension-utils' transient scrollbar thumb.
+    expect(selectedTop.slice(0, -1)).toBe(freshTop.slice(0, -1));
   });
 
   test("overlay height tracks live terminal rows on resize", () => {
