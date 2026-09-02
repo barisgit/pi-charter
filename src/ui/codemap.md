@@ -9,7 +9,7 @@ Implements read-only terminal presentation for charter status: a two-pane `/char
 - **MVVM/projection:** `picker-snapshot.ts` and `widget-service.ts` load application/storage data; `widget-state.ts` is a pure reducer; `charter-picker.ts` and `widget.ts` render the resulting models.
 - **Adapter:** `charter-picker.ts` adapts charter rows to `pi-extension-utils.paneOverlay`, Pi markdown/theme APIs, clipboard commands, and platform directory-open commands.
 - **Module-scoped session store:** `charter-selection.ts` holds tri-state selection (`unset`, explicit clear, explicit charter) plus a registered refresh callback.
-- **Stateful widget host:** `CharterWidget` retains the current view model, renderer registration, and animation/elapsed timers; registration code may alternatively render the same pure functions through utility widgets.
+- **Utility widget host:** production registration publishes the pure `widget.ts` renderer through `pi-extension-utils`; the unused `CharterWidget` class is legacy code, not the production host.
 - **Centralized layout constants:** `charter-picker-constants.ts` owns pane constraints, row widths, key filtering, and flash duration.
 
 ## Data and Control Flow

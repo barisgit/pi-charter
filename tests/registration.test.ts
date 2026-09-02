@@ -554,11 +554,26 @@ describe("command registration", () => {
     expect(commands.map((command) => command.name)).toEqual(["charter", "charters"]);
   });
 
-  test("/charters opens the restored fullscreen picker without mutating selection", async () => {
+  test("/charters replaces and restores the fullscreen viewport layout root", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-command-picker-"));
     const created = await createCharter(project, { objective: "View this charter", now: "2026-07-02T10:00:00.000Z", sessionId: "other" });
     const commands: Record<string, { handler: (args: string, ctx: any) => Promise<void> }> = {};
-    const customCalls: unknown[] = [];
+    const priorRoot = { invalidateCount: 0, invalidate() { this.invalidateCount++; } };
+    const layoutRoots: unknown[] = [];
+    const forcedRenders: unknown[] = [];
+    const tui = {
+      mode: "fullscreen",
+      terminal: { rows: 30 },
+      layoutRoot: priorRoot as unknown,
+      setLayoutRoot(root: unknown) {
+        this.layoutRoot = root;
+        layoutRoots.push(root);
+      },
+      requestRender(force?: boolean) {
+        forcedRenders.push(force);
+      },
+    };
+    const renderTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
     const pi = {
       events: fakeEvents(),
       registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
@@ -571,20 +586,31 @@ describe("command registration", () => {
       cwd: project,
       sessionManager: { getSessionId: () => "current" },
       ui: {
-        custom: async (factory: unknown, options: unknown) => {
-          customCalls.push({ factory, options });
-          return null;
+        custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: null) => void) => any, options: unknown) => {
+          expect(options).toEqual({
+            overlay: true,
+            overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
+          });
+          return await new Promise<null>((resolve) => {
+            const inputProxy = factory(tui, renderTheme, {}, resolve);
+            const pickerRoot = tui.layoutRoot as { render(width: number): string[] };
+            expect(pickerRoot).not.toBe(priorRoot);
+            expect(pickerRoot.render(100).join("\n")).toContain(created.charterId);
+            expect(inputProxy).not.toBe(pickerRoot);
+            expect(inputProxy.render(100)).toEqual([]);
+            inputProxy.handleInput("q");
+          });
         },
         notify: () => undefined,
         setWidget: () => undefined,
       },
     });
 
-    expect(customCalls).toHaveLength(1);
-    expect((customCalls[0] as { options: unknown }).options).toEqual({
-      overlay: true,
-      overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" },
-    });
+    expect(layoutRoots).toHaveLength(2);
+    expect(layoutRoots[1]).toBe(priorRoot);
+    expect(tui.layoutRoot).toBe(priorRoot);
+    expect(priorRoot.invalidateCount).toBe(1);
+    expect(forcedRenders).toEqual([true, true]);
     expect((await loadCharterState(project, created.charterId)).sessionId).toBe("other");
   });
 });
