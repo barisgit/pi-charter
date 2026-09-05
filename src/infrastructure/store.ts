@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
+import { setTimeout } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
 import { renderCharterTemplate } from "../domain/template";
@@ -46,10 +48,14 @@ export function reportPath(dir: string): string {
   return join(dir, "REPORT.md");
 }
 
+// Application mutations pass chartersRoot(projectDir), so lifecycle checks and
+// snapshot writes share one project-wide lock. Not reentrant: awaiting another
+// mutation (including from a hook) deadlocks the local queue before file timeout.
 export async function withCharterLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const key = resolve(dir);
   const prev = charterQueues.get(key) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
+  const run = () => withFileLock(join(key, ".mutation.lock"), fn);
+  const next = prev.then(run, run);
   const guard = next.catch(() => undefined);
   charterQueues.set(key, guard);
   try {
@@ -122,7 +128,7 @@ export async function loadParsedCharter(dir: string): Promise<ParsedCharterFile>
 export async function listCharterIds(projectDir: string): Promise<string[]> {
   try {
     const entries = await readdir(chartersRoot(projectDir), { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort().reverse();
+    return entries.filter((entry) => entry.isDirectory() && entry.name !== ".mutation.lock").map((entry) => entry.name).sort().reverse();
   } catch {
     return [];
   }
@@ -161,15 +167,9 @@ export async function pathExists(path: string): Promise<boolean> {
 export async function appendEvent(dir: string, event: CharterEvent): Promise<void> {
   const path = join(dir, "events.jsonl");
   await mkdir(dirname(path), { recursive: true });
-  await withPathLock(path, async () => {
-    let existing = "";
-    try {
-      existing = await readFile(path, "utf8");
-    } catch {
-      existing = "";
-    }
-    await writeTextAtomicUnsafe(path, `${existing}${JSON.stringify(event)}\n`);
-  });
+  await withPathLock(path, () => withFileLock(`${path}.lock`, () =>
+    appendFile(path, `${JSON.stringify(event)}\n`, "utf8"),
+  ));
 }
 
 export async function readEvents(dir: string): Promise<CharterEvent[]> {
@@ -216,6 +216,75 @@ async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   } finally {
     if (writeQueues.get(key) === guard) writeQueues.delete(key);
   }
+}
+
+// Local filesystems only. The owner filename publishes complete metadata atomically.
+// Hostname mismatch/unknown ownership fails closed; PID reuse is treated as live.
+const lockHost = createHash("sha256").update(hostname()).digest("hex");
+const lockOwnerPattern = /^owner-([a-f0-9]{64})-([1-9][0-9]*)-([a-f0-9]{32})$/;
+
+async function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
+  await mkdir(dirname(path), { recursive: true });
+  const owner = `owner-${lockHost}-${process.pid}-${randomBytes(16).toString("hex")}`;
+  const deadline = Date.now() + 10_000;
+  let unknownSince: number | undefined;
+  const recoveryError = (reason: string) => new Error(`Charter lock ${path}: ${reason}. Stop all project writers, inspect state/history, then remove the orphan lock directory before retrying.`);
+  for (;;) {
+    try {
+      await mkdir(path);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    let entries: string[];
+    try {
+      entries = await readdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    const match = entries.length === 1 ? lockOwnerPattern.exec(entries[0]) : null;
+    if (!match) {
+      // Allow publication/release to finish, but never remove an ownerless lock.
+      unknownSince ??= Date.now();
+      if (Date.now() - unknownSince >= 100) throw recoveryError("ownership unknown");
+    } else {
+      unknownSince = undefined;
+      if (match[1] !== lockHost) throw recoveryError("owner is on another host");
+      const pid = Number(match[2]);
+      if (!Number.isSafeInteger(pid) || pid > 2_147_483_647) throw recoveryError("invalid owner pid");
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw recoveryError("owner liveness cannot be established");
+        await releaseFileLock(path, entries[0]);
+        continue;
+      }
+    }
+    if (Date.now() >= deadline) throw recoveryError("timed out waiting for live owner");
+    await setTimeout(10);
+  }
+  try {
+    await writeFile(join(path, owner), "", { flag: "wx" });
+    return await fn();
+  } finally {
+    await releaseFileLock(path, owner);
+  }
+}
+
+async function releaseFileLock(path: string, owner: string): Promise<void> {
+  // Only the successful renamer may rmdir. Concurrent unlink can report success
+  // to multiple callers on macOS. A stale reclaimer cannot rename a replacement
+  // owner's random filename. A crash during release leaves unknown ownership.
+  const releasing = join(path, `releasing-${randomBytes(16).toString("hex")}`);
+  try {
+    await rename(join(path, owner), releasing);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  await unlink(releasing);
+  await rmdir(path);
 }
 
 async function writeTextAtomicUnsafe(path: string, value: string): Promise<void> {

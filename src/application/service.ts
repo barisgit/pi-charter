@@ -2,10 +2,10 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids";
 import { readyCriteria, type CriterionStatus, type ParsedCharterFile } from "../domain/charter-file";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, ensureWorkDir, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, reportPath, writeCharterState, writeTextAtomic } from "../infrastructure/store";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, ensureWorkDir, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, reportPath, writeCharterState, writeTextAtomic, withCharterLock } from "../infrastructure/store";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
-import { criterionStaleness, refreshCharterSnapshot } from "./staleness";
+import { criterionStaleness, refreshCharterSnapshot, refreshCharterSnapshotUnlocked } from "./staleness";
 import type { CharterState, CharterStatus, NextAction } from "../domain/types";
 
 export type { NextAction };
@@ -51,28 +51,21 @@ export async function createCharter(
   projectDir: string,
   input: { objective: string; now?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  const objective = input.objective.trim();
-  if (!objective) throw toolError("objective is required for action=create", "create");
-  const existing = await activeChartersForSession(projectDir, input.sessionId);
-  if (existing.length > 0) {
-    throw new CharterToolError(`Session already has active charter ${existing[0].charterId}; status or pause it before creating another.`, {
-      code: "create.active_exists",
-      nextActions: [
-        { tool: "charter", action: "status", hint: `Inspect ${existing[0].charterId}.` },
-        { tool: "charter", action: "pause", hint: "Pause the active charter before creating a replacement." },
-      ],
-    });
-  }
-  const now = input.now ?? new Date().toISOString();
-  const charterId = await generateCharterId({ root: chartersRoot(projectDir), objective, now: new Date(now) });
-  const created = await createCharterWorkspace(projectDir, { charterId, objective, now, sessionId: input.sessionId });
-  return {
-    charterId,
-    status: created.state.status,
-    message: `Created charter ${charterId}. Edit ${created.charterDir}/charter.md to add criteria and update Status lines.`,
-    data: created.state,
-    nextActions: nextActionsFor(created.state, undefined, false),
-  };
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    const objective = input.objective.trim();
+    if (!objective) throw toolError("objective is required for action=create", "create");
+    await assertSessionAvailable(projectDir, input.sessionId);
+    const now = input.now ?? new Date().toISOString();
+    const charterId = await generateCharterId({ root: chartersRoot(projectDir), objective, now: new Date(now) });
+    const created = await createCharterWorkspace(projectDir, { charterId, objective, now, sessionId: input.sessionId });
+    return {
+      charterId,
+      status: created.state.status,
+      message: `Created charter ${charterId}. Edit ${created.charterDir}/charter.md to add criteria and update Status lines.`,
+      data: created.state,
+      nextActions: nextActionsFor(created.state, undefined, false),
+    };
+  });
 }
 
 export async function listCharterSummaries(projectDir: string): Promise<CharterServiceResult> {
@@ -144,109 +137,121 @@ export async function pauseCharter(
   projectDir: string,
   input: { charterId?: string; note?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  const charterId = await resolveCharterId(projectDir, input);
-  const dir = charterDir(projectDir, charterId);
-  const state = await loadCharterState(dir);
-  if (state.status !== "active") throw toolError(`Only active charters can be paused (current: ${state.status}).`, "status");
-  state.previousStatus = state.status;
-  state.status = "paused";
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_paused", ts: new Date().toISOString(), charterId, note: input.note });
-  return { charterId, status: state.status, message: `Paused charter ${charterId}.`, data: state, nextActions: nextActionsFor(state, undefined, false) };
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    const charterId = await resolveCharterId(projectDir, input);
+    const dir = charterDir(projectDir, charterId);
+    const state = await loadCharterState(dir);
+    if (state.status !== "active") throw toolError(`Only active charters can be paused (current: ${state.status}).`, "status");
+    state.previousStatus = state.status;
+    state.status = "paused";
+    await writeCharterState(dir, state);
+    await appendEvent(dir, { type: "charter_paused", ts: new Date().toISOString(), charterId, note: input.note });
+    return { charterId, status: state.status, message: `Paused charter ${charterId}.`, data: state, nextActions: nextActionsFor(state, undefined, false) };
+  });
 }
 
 export async function resumeCharter(
   projectDir: string,
   input: { charterId?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  const charterId = await resolveCharterId(projectDir, input);
-  const dir = charterDir(projectDir, charterId);
-  const state = await loadCharterState(dir);
-  if (state.status !== "paused") throw toolError(`Only paused charters can be resumed (current: ${state.status}).`, "status");
-  state.status = "active";
-  if (input.sessionId) state.sessionId = input.sessionId;
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_resumed", ts: new Date().toISOString(), charterId });
-  return { charterId, status: state.status, message: `Resumed charter ${charterId}.`, data: state, nextActions: nextActionsFor(state, undefined, false) };
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    const charterId = await resolveCharterId(projectDir, input);
+    const dir = charterDir(projectDir, charterId);
+    const state = await loadCharterState(dir);
+    if (state.status !== "paused") throw toolError(`Only paused charters can be resumed (current: ${state.status}).`, "status");
+    await assertSessionAvailable(projectDir, input.sessionId ?? state.sessionId, charterId);
+    state.status = "active";
+    if (input.sessionId) state.sessionId = input.sessionId;
+    await writeCharterState(dir, state);
+    await appendEvent(dir, { type: "charter_resumed", ts: new Date().toISOString(), charterId });
+    return { charterId, status: state.status, message: `Resumed charter ${charterId}.`, data: state, nextActions: nextActionsFor(state, undefined, false) };
+  });
 }
 
 export async function bindCharterToSession(
   projectDir: string,
   input: { charterId?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  if (!input.sessionId) throw toolError("No session id available for binding.", "status");
-  const charterId = await resolveCharterId(projectDir, input);
-  const dir = charterDir(projectDir, charterId);
-  const state = await loadCharterState(dir);
-  if (state.status !== "active") throw toolError(`Only active charters can be bound (current: ${state.status}).`, "status");
-  state.sessionId = input.sessionId;
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_bound", ts: new Date().toISOString(), charterId, sessionId: input.sessionId });
-  return { charterId, status: state.status, message: `Bound charter ${charterId} to this session.`, data: state, nextActions: nextActionsFor(state, undefined, false) };
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    if (!input.sessionId) throw toolError("No session id available for binding.", "status");
+    const charterId = await resolveCharterId(projectDir, input);
+    const dir = charterDir(projectDir, charterId);
+    const state = await loadCharterState(dir);
+    if (state.status !== "active") throw toolError(`Only active charters can be bound (current: ${state.status}).`, "status");
+    await assertSessionAvailable(projectDir, input.sessionId, charterId);
+    state.sessionId = input.sessionId;
+    await writeCharterState(dir, state);
+    await appendEvent(dir, { type: "charter_bound", ts: new Date().toISOString(), charterId, sessionId: input.sessionId });
+    return { charterId, status: state.status, message: `Bound charter ${charterId} to this session.`, data: state, nextActions: nextActionsFor(state, undefined, false) };
+  });
 }
 
 export async function completeCharter(
   projectDir: string,
   input: { charterId?: string; note?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  const charterId = await resolveCharterId(projectDir, input);
-  const dir = charterDir(projectDir, charterId);
-  const { parsed, state } = await refreshCharterSnapshot(projectDir, charterId);
-  if (state.status !== "active") throw toolError(`Only active charters can complete (current: ${state.status}).`, "status");
-  if (parsed.openEnded) throw toolError("Open-ended charters have no criteria; completion is not legal. Add criteria or pause/abandon.", "status");
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    const charterId = await resolveCharterId(projectDir, input);
+    const dir = charterDir(projectDir, charterId);
+    const { parsed, state } = await refreshCharterSnapshotUnlocked(projectDir, charterId);
+    if (state.status !== "active") throw toolError(`Only active charters can complete (current: ${state.status}).`, "status");
+    if (parsed.openEnded) throw toolError("Open-ended charters have no criteria; completion is not legal. Add criteria or pause/abandon.", "status");
 
-  const report = reportPath(dir);
-  const exists = await pathExists(report);
-  const blockers = completionBlockers(state, parsed, exists);
-  if (!exists) {
-    await writeTextAtomic(report, await renderReportScaffold(dir, parsed));
-    throw new CharterToolError(`REPORT.md scaffolded for ${charterId}; fill it in, then retry complete.`, {
-      code: "complete.report_scaffolded",
-      nextActions: [{ tool: "charter", action: "complete", hint: "Review and fill REPORT.md, then retry completion." }],
+    const report = reportPath(dir);
+    const exists = await pathExists(report);
+    const blockers = completionBlockers(state, parsed, exists);
+    if (!exists) {
+      await writeTextAtomic(report, await renderReportScaffold(dir, parsed));
+      throw new CharterToolError(`REPORT.md scaffolded for ${charterId}; fill it in, then retry complete.`, {
+        code: "complete.report_scaffolded",
+        nextActions: [{ tool: "charter", action: "complete", hint: "Review and fill REPORT.md, then retry completion." }],
+      });
+    }
+    if (blockers.length > 0) {
+      throw new CharterToolError(`Cannot complete charter ${charterId}: ${blockers.join("; ")}`, {
+        code: "complete.blocked",
+        nextActions: nextActionsFor(state, parsed, true),
+      });
+    }
+    await dispatchHook("charter:before_complete", {
+      type: "charter:before_complete",
+      charterId,
+      ts: new Date().toISOString(),
+      criteriaCount: parsed.criteria.length,
+      completionNote: input.note,
     });
-  }
-  if (blockers.length > 0) {
-    throw new CharterToolError(`Cannot complete charter ${charterId}: ${blockers.join("; ")}`, {
-      code: "complete.blocked",
-      nextActions: nextActionsFor(state, parsed, true),
-    });
-  }
-  await dispatchHook("charter:before_complete", {
-    type: "charter:before_complete",
-    charterId,
-    ts: new Date().toISOString(),
-    criteriaCount: parsed.criteria.length,
-    completionNote: input.note,
+    state.status = "completed";
+    state.completedAt = new Date().toISOString();
+    state.completionNote = input.note;
+    await writeCharterState(dir, state);
+    await appendEvent(dir, { type: "charter_completed", ts: state.completedAt, charterId, note: input.note });
+    return { charterId, status: state.status, message: `Completed charter ${charterId}.`, data: state, nextActions: [] };
   });
-  state.status = "completed";
-  state.completedAt = new Date().toISOString();
-  state.completionNote = input.note;
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_completed", ts: state.completedAt, charterId, note: input.note });
-  return { charterId, status: state.status, message: `Completed charter ${charterId}.`, data: state, nextActions: [] };
 }
 
 export async function abandonCharter(
   projectDir: string,
   input: { charterId?: string; note?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
-  if (!input.note?.trim()) throw toolError("note is required for action=abandon", "abandon");
-  const charterId = await resolveCharterId(projectDir, input);
-  const dir = charterDir(projectDir, charterId);
-  const state = await loadCharterState(dir);
-  if (state.status === "completed" || state.status === "abandoned") throw toolError(`Charter is already ${state.status}.`, "status");
-  await dispatchHook("charter:before_abandon", {
-    type: "charter:before_abandon",
-    charterId,
-    ts: new Date().toISOString(),
-    reason: input.note,
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    if (!input.note?.trim()) throw toolError("note is required for action=abandon", "abandon");
+    const charterId = await resolveCharterId(projectDir, input);
+    const dir = charterDir(projectDir, charterId);
+    const state = await loadCharterState(dir);
+    if (state.status === "completed" || state.status === "abandoned") throw toolError(`Charter is already ${state.status}.`, "status");
+    await dispatchHook("charter:before_abandon", {
+      type: "charter:before_abandon",
+      charterId,
+      ts: new Date().toISOString(),
+      reason: input.note,
+    });
+    state.status = "abandoned";
+    state.terminatedAt = new Date().toISOString();
+    state.abandonReason = input.note;
+    await writeCharterState(dir, state);
+    await appendEvent(dir, { type: "charter_abandoned", ts: state.terminatedAt, charterId, note: input.note });
+    return { charterId, status: state.status, message: `Abandoned charter ${charterId}.`, data: state, nextActions: [] };
   });
-  state.status = "abandoned";
-  state.terminatedAt = new Date().toISOString();
-  state.abandonReason = input.note;
-  await writeCharterState(dir, state);
-  await appendEvent(dir, { type: "charter_abandoned", ts: state.terminatedAt, charterId, note: input.note });
-  return { charterId, status: state.status, message: `Abandoned charter ${charterId}.`, data: state, nextActions: [] };
 }
 
 export async function resolveCharterId(
@@ -295,6 +300,19 @@ function nextActionsFor(state: CharterState, parsed: ParsedCharterFile | undefin
     });
   }
   return actions;
+}
+
+async function assertSessionAvailable(projectDir: string, sessionId?: string, charterId?: string): Promise<void> {
+  const existing = (await activeChartersForSession(projectDir, sessionId)).filter((row) => row.charterId !== charterId);
+  if (existing.length > 0) {
+    throw new CharterToolError(`Session already has active charter ${existing[0].charterId}; status or pause it before creating another.`, {
+      code: "create.active_exists",
+      nextActions: [
+        { tool: "charter", action: "status", hint: `Inspect ${existing[0].charterId}.` },
+        { tool: "charter", action: "pause", hint: "Pause the active charter before creating a replacement." },
+      ],
+    });
+  }
 }
 
 async function activeChartersForSession(projectDir: string, sessionId?: string) {

@@ -1,5 +1,5 @@
 import { relative, resolve } from "node:path";
-import { charterDir, hashText, loadCharterState, loadCharterText, listCharterIds, snapshotFromParsed, appendEvent, writeCharterState } from "../infrastructure/store";
+import { pathExists, chartersRoot, withCharterLock, charterDir, hashText, loadCharterState, loadCharterText, listCharterIds, snapshotFromParsed, appendEvent, writeCharterState } from "../infrastructure/store";
 import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
 import type { CharterState, CriterionSnapshot } from "../domain/types";
 
@@ -16,6 +16,15 @@ export interface SnapshotRefreshResult {
 }
 
 export async function refreshCharterSnapshot(
+  projectDir: string,
+  charterId: string,
+  options: { seq?: number; source?: "tool" | "external" } = {},
+): Promise<SnapshotRefreshResult> {
+  return withCharterLock(chartersRoot(projectDir), () => refreshCharterSnapshotUnlocked(projectDir, charterId, options));
+}
+
+// Internal entry point: caller must hold the project mutation lock.
+export async function refreshCharterSnapshotUnlocked(
   projectDir: string,
   charterId: string,
   options: { seq?: number; source?: "tool" | "external" } = {},
@@ -40,71 +49,80 @@ export async function refreshCharterSnapshot(
 }
 
 export async function refreshSessionSnapshots(projectDir: string, sessionId?: string): Promise<void> {
-  for (const id of await listCharterIds(projectDir)) {
-    const state = await loadCharterState(projectDir, id).catch(() => undefined);
-    if (!state || state.status === "completed" || state.status === "abandoned") continue;
-    if (sessionId && state.sessionId && state.sessionId !== sessionId) continue;
-    await refreshCharterSnapshot(projectDir, id, { source: "external" });
-  }
+  if (!(await pathExists(chartersRoot(projectDir)))) return;
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    for (const id of await listCharterIds(projectDir)) {
+      const state = await loadCharterState(projectDir, id).catch(() => undefined);
+      if (!state || state.status === "completed" || state.status === "abandoned") continue;
+      if (sessionId && state.sessionId && state.sessionId !== sessionId) continue;
+      await refreshCharterSnapshotUnlocked(projectDir, id, { source: "external" });
+    }
+  });
 }
 
 export async function recordSourceModification(
   projectDir: string,
   input: { files: string[]; sessionId?: string; source?: string; seq?: number },
 ): Promise<void> {
-  const files = uniqueSourceFiles(projectDir, input.files);
-  if (files.length === 0) return;
-  for (const id of await listCharterIds(projectDir)) {
-    const dir = charterDir(projectDir, id);
-    const state = await loadCharterState(dir).catch(() => undefined);
-    if (!state || state.status === "completed" || state.status === "abandoned") continue;
-    if (input.sessionId && state.sessionId && state.sessionId !== input.sessionId) continue;
-    const seq = input.seq ?? consumeSeq(state);
-    const ts = new Date().toISOString();
-    state.latestSourceSeq = Math.max(state.latestSourceSeq, seq);
-    await appendEvent(dir, {
-      type: "source_modified",
-      ts,
-      charterId: id,
-      seq,
-      files,
-      source: input.source ?? "tool",
-    });
-    await writeCharterState(dir, state);
-  }
+  if (!(await pathExists(chartersRoot(projectDir)))) return;
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    const files = uniqueSourceFiles(projectDir, input.files);
+    if (files.length === 0) return;
+    for (const id of await listCharterIds(projectDir)) {
+      const dir = charterDir(projectDir, id);
+      const state = await loadCharterState(dir).catch(() => undefined);
+      if (!state || state.status === "completed" || state.status === "abandoned") continue;
+      if (input.sessionId && state.sessionId && state.sessionId !== input.sessionId) continue;
+      const seq = input.seq ?? consumeSeq(state);
+      const ts = new Date().toISOString();
+      state.latestSourceSeq = Math.max(state.latestSourceSeq, seq);
+      await appendEvent(dir, {
+        type: "source_modified",
+        ts,
+        charterId: id,
+        seq,
+        files,
+        source: input.source ?? "tool",
+      });
+      await writeCharterState(dir, state);
+    }
+  });
 }
 
 export async function tickToolResult(
   projectDir: string,
   input: { sessionId?: string; files?: string[]; source?: string } = {},
 ): Promise<void> {
-  const seqById = new Map<string, number>();
-  for (const id of await listCharterIds(projectDir)) {
-    const dir = charterDir(projectDir, id);
-    const state = await loadCharterState(dir).catch(() => undefined);
-    if (!state || state.status === "completed" || state.status === "abandoned") continue;
-    if (input.sessionId && state.sessionId && state.sessionId !== input.sessionId) continue;
-    const seq = consumeSeq(state);
-    seqById.set(id, seq);
-    await writeCharterState(dir, state);
-    await refreshCharterSnapshot(projectDir, id, { seq, source: "tool" });
-  }
-  const files = uniqueSourceFiles(projectDir, input.files ?? []);
-  if (files.length === 0) return;
-  for (const [id, seq] of seqById) {
-    const dir = charterDir(projectDir, id);
-    const state = await loadCharterState(dir);
-    state.latestSourceSeq = Math.max(state.latestSourceSeq, seq);
-    await appendEvent(dir, {
-      type: "source_modified",
-      ts: new Date().toISOString(),
-      charterId: id,
-      seq,
-      files,
-      source: input.source ?? "tool",
-    });
-    await writeCharterState(dir, state);
-  }
+  if (!(await pathExists(chartersRoot(projectDir)))) return;
+  return withCharterLock(chartersRoot(projectDir), async () => {
+    const seqById = new Map<string, number>();
+    for (const id of await listCharterIds(projectDir)) {
+      const dir = charterDir(projectDir, id);
+      const state = await loadCharterState(dir).catch(() => undefined);
+      if (!state || state.status === "completed" || state.status === "abandoned") continue;
+      if (input.sessionId && state.sessionId && state.sessionId !== input.sessionId) continue;
+      const seq = consumeSeq(state);
+      seqById.set(id, seq);
+      await writeCharterState(dir, state);
+      await refreshCharterSnapshotUnlocked(projectDir, id, { seq, source: "tool" });
+    }
+    const files = uniqueSourceFiles(projectDir, input.files ?? []);
+    if (files.length === 0) return;
+    for (const [id, seq] of seqById) {
+      const dir = charterDir(projectDir, id);
+      const state = await loadCharterState(dir);
+      state.latestSourceSeq = Math.max(state.latestSourceSeq, seq);
+      await appendEvent(dir, {
+        type: "source_modified",
+        ts: new Date().toISOString(),
+        charterId: id,
+        seq,
+        files,
+        source: input.source ?? "tool",
+      });
+      await writeCharterState(dir, state);
+    }
+  });
 }
 
 export function criterionStaleness(state: CharterState): CriterionStaleness[] {
