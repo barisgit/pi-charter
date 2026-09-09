@@ -1,5 +1,3 @@
-import type { ParsedCriterionStatus } from "./charter-file";
-
 export type CharterStatus = "active" | "paused" | "completed" | "abandoned";
 
 export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
@@ -14,18 +12,15 @@ export interface NextAction {
   metadata?: Record<string, unknown>;
 }
 
-export interface CriterionSnapshot {
-  id: string;
-  title: string;
-  depends: string[];
-  status: ParsedCriterionStatus;
-  /** Sequence at which the current Status line was observed. */
-  statusSeq: number;
+export interface RalphGuardState {
+  activations: number[];
+  warnedAt?: number;
+  pausedByGuard?: boolean;
 }
 
 export interface CharterState {
   charterId: string;
-  schemaVersion: "file-interface";
+  schemaVersion: "phases" | "file-interface";
   objective: string;
   status: CharterStatus;
   createdAt: string;
@@ -36,18 +31,13 @@ export interface CharterState {
   terminatedAt?: string;
   completionNote?: string;
   abandonReason?: string;
-  /** Next monotonic sequence number for this charter/session. */
-  nextSeq: number;
-  /** Latest source-modifying sequence observed outside .charters/. */
-  latestSourceSeq: number;
-  snapshotHash: string;
-  criteriaSnapshot: CriterionSnapshot[];
+  snapshotHash?: string;
+  ralph?: RalphGuardState;
 }
 
 export interface CharterEvent {
   type: string;
   ts: string;
   charterId: string;
-  seq?: number;
   [key: string]: unknown;
 }

@@ -17,41 +17,80 @@ Every success and domain error carries `nextActions[]`.
 
 | Action | Required input | Effect |
 |---|---|---|
-| `create` | `objective` | Creates and session-binds a new active charter. |
-| `list` | none | Lists project charters. |
-| `status` | optional `id` | Returns lifecycle, rich authored sections, criteria, unified status counts, blockers, readiness, staleness, warnings, and report presence. |
+| `create` | `objective` | Creates and session-binds a new active phases charter. |
+| `list` | none | Lists current and legacy project charters. |
+| `status` | optional `id` | Returns the Objective/Phase projection or a read-only legacy projection. |
 | `pause` | optional `id`, optional `note` | Active to paused. |
-| `resume` | optional `id` | Paused to active and binds current session. |
-| `complete` | optional `id`, optional `note` | Scaffolds report first; then completes only when all gates pass. |
-| `abandon` | optional `id`, required `note` | Active/paused to abandoned. |
+| `resume` | optional `id` | Paused phases charter to active, except guard-paused state. Tool resume cannot clear that guard. |
+| `complete` | optional `id`, optional `note` | Accepts the worker's completion decision, invokes the hook, then generates or preserves the report and completes if allowed. Worker guidance calls for a concise audit note. |
+| `abandon` | optional `id`, required `note` | Active or paused to abandoned. |
 
-`id` may be a full id, unique prefix, or unique slug fragment. Session binding resolves omitted ids when unambiguous.
+`id` may be a full id, unique prefix, or unique slug fragment. Session binding resolves omitted ids when unambiguous. Explicit user `/charter resume` is a distinct registration path because only it may clear a Ralph guard pause. An ordinary pause/resume while only a recovery warning is pending retains that warning and its rolling history; the reset applies after the guard actually pauses the charter.
 
-## Criterion status projection
+## Authored file projection
 
 ```ts
-type CriterionStatus = "pending" | "in-progress" | "blocked" | "pass" | "fail";
+type PhaseStatus = "upcoming" | "current" | "done";
 
-interface CriterionStatusView {
-  id: string;
+type Phase = {
+  number: number;
   title: string;
+  status: PhaseStatus;
   body: string;
-  status: CriterionStatus;
-  note: string;
-  stale: boolean;
-  depends: string[];
-  failCount: number;
+};
+
+type ParsedCharterFile = {
+  objective: string;
+  references: string;
+  scope: string;
+  phases: Phase[];
+  warnings: string[];
+};
+```
+
+## Status result
+
+`CharterStatusResult` has these fields:
+
+```ts
+{
+  charterId: string;
+  status: "active" | "paused" | "completed" | "abandoned";
+  objective: string;
+  references: string;
+  scope: string;
+  phases: Phase[];
+  phaseCounts: Record<PhaseStatus, number>;
+  createdAt: string;
+  warnings: string[];
+  reportExists: boolean;
+  nextActions: NextAction[];
+  legacy: boolean;
+  charterMarkdown: string;
+  ralph?: {
+    activations: number[];
+    warnedAt?: number;
+    pausedByGuard?: boolean;
+  };
 }
 ```
 
-There is no parallel evidence field. A pass/fail note is the evidence record. Legacy authored Evidence lines and old sidecars/journal fields are normalized at input boundaries only.
+The result does not contain `criteria`, `statusCounts`, `readyNext`, `openEnded`, `blockers`, or staleness fields. `Phase` and `PhaseStatus` are public exports matching this contract.
+
+Legacy `file-interface` state is decoded only far enough to render a read-only dashboard/status view with `legacy: true`. No lifecycle action may write, resume, or migrate it.
+
+## Completion hook
+
+`charter:before_complete` remains a veto point. Its payload contains `charterId`, `ts`, `phaseCount`, and optional `completionNote`; `phaseCount` replaces the removed `criteriaCount` field. The hook runs before report generation or the completed transition. It does not imply that the runtime independently verified the Objective.
 
 ## UI projections
 
-- Terse `status` text gives lifecycle, five-way counts, criterion summaries, blockers, ready-next ids, and legal next actions.
-- The compact widget shows pass/active/pending progress and prioritizes `in-progress`, then `blocked`, `fail`, and `pending` as current/next work.
-- `/charters` renders Objective, References, Scope, full criterion bodies, dependencies, statuses, notes, staleness, recent status changes, and terminal reports.
+- Terse status reports lifecycle, Objective, phase counts/current phase, warnings, and legal next actions.
+- The compact widget presents the short charter name, lifecycle, and current phase title without the Objective, phase body, or duplicate progress chrome.
+- `/charters` always renders the full Objective and phase narrative. Legacy charters remain visible and clearly read-only.
 
 ## Ralph
 
-Ralph emits a condensed steering message from the same status projection: counts, top blocker, stale passes, repeated failures, and the next criterion. It never spawns a scheduler or runs checks.
+Ralph builds continuation from the same status result and the full Objective. It does not run checks, judge completion, or spawn work.
+
+Registration owns the exact shared guard: fifth actual send within rolling 15 minutes is recovery; the next eligible activation at or before 5 minutes pauses before send; quiet expiry does not pause; compaction and edits do not reset; explicit user `/charter resume` clears a guard pause and history; tool resume cannot bypass; unrelated jobs are untouched.

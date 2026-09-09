@@ -2,26 +2,35 @@
 
 ## Boundary
 
-pi-charter is a Pi extension for durable outcome contracts. The agent is the loop driver; the extension persists and projects the charter, observes file/tool boundaries, computes staleness, and enforces lifecycle legality. It does not plan implementation tasks, run verification commands, or dispatch an execution scheduler.
+pi-charter is a Pi extension for durable Objective-led work. The worker is the loop driver and completion judge. The extension persists lifecycle and authored Markdown, journals meaningful file changes, projects status, triggers Ralph when idle, applies the bounded Ralph guard, and produces the report surface.
+
+It does not turn the Objective into acceptance criteria, plan tasks, run verification, enforce evidence freshness, or dispatch workers.
 
 ## Layers
 
-1. **Authored contract** — `.charters/<id>/charter.md` contains Objective, optional References and Scope, and flat criteria. Each criterion has one canonical `Status:` line.
-2. **Domain parser** — `src/domain/charter-file.ts` tolerantly parses known grammar and treats unknown structure as inert prose. Existing `Evidence:` lines are decoded only as a legacy input alias.
-3. **Application services** — lifecycle operations, completion blockers, report scaffolding, source-change recording, staleness, and Ralph steering.
-4. **Infrastructure** — atomic file writes, timestamp-sortable ids, state/event persistence, and legacy sidecar normalization.
-5. **Projections** — terse tool status, compact widget, and `/charters` dashboard. These all consume the same criterion Status model.
+1. **Authored charter** — `.charters/<id>/charter.md` contains a substantial Objective, optional References and Scope, and lightweight Phases.
+2. **Domain parser** — `src/domain/charter-file.ts` parses the known headings and ordered phase items tolerantly. Unknown Markdown remains inert prose.
+3. **Application service** — lifecycle actions, status projection, report generation, whole-file change journaling, and completion-hook coordination.
+4. **Infrastructure** — atomic file writes, timestamp-sortable ids, state/event persistence, and read-only legacy loading.
+5. **Registration** — tool and slash-command wiring, Ralph idle continuation, and the rolling guard.
+6. **UI** — compact current-charter projection and a dashboard that also renders legacy charters read-only.
 
 ## Runtime flow
 
-At every relevant tool-result boundary, the runtime re-reads `charter.md`, diffs the parsed criteria against the previous snapshot, appends field changes to `events.jsonl`, updates sequence counters in `state.json`, and refreshes projections. Source modifications advance a global source sequence. A pass is stale when its Status sequence predates that source sequence.
+New charters use `schemaVersion: "phases"`. At a relevant boundary, the runtime re-reads `charter.md`. An optional whole-file `snapshotHash` can identify a meaningful authored change for journaling. There are no criterion snapshots, status sequences, source-change sequences, or computed freshness checks.
 
-## Deep boundaries
+When the root worker and async subagents are idle, Ralph may send a continuation. Registration owns a rolling activation guard shared by normal and recovery sends. It never starts a worker and never kills unrelated jobs.
 
-- `charter.md` owns durable why, what, boundaries, criterion semantics, and current criterion activity.
-- `pi-dag-tasks` owns tactical execution steps and dependencies.
-- `state.json` owns lifecycle/session/snapshot mechanics, never authored criterion truth.
+On completion, the worker audits the full Objective and external References and supplies a concise note. The service generates REPORT.md when needed, preserves an already curated report, invokes `charter:before_complete`, and completes if the hook allows. Phase statuses do not gate completion.
+
+## Boundaries that should stay deep
+
+- `charter.md` owns the authorized outcome and the human-readable account of the work.
+- The Objective is the completion contract. It may gain only user-authorized constraints, verification expectations, and report requirements.
+- Phases explain progress; pi-dag-tasks owns tactical execution steps.
+- `state.json` owns lifecycle/session mechanics and optional whole-file/Ralph guard state, never a second progress model.
 - `events.jsonl` owns append-only history.
-- `REPORT.md` curates already-recorded charter content and verification artifacts.
+- REPORT.md owns the reviewable, artifact-rich delivery narrative.
+- Legacy `file-interface` charters are display inputs only. No write path accepts them.
 
-See ADR-0014 and ADR-0015.
+See ADR-0016.

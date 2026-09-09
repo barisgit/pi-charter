@@ -1,37 +1,59 @@
 # pi-charter
 
-`pi-charter` is a Pi extension for durable, charter-bound agent work. It owns the charter contract, lifecycle, evidence record, artifacts, and final report; it does not choose or run a verifier.
+`pi-charter` keeps a substantial user Objective in view during durable agent work. The worker edits one Markdown file, adds lightweight Phases as the work emerges, captures useful verification artifacts, and curates an artifact-rich report. The extension owns persistence, lifecycle, projections, and Ralph continuation. It does not plan the work, run verification, or decide completion from a checklist.
 
-The live implementation is the source of truth. `src/index.ts` is the composition root, `CONTEXT.md` defines the domain language, and ADR-0014 plus ADR-0015 record the current architecture.
+ADR-0016 and `CONTEXT.md` define the current model.
 
 ## Current architecture
 
 - One LLM-callable tool: `charter`.
 - Seven actions: `create`, `list`, `status`, `pause`, `resume`, `complete`, and `abandon`.
-- Lifecycle states: `active`, `paused`, `completed`, and `abandoned`.
+- Four lifecycle states: `active`, `paused`, `completed`, and `abandoned`.
 - One authored interface: `.charters/<id>/charter.md`.
-- A descriptive Objective, optional References and Scope, and flat substantive `### C<n>.` criteria.
-- One live record per criterion: `Status: pending|in-progress|blocked|pass|fail — <note>`.
-- Optional `Depends: C1, C2` lines are advisory ordering only.
-- Completion requires every criterion to have a fresh `pass` Status with a non-empty evidence note, an existing `REPORT.md`, and approval from the before-complete hook; the root agent curates the report as doctrine.
-- A charter with no criteria is open-ended and cannot complete; it runs until criteria are added, or the charter is paused or abandoned.
-
-Earlier multi-file, multi-tool, milestone-based architecture and legacy runtime paths are unsupported and are not read.
+- A substantial `# Objective`, optional References and Scope, and emergent Phases.
+- No criteria, per-phase evidence schema, dependencies, freshness, phase gate, artifact quota, or auto worker scheduler.
+- Completion is worker judgment after auditing the Objective and references, with a concise note, a curated report, and approval from the existing before-complete hook.
+- Old `file-interface` charters remain visible in the dashboard as read-only history. They cannot resume or mutate.
 
 ## Workspace layout
 
-Each charter lives under the project root:
-
 ```text
-.charters/<id>/
-├── charter.md    # Objective, References/Scope, criteria, and current Status lines
-├── state.json    # current lifecycle/session binding and parser snapshot state
-├── events.jsonl  # append-only Status, source-change, and lifecycle history
-├── work/         # verification artifacts, created as needed
-└── REPORT.md     # scaffolded on the first completion attempt, then curated
+.charters/<YYYYMMDD-HHMMSS>-<slug>/
+├── charter.md
+├── state.json
+├── events.jsonl
+├── work/
+└── REPORT.md
 ```
 
-`charter.md` is the content interface and current criterion record. `state.json` carries runtime state, `events.jsonl` carries history, `work/` carries screenshots/recordings/output, and `REPORT.md` is the reviewable deliverable.
+`charter.md` is the authored Objective and phase narrative. `state.json` stores lifecycle/session data and optional whole-file snapshot and Ralph guard state. `events.jsonl` is append-only history. `work/` holds artifacts captured during verification. `REPORT.md` curates the delivered result and those artifacts.
+
+## Authoring grammar
+
+```md
+# Objective
+
+<authorized outcome, constraints, verification expectations, and report requirements>
+
+## References
+
+<optional durable sources of authority and their roles>
+
+## Scope
+
+<optional boundaries>
+
+## Phases
+
+1. Explore phases
+2. Implement — current
+   Work and progress notes.
+3. Verify — upcoming
+```
+
+Every new charter begins with exact `1. Explore phases`. Phase suffixes are optional and, when present, use `— upcoming`, `— current`, or `— done`. Indented Markdown belongs to the phase body. If no phase is explicitly current, the initial bare phase or first unfinished unmarked phase is current by inference; other unmarked phases are upcoming.
+
+Phases communicate progress. They are not acceptance criteria or completion gates, and there is no required count. A charter may complete with zero phases.
 
 ## Tool surface
 
@@ -44,43 +66,49 @@ charter({
 })
 ```
 
-Use `objective` for `create`. Omit `id` to address the session-bound charter; provide an id, unique prefix, or unique fragment to address another charter. `abandon` requires a note. Follow the returned `nextActions[]` rather than inferring legal transitions.
+Use `objective` for `create`. Omit `id` for the session-bound charter, or provide a full id, unique prefix, or unique slug fragment. `abandon` requires a note. Follow `nextActions[]` rather than inferring legal transitions.
 
-## Slash commands and flags
+## Slash commands
 
-The registered slash commands are:
-
-- `/charter` — show status for the session-bound charter.
-- `/charter <id-fragment>` — show status for that charter.
-- `/charter create <objective>` — create and bind a charter.
+- `/charter` — show the session-bound charter.
+- `/charter <id-fragment>` — show a charter.
+- `/charter create <objective>` — create and bind a phases charter.
 - `/charter list` — list charters.
-- `/charter status` — show status for the session-bound charter.
-- `/charter pause [note]` — pause the session-bound charter.
-- `/charter resume` — resume the session-bound charter.
-- `/charter complete [note]` — attempt completion.
-- `/charter abandon <note>` — abandon the charter.
-- `/charters` — open the charter picker/dashboard.
+- `/charter status` — show current status.
+- `/charter pause [note]` — pause.
+- `/charter resume` — explicitly resume as the user; after a Ralph guard pause, this is the only reset path.
+- `/charter complete [note]` — complete with the worker's concise reason.
+- `/charter abandon <note>` — abandon.
+- `/charters` — open the read-only dashboard and picker.
 
 The current runtime registers no pi-charter CLI flags.
 
-## Verification ownership
+## Verification and reporting
 
-pi-charter is verifier-agnostic. The charter-owning root agent defines durable assertions in `charter.md`, chooses any appropriate verification mechanism, and supplies an external verifier only the assertion, relevant context, and artifact destination under `.charters/<id>/work/`.
+The worker chooses verification that fits the Objective. For user-visible behavior, exercise the real flow and capture screenshots or recordings at verification time under `work/`. Link useful artifacts from the relevant phase body:
 
-The external verifier returns its result and artifact paths. The charter-owning root inspects those artifacts, decides what they prove, and updates the criterion's Status note. External verifiers do not own `charter.md`, `REPORT.md`, or lifecycle transitions.
+```md
+3. Verify — current
+   - Desktop recovery: [screenshot](work/recovery-desktop.png)
+   - Mobile recovery: [recording](work/recovery-mobile.mp4)
+```
 
-A failed verification ends that verification pass, not the charter lifecycle. The charter remains active unless explicitly paused or abandoned; record the failure when useful, fix the work, and run a new verification pass.
+Inspect artifacts before citing them. Do not create artificial screenshots at report time and do not treat artifact counts as proof. REPORT.md should explain what changed, why it meets the Objective, and what the captured evidence shows. An already curated report survives completion.
+
+## Ralph guard
+
+Ralph sends continuation only when the root worker and async subagents are idle. Within a rolling 15-minute window, the fifth actual send becomes a recovery prompt. If the next eligible activation arrives at or before the 5-minute warning boundary, the runtime pauses before sending. Quiet expiry does not cause a timed pause. Compaction and file edits do not reset history. After a guard pause, only explicit user `/charter resume` clears the warning and history; tool resume cannot bypass it. The guard does not kill unrelated jobs.
 
 ## Documentation map
 
 | Path | Purpose |
 |---|---|
 | `CONTEXT.md` | Current domain language and boundaries. |
-| `docs/adr/0014-file-as-interface-redesign.md` | Accepted file-as-interface architecture; supersedes earlier multi-file/tool decisions. |
-| `docs/adr/0015-unify-criterion-status-and-evidence.md` | Unified Status grammar, richer authoring, and projection hierarchy. |
-| `docs/adr/` | Decision history and supersession context. |
-| `skills/pi-charter/SKILL.md` | Agent workflow for owning a charter. |
-| `src/index.ts` | Live extension composition root. |
+| `docs/adr/0016-objective-and-emergent-phases.md` | Current cross-cutting design decision. |
+| `docs/implementation/` | Current runtime and API contracts. |
+| `skills/pi-charter/SKILL.md` | Worker workflow and authoring guidance. |
+| `docs/adr/0014-file-as-interface-redesign.md` | Historical one-file redesign, superseded in part. |
+| `docs/adr/0015-unify-criterion-status-and-evidence.md` | Historical criterion model, superseded. |
 
 ## Development
 

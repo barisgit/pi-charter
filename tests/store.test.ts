@@ -2,41 +2,50 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, writeTextAtomic } from "../src/infrastructure/store";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, writeCharterState, writeTextAtomic } from "../src/infrastructure/store";
 
 async function tempProject(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pi-charter-store-"));
 }
 
 describe("charter store", () => {
-  test("creates the hard-cut workspace shape", async () => {
+  test("creates a phase-schema workspace without criterion sequence state", async () => {
     const project = await tempProject();
-    const now = "2026-07-02T00:00:00.000Z";
     const created = await createCharterWorkspace(project, {
-      charterId: "20260702-000000-ship-runtime",
-      objective: "Ship runtime",
-      now,
-      sessionId: "s1",
+      charterId: "20260702-000000-ship-runtime", objective: "Ship runtime", now: "2026-07-02T00:00:00.000Z", sessionId: "s1",
     });
     expect(created.charterDir).toBe(charterDir(project, created.charterId));
-    expect(await pathExists(join(created.charterDir, "charter.md"))).toBe(true);
-    expect(await pathExists(join(created.charterDir, "state.json"))).toBe(true);
-    expect(await pathExists(join(created.charterDir, "events.jsonl"))).toBe(true);
+    expect(created.state).toMatchObject({ schemaVersion: "phases", objective: "Ship runtime", status: "active", sessionId: "s1" });
+    expect(created.state).not.toHaveProperty("nextSeq");
+    expect(created.state).not.toHaveProperty("criteriaSnapshot");
     expect(await pathExists(join(created.charterDir, "work"))).toBe(false);
-    expect(await pathExists(join(project, ".pi", "charters"))).toBe(false);
     const parsed = await loadParsedCharter(created.charterDir);
-    expect(parsed.objective).toBe("Ship runtime");
-    expect(parsed.openEnded).toBe(true);
+    expect(parsed.phases).toEqual([{ number: 1, title: "Explore phases", status: "current", body: "" }]);
+  });
+
+  test("lists legacy charters read-only and marks them legacy", async () => {
+    const project = await tempProject();
+    const created = await createCharterWorkspace(project, { charterId: "20260702-000000-new", objective: "New", now: "2026-07-02T00:00:00.000Z" });
+    const legacyDir = charterDir(project, "20260701-000000-old");
+    await writeTextAtomic(join(legacyDir, "charter.md"), "## Objective\n\nOld\n\n## Criteria\n");
+    await writeTextAtomic(join(legacyDir, "state.json"), `${JSON.stringify({
+      charterId: "20260701-000000-old", schemaVersion: "file-interface", objective: "Old", status: "active",
+      createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", sessionId: "s1",
+      nextSeq: 8, latestSourceSeq: 7, criteriaSnapshot: [], snapshotHash: "legacy-hash",
+    })}\n`);
+    const rows = await listCharters(project);
+    expect(rows.map((row) => [row.charterId, row.legacy])).toEqual([[created.charterId, false], ["20260701-000000-old", true]]);
+    const legacy = await loadCharterState(legacyDir);
+    expect(legacy).toMatchObject({ schemaVersion: "file-interface", objective: "Old", status: "active", sessionId: "s1" });
+    expect(legacy).not.toHaveProperty("nextSeq");
+    await expect(writeCharterState(legacyDir, legacy)).rejects.toThrow("Legacy charters are read-only");
   });
 
   test("lists charters reverse-sorted by id", async () => {
     const project = await tempProject();
     await createCharterWorkspace(project, { charterId: "20260702-000000-a", objective: "A", now: "2026-07-02T00:00:00.000Z" });
     await createCharterWorkspace(project, { charterId: "20260703-000000-b", objective: "B", now: "2026-07-03T00:00:00.000Z" });
-    expect((await listCharters(project)).map((row) => row.charterId)).toEqual([
-      "20260703-000000-b",
-      "20260702-000000-a",
-    ]);
+    expect((await listCharters(project)).map((row) => row.charterId)).toEqual(["20260703-000000-b", "20260702-000000-a"]);
     expect(await pathExists(join(chartersRoot(project), "index.json"))).toBe(false);
   });
 
@@ -44,8 +53,7 @@ describe("charter store", () => {
     const project = await tempProject();
     const created = await createCharterWorkspace(project, { charterId: "20260702-000000-a", objective: "A", now: "2026-07-02T00:00:00.000Z" });
     await appendEvent(created.charterDir, { type: "custom", ts: "2026-07-02T00:00:01.000Z", charterId: created.charterId, value: 1 });
-    const events = await readEvents(created.charterDir);
-    expect(events.map((event) => event.type)).toEqual(["charter_created", "custom"]);
+    expect((await readEvents(created.charterDir)).map((event) => event.type)).toEqual(["charter_created", "custom"]);
   });
 
   test("atomic text write replaces full contents", async () => {
@@ -55,24 +63,5 @@ describe("charter store", () => {
     await writeTextAtomic(path, "new");
     expect(await readFile(path, "utf8")).toBe("new");
     expect((await stat(path)).isFile()).toBe(true);
-  });
-
-  test("normalizes legacy evidence snapshots into the unified status model", async () => {
-    const project = await tempProject();
-    const created = await createCharterWorkspace(project, { charterId: "20260702-000000-legacy", objective: "Legacy", now: "2026-07-02T00:00:00.000Z" });
-    const statePath = join(created.charterDir, "state.json");
-    await writeTextAtomic(statePath, `${JSON.stringify({
-      ...created.state,
-      criteriaSnapshot: [{
-        id: "C1",
-        title: "Works",
-        depends: [],
-        evidence: { status: "none", note: "" },
-        evidenceSeq: 4,
-      }],
-    })}\n`);
-
-    const loaded = await loadCharterState(created.charterDir);
-    expect(loaded.criteriaSnapshot).toEqual([{ id: "C1", title: "Works", depends: [], status: { value: "pending", note: "" }, statusSeq: 4 }]);
   });
 });

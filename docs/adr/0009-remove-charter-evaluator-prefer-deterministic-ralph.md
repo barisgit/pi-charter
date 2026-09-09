@@ -1,6 +1,8 @@
 # Remove the post-turn LLM verdict path, prefer deterministic Ralph
 
-Status: accepted
+Status: accepted; amended by ADR-0016
+
+> **Amended by ADR-0016.** Ralph remains deterministic and there is still no post-turn evaluator or auto-spawn scheduler. ADR-0016 adds a bounded loop guard that may pause before a Ralph send; only an explicit user `/charter resume` resets a guard pause.
 
 ## Decision
 

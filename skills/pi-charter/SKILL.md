@@ -1,106 +1,102 @@
 ---
 name: pi-charter
-description: "Use for durable charter-bound agent work in pi-charter: create/list/status/pause/resume/complete/abandon, edit charter.md under .charters, update criterion Status lines, capture verification artifacts, and curate REPORT.md. Skip quick single-turn fixes."
+description: "Use for durable Objective-led work in pi-charter: create/list/status/pause/resume/complete/abandon, edit charter.md under .charters, grow lightweight Phases, capture verification artifacts, and curate REPORT.md. Skip quick single-turn fixes."
 ---
 
 # pi-charter
 
-Use this skill for durable, multi-turn, resumable work or whenever the user explicitly requests a charter. Work normally for quick fixes.
+Use this skill for durable, multi-turn, resumable work or when the user explicitly requests a charter. Work normally for quick fixes.
 
-`CONTEXT.md`, ADR-0014, ADR-0015, `AGENTS.md`, and `src/domain/template.ts` are binding. Follow them if this skill drifts.
+`CONTEXT.md`, ADR-0016, `AGENTS.md`, and `src/domain/template.ts` are binding. Earlier criterion-based docs are historical where they conflict.
 
 ## Create only when ready
 
-Create once scope and success are clear enough to author meaningful criteria and begin. Do not use a charter as a waiting room for unanswered questions. If a consequential user decision becomes necessary mid-charter, pause with the question in `note`.
+Create after the authorized outcome is clear enough to begin:
 
 ```ts
 charter({ action: "create" | "list" | "status" | "pause" | "resume" | "complete" | "abandon", id?, objective?, note? })
 ```
 
-Follow every returned `nextActions[]`; do not memorize lifecycle legality.
+Follow returned `nextActions[]`; do not memorize lifecycle legality.
 
-## Author the durable contract
+The Objective is the durable completion contract, not a task title. Preserve the user's intent. You may add constraints, verification expectations, and report requirements only when the user authorized them. Never change or narrow the request while making it more detailed.
 
-After `create`, edit `.charters/<id>/charter.md` directly.
+## Author the charter
 
-- Make `## Objective` descriptive enough to preserve why the work matters, the intended outcome, and important constraints.
-- Add optional `## References` for durable pointers to specs, plans, handoffs, ADRs, docs, or code. Do not put mutable progress there.
-- Add optional `## Scope` for in/out boundaries.
-- Under `## Criteria`, write independently meaningful observable outcomes, not tactical implementation steps. A substantial charter often needs roughly 10–20 criteria; narrow work may need fewer. Never pad the count.
-- Give each criterion a concise title and enough prose to preserve expected behavior, boundaries, and important cases.
-- Use `Depends:` only as advisory ordering.
-- Use exactly one live record per criterion:
+After creation, edit `.charters/<id>/charter.md` directly.
 
-```markdown
-Status: pending|in-progress|blocked|pass|fail — <note>
+- Keep `# Objective` substantial enough to survive compaction, handoff, or agent replacement.
+- Add `## References` when specs, plans, ADRs, docs, or code are durable sources of authority. State each source's role.
+- Add `## Scope` only to clarify authorized in/out boundaries.
+- Start with the exact scaffolded phase `1. Explore phases`.
+- Add phases as the work becomes understood. Do not invent a quota, dependency graph, acceptance checklist, or planning state.
+- Put progress notes and evidence links in indented Markdown beneath the relevant phase.
+
+Canonical grammar:
+
+```md
+# Objective
+
+Ship the approved account recovery flow without changing login behavior. Verify the real browser flow at desktop and mobile widths, and deliver a reviewable report with the captured UI evidence.
+
+## References
+
+- [Recovery specification](../../docs/recovery.md) — behavior authority
+
+## Scope
+
+Password recovery UI and API integration only. Login and registration are unchanged.
+
+## Phases
+
+1. Explore phases — done
+   Confirmed the approved flow and existing login boundaries.
+2. Implement — done
+   Added the recovery form and token exchange.
+3. Verify — current
+   - Desktop result: [screenshot](work/recovery-desktop.png)
+   - Mobile flow: [recording](work/recovery-mobile.mp4)
 ```
 
-Status meanings:
+The optional exact suffix is `— upcoming`, `— current`, or `— done`. If no phase is explicitly current, the initial bare phase or first unfinished unmarked phase is current by inference; other unmarked phases are upcoming. Unknown Markdown is inert, and parser problems become warnings.
 
-- `pending`: meaningful work has not begun; note optional.
-- `in-progress`: current work; note what is happening.
-- `blocked`: cannot advance; note the concrete blocker.
-- `pass`: verified; note required and must say what was observed.
-- `fail`: verification failed; note required and must say what failed and why.
-
-Do not add a separate evidence or activity field. pi-dag-tasks owns tactical execution steps; the charter owns durable outcomes and criterion activity.
-
-A charter with no live criteria is open-ended and can never complete. Use that only for intentionally unbounded work.
+A phase is a progress narrative. It is not a criterion, tactical task, evidence schema, freshness unit, dependency, or completion gate. A charter can complete with zero phases.
 
 ## Work and verify
 
-1. Mark current criteria `in-progress` as work begins; use `blocked` only for a real blocker.
-2. Implement normally. Delegate bounded recon or QA when useful, but the root owner edits `charter.md`, curates `REPORT.md`, and performs lifecycle calls.
-3. Verify each criterion with the strongest fitting evidence.
-4. Save artifacts captured at verification time under `.charters/<id>/work/` and inspect them before citation.
-5. Update the same Status line to `pass` or `fail` with the observation and artifact paths.
-6. Continue until every criterion is `pass` with a non-empty evidence note.
+1. Re-read the Objective and authoritative References before consequential work.
+2. Use phases to explain the approach and current progress, not to duplicate a todo list.
+3. Implement normally. Use pi-dag-tasks for tactical steps when needed.
+4. Verify the real outcome. For user-visible behavior, exercise it as a user would.
+5. Capture screenshots or recordings at verification time under `.charters/<id>/work/`.
+6. Inspect artifacts before linking them from a phase body.
+7. Re-verify only when the actual change calls earlier evidence into question. There is no global source-change invalidation.
 
-A failed check ends that verification pass, not the charter lifecycle. Record `fail`, fix the work, and verify again. Do not pause or abandon merely because verification failed.
+A failed check ends that verification pass, not the charter lifecycle. Fix and verify again. Pause only when work intentionally stops or needs a user decision.
 
-## Evidence doctrine
+Do not create artificial screenshots at report time. There is no artifact count gate. One useful recording can prove more than ten decorative files.
 
-Evidence proves the built thing works; it is not a diary entry.
+## Handle Ralph recovery
 
-1. **Use it like a user.** Drive the real UI or flow and capture a screenshot or recording in `work/`.
-2. **Observe the real system.** Capture actual CLI output, endpoint responses, logs, database output, or generated files.
-3. **Run the checks.** Tests, typecheck, and lint are necessary but weakest; they may suffice for purely code-level criteria.
+Ralph continues only when the root agent and async subagents are idle. Treat a recovery prompt as a signal to inspect the Objective, recent attempts, evidence, and blockers before choosing a different move.
 
-Do not backfill artifacts at report time. If an artifact does not show the criterion working, it is not evidence for that criterion.
+The fifth actual Ralph send within rolling fifteen minutes is recovery. If another eligible activation arrives at or before the five-minute warning boundary, the runtime pauses before sending. Quiet time does not trigger a pause. Compaction and file edits do not reset history.
 
-```markdown
-Status: in-progress — implementing the real login flow
-Status: blocked — test account access is unavailable
-Status: pass — drove login on dev server; screenshot: work/c1-login.png (2026-07-14)
-Status: fail — callback returned 500; response saved at work/c1-callback.txt (2026-07-14)
-```
-
-Staleness is computed globally. A `pass` recorded before a later source change remains advisory in status/Ralph but hard-blocks completion until the criterion is re-verified and its Status line updated.
+After a guard pause, only the user can reset it with explicit `/charter resume`. Do not try to bypass it with the `charter` tool. The guard does not authorize killing unrelated jobs.
 
 ## Complete and curate REPORT.md
 
-Call `charter({ action: "complete" })` when all criteria pass. The first attempt scaffolds `REPORT.md` from the Objective, References, Scope, criterion bodies, dependencies, and Status notes, then asks you to curate it.
+Before completion:
 
-Treat `REPORT.md` as the reviewable deliverable:
+1. Audit the complete Objective, including constraints, verification expectations, and report requirements.
+2. Check each external Reference that has authority over the result.
+3. Curate REPORT.md as the reviewable account of what changed, why it meets the Objective, and what the captured artifacts demonstrate.
+4. Supply a concise completion note that states why the Objective is met.
 
-- explain what changed and why it satisfies the criteria;
-- link useful artifacts already captured under `work/`;
-- keep it reviewable and PR-pasteable;
-- do not create new evidence merely to fill the report.
+Completion can generate REPORT.md when it is missing; it does not require a deliberately failed scaffold call. If REPORT.md is already curated, completion preserves it. The existing `charter:before_complete` hook still decides whether the transition may proceed.
 
-After curation, retry `complete`. If completion reports stale passes, re-verify those criteria first.
+Phase count and status do not gate completion. Neither do freshness, evidence counts, or screenshot quotas. Completion is worker judgment grounded in the Objective and observed result.
 
-## Parsed grammar
+## Legacy charters
 
-```markdown
-## Objective
-## References
-## Scope
-## Criteria
-### C<n>. <concise observable title>
-<criterion body>
-Depends: C1, C2
-Status: pending|in-progress|blocked|pass|fail — <note>
-```
-
-`## References`, `## Scope`, criterion bodies, and `Depends:` are optional. Criteria are flat. Unknown structure and grouping headings are inert; parser breakage produces warnings rather than blocking work.
+A `file-interface` charter is read-only history. It may appear in `/charters`, but you cannot edit, resume, complete, or migrate it. Start a new charter for continued work and reference the old charter when useful.

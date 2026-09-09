@@ -145,25 +145,19 @@ test("concurrent session binding revalidates the one-active invariant", async ()
 test("snapshot writers cannot overwrite concurrent lifecycle mutations", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
-    const { createCharter } = await import("../src/application/service");
+    const { createCharter, pauseCharter } = await import("../src/application/service");
+    const { refreshSessionSnapshots } = await import("../src/application/snapshots");
     const { charterDir, loadCharterState } = await import("../src/infrastructure/store");
     const created = await createCharter(project, { objective: "Snapshots", sessionId: "shared" });
-    await runWriters(project, [
-      ...Array.from({ length: 20 }, () => `
-        import { tickToolResult } from ${JSON.stringify(resolve(import.meta.dir, "../src/application/staleness.ts"))};
-        await Bun.stdin.text();
-        await tickToolResult(${JSON.stringify(project)}, { sessionId: "shared", files: ["src/file.ts"] });
-      `),
-      `import { pauseCharter } from ${JSON.stringify(service)};
-       await Bun.stdin.text();
-       await pauseCharter(${JSON.stringify(project)}, { charterId: ${JSON.stringify(created.charterId)} });`,
+    await Promise.all([
+      ...Array.from({ length: 20 }, () => refreshSessionSnapshots(project, "shared")),
+      pauseCharter(project, { charterId: created.charterId }),
     ]);
     const dir = charterDir(project, created.charterId);
     const state = await loadCharterState(dir);
     expect(state.status).toBe("paused");
-    expect(state.nextSeq).toBe(21);
-    const events = (await readEvents(dir)).filter((event) => event.type === "source_modified");
-    expect(events.map((event) => event.seq)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+    const events = (await readEvents(dir)).filter((event) => event.type === "charter_file_changed");
+    expect(events).toHaveLength(0);
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -177,7 +171,7 @@ test("concurrent completion and abandonment commit only one terminal transition"
     const created = await createCharter(project, { objective: "Finish", sessionId: "shared" });
     const dir = charterDir(project, created.charterId);
     await writeTextAtomic(join(dir, "charter.md"), "## Objective\nFinish\n\n### C1. Works\nStatus: pass — checked\n");
-    await expect(completeCharter(project, { charterId: created.charterId })).rejects.toThrow("REPORT.md scaffolded");
+    // Completion now generates the report and commits in one attempt.
     const results = await runWriters(project, Array.from({ length: 10 }, (_, writer) => `
       import { completeCharter, abandonCharter } from ${JSON.stringify(service)};
       await Bun.stdin.text();
@@ -233,13 +227,9 @@ test("mutation and journal locks release after exceptions", async () => {
 }, 20000);
 
 test("background entry points leave a missing charter root untouched", async () => {
-  const { refreshSessionSnapshots, recordSourceModification, tickToolResult } = await import("../src/application/staleness");
+  const { refreshSessionSnapshots } = await import("../src/application/snapshots");
   const { readdir } = await import("node:fs/promises");
-  for (const run of [
-    (project: string) => refreshSessionSnapshots(project),
-    (project: string) => recordSourceModification(project, { files: ["src/file.ts"] }),
-    (project: string) => tickToolResult(project, { files: ["src/file.ts"] }),
-  ]) {
+  for (const run of [(project: string) => refreshSessionSnapshots(project)]) {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
     try {
       await run(project);

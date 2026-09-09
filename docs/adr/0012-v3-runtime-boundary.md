@@ -1,6 +1,8 @@
 # pi-charter v3 runtime boundary
 
-Status: accepted; supersedes ADR-0008
+Status: superseded in part by ADR-0016; supersedes ADR-0008
+
+> **Superseded in part by ADR-0016.** The four lifecycle states and worker-owned execution remain. Objective → Milestone → VAL, criterion sidecars, trust gates, and freshness no longer apply to new charters.
 
 ## Decision
 

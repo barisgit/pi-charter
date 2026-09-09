@@ -7,7 +7,7 @@ export interface HookPayloadBase {
 
 export interface BeforeCompletePayload extends HookPayloadBase {
   type: "charter:before_complete";
-  criteriaCount: number;
+  phaseCount: number;
   completionNote?: string;
 }
 

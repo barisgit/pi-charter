@@ -4,50 +4,48 @@ Reference for coding agents working in this repository.
 
 ## Project stance
 
-`pi-charter` is a new successor concept, not a cosmetic rename of `pi-goals` v1. Treat v1 as reference material only. The current domain model is documented in `CONTEXT.md` and the ADRs (notably ADR-0014 and ADR-0015, which supersede the v3 surface from ADR-0010/0011 and amend ADR-0012/0013).
+`pi-charter` is a successor concept, not a cosmetic rename of `pi-goals` v1. ADR-0016 defines the current Objective/Phases model and supersedes the criterion surface in ADR-0014 and ADR-0015. Treat earlier ADRs and v1 as history where they conflict.
 
 ## Read order
 
-1. `CONTEXT.md` — canonical language and boundaries.
-2. `docs/adr/` — decisions that should not be re-litigated casually.
-3. `docs/implementation/` — implementation specs and tool contracts.
-4. `docs/research/2026-05-14-pi-charter-design/v2-brainstorm.md` — full design archive when details are missing.
-5. `docs/reference/v1-pi-goals/pi-goals/index.ts` — old implementation patterns to lift surgically.
+1. `CONTEXT.md` — canonical domain language.
+2. `docs/adr/0016-objective-and-emergent-phases.md` — current cross-cutting decision.
+3. `docs/implementation/` — implementation contracts.
+4. Earlier ADRs — decision history and surviving constraints.
+5. `docs/research/` and `docs/reference/v1-pi-goals/` — historical design and plumbing patterns only.
 
 ## Invariants
 
-- The file is the interface: `charter.md` is the single authored artifact (descriptive Objective, optional References and Scope, substantive `### C<n>.` criteria with optional `Depends:` and one `Status:` line). There is no `criteria.md` and no tool for editing criteria or recording evidence — agents edit the file; the runtime snapshot-diffs it at tool-result boundaries.
-- One LLM tool: `charter({action, id?, objective?, note?})` with actions `create | list | status | pause | resume | complete | abandon`. Every return carries legal `nextActions[]` so agents do not memorize the FSM.
-- Charters live in `.charters/<YYYYMMDD-HHMMSS>-<slug>/` (timestamp-sorted ids, not UUIDs). Sidecars: `state.json` (lifecycle/session/snapshot only), `events.jsonl` (append-only journal), `work/` (evidence artifacts), `REPORT.md` (deliverable). Old `.pi/charters/` dirs are never read; no migration.
-- Criterion workflow and evidence live together in `Status: pending|in-progress|blocked|pass|fail — <note>`; history lives in the journal. Do not add a parallel evidence/activity field. `criterion-state.json` and `feature-state.json` are dead names.
-- Decomposition is flat: Objective → Criterion. Milestones are not modeled; grouping headings are inert. `Depends:` is advisory only — never a gate.
-- A charter with no criteria is open-ended: `complete` is never legal; it runs until pause/abandon.
-- Staleness is computed and global (sequence-counter order, per tool call — never per turn): a stale `pass` Status is advisory in status/Ralph and hard-rejected at `complete`. There is no per-criterion freshness flag.
-- The agent is the smart-Ralph loop driver. Do not add an auto-spawn scheduler. Ralph reprompts are condensed one-liners; `status` stays terse.
-- The charter records evidence; it does not run checks (ADR-0013). Evidence doctrine (taught, not gated): use it like a user (screenshot/recording in `work/`) > observe the real system > run tests. Artifacts are captured at verification time, never retroactively for the report.
-- REPORT.md is curation, not creation: scaffolded at first `complete` attempt, pre-populated from charter.md; artifact links are encouraged, not code-gated.
-- One active charter per session; `create` while one is active fails with a pointer to it.
-- Tactical turn-to-turn todos stay in `pi-dag-tasks`; pi-charter only subscribes to hook events if needed.
-- No `contractPath`, no `--charter-spec`, no spec auto-detect, no spec copy heuristic. No budgets (bound by the host session; revisit with the planned CLI extraction).
+- `charter.md` is the single authored file: substantial `# Objective`, optional `## References` and `## Scope`, and `## Phases` containing ordered Markdown items.
+- Every new charter starts with exact `1. Explore phases`. If no phase is explicitly `current`, the initial bare phase or first unfinished unmarked phase is `current` by inference; other unmarked phases are `upcoming`. Explicit suffixes are `— upcoming`, `— current`, or `— done`. Indented Markdown is the phase body.
+- A Phase is `{ number, title, status, body }`. It is progress narrative, not a criterion, task, dependency, evidence schema, freshness unit, or completion gate. There is no phase-count quota.
+- One LLM tool remains: `charter({ action, id?, objective?, note? })` with `create | list | status | pause | resume | complete | abandon`. Every return carries legal `nextActions[]`.
+- Lifecycle remains `active | paused | completed | abandoned`. A new charter can complete with zero phases.
+- New state uses `schemaVersion: "phases"`, lifecycle/session fields, optional whole-file `snapshotHash`, and optional Ralph guard state. Do not restore criterion snapshots or global source/tool sequences.
+- `schemaVersion: "file-interface"` charters are dashboard-visible, read-only history. Never mutate, resume, or migrate them. Continued work starts in a new charter.
+- Completion is worker judgment after auditing the Objective and external references. It needs a concise note, a curated `REPORT.md`, and approval from `charter:before_complete`; it does not require phases done, fresh passes, artifact counts, or a deliberately failed first call. Preserve an already curated report.
+- pi-charter records evidence and never runs verification. The worker drives the real system. Capture screenshots or recordings at verification time, link useful files in phase bodies, and curate them into REPORT.md.
+- The agent is the loop driver. Do not add an auto worker scheduler or another evaluator.
+- Ralph's shared guard semantics are exact: the fifth actual send in a rolling 15 minutes is recovery; the next eligible activation at or before the 5-minute warning boundary pauses before send; quiet expiry does not pause; compaction and edits do not reset; only explicit user `/charter resume` clears a guard pause and history; tool resume cannot bypass; unrelated jobs continue.
+- Charter ids remain `<YYYYMMDD-HHMMSS>-<slug>` under `.charters/`. Sidecars remain `state.json`, `events.jsonl`, `work/`, and `REPORT.md`.
+- Tactical turn-to-turn todos stay in pi-dag-tasks.
+- No `contractPath`, `--charter-spec`, spec auto-detect, budgets, question/planning states, artifact gates, or OpenSpec framework.
 
 ## Implementation guidance
 
-- Lift from v1 only proven extension plumbing: TypeBox schemas, atomic temp-file writes, lazy state loading, reminder event shape, status widget basics, and command parsing.
-- Replace v1 static reminders with deterministic Ralph steering.
-- Status is the single `Status: pending|in-progress|blocked|pass|fail — <note>` line in charter.md; pass/fail notes carry evidence and the journal keeps history. Existing `Evidence:` lines are accepted only as a legacy input alias. The v3 structured entry schema and the older typed `kind`/`verdict`/`observation` envelope are rejected.
-- Charter ids are `<YYYYMMDD-HHMMSS>-<slug>` (ADR-0014); do not use UUIDs or v1 hash ids.
-- The parser is tolerant: unknown structure is inert prose, breakage is a warning, never a work blocker.
-- The `create` scaffold template teaches the whole grammar, richer authoring guidance, and evidence doctrine in HTML comments, with example criteria inside a comment (zero live placeholders).
-- Use Pi extension APIs from `docs/reference/pi-docs/extensions.md` and live installed docs if in doubt.
-- Before editing runtime code, inspect the relevant docs and v1 reference. Keep changes surgical.
+- Before runtime edits, inspect ADR-0016, the matching implementation spec, and v1 only for proven extension plumbing.
+- Keep the parser tolerant: unknown Markdown is inert and malformed known grammar produces warnings rather than blocking work.
+- The Objective may gain only user-authorized constraints, verification detail, and report requirements. Never change or narrow user intent.
+- Use Pi extension APIs from `docs/reference/pi-docs/extensions.md` and live installed docs if needed.
+- Make changes through failing behavior tests and small vertical slices. Preserve unrelated shared-tree work.
 
 ## Verification
 
-At minimum before handoff:
+Run the narrowest behavior tests while iterating. Before handoff, the project minimum remains:
 
 ```bash
 bun run check-types
 bun test
 ```
 
-If tests are not yet present, state that clearly and run `bun run check-types` once dependencies are installed.
+Do not claim known baseline failures passed without checking them.

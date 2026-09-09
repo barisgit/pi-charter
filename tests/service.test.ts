@@ -2,17 +2,13 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { abandonCharter, completeCharter, countStatusFailures, createCharter, getCharterStatus, pauseCharter, resumeCharter } from "../src/application/service";
-import { recordSourceModification } from "../src/application/staleness";
+import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, pauseCharter, resumeCharter } from "../src/application/service";
+import { subscribeHook } from "../src/application/hooks";
+import { renderRalphPrompt } from "../src/application/ralph";
+import { loadCharterState, writeCharterState } from "../src/infrastructure/store";
 import { charterDir, pathExists, reportPath, writeTextAtomic } from "../src/infrastructure/store";
 
-async function tempProject(): Promise<string> {
-  return mkdtemp(join(tmpdir(), "pi-charter-service-"));
-}
-
-function md(status: string): string {
-  return `## Objective\n\nShip it.\n\n## Criteria\n\n### C1. First works\nStatus: ${status}\n\n### C2. Second works\nDepends: C1\nStatus: pass — checked second\n`;
-}
+async function tempProject(): Promise<string> { return mkdtemp(join(tmpdir(), "pi-charter-service-")); }
 
 async function createWithText(project: string, text: string, sessionId = "s1") {
   const created = await createCharter(project, { objective: "Ship it", now: "2026-07-02T00:00:00.000Z", sessionId });
@@ -20,99 +16,135 @@ async function createWithText(project: string, text: string, sessionId = "s1") {
   return created.charterId;
 }
 
-describe("service lifecycle", () => {
-  test("counts new Status and legacy Evidence journal failures", () => {
-    const base = { type: "criterion_changed", ts: "2026-07-02T00:00:00.000Z", charterId: "c", criterion: "C1", new: "fail" };
-    const counts = countStatusFailures([
-      { ...base, field: "status.value" },
-      { ...base, field: "evidence.status" },
-      { ...base, field: "status.note" },
-    ]);
-    expect(counts.get("C1")).toBe(2);
-  });
-
-  test("create status pause resume complete happy path", async () => {
+describe("Objective/Phases service", () => {
+  test("subheaded Objective constraints reach status, Ralph and the completion report intact", async () => {
     const project = await tempProject();
-    const id = await createWithText(project, md("pass — checked first"));
-    let status = await getCharterStatus(project, { charterId: id });
-    expect(status.statusCounts.pass).toBe(2);
-    expect(status.nextActions.map((action) => action.action)).toContain("complete");
-
-    expect((await pauseCharter(project, { charterId: id })).status).toBe("paused");
-    expect((await resumeCharter(project, { charterId: id })).status).toBe("active");
-
-    await expect(completeCharter(project, { charterId: id })).rejects.toThrow("REPORT.md scaffolded");
-    expect(await pathExists(reportPath(charterDir(project, id)))).toBe(true);
-    const completed = await completeCharter(project, { charterId: id, note: "done" });
-    expect(completed.status).toBe("completed");
-  });
-
-  test("projects all five statuses and scaffolds the full authored contract", async () => {
-    const project = await tempProject();
-    const text = `## Objective\n\nDeliver a durable outcome.\n\n## References\n\n- docs/spec.md\n\n## Scope\n\nIn: runtime. Out: scheduler.\n\n## Criteria\n\n### C1. Pending\nPending semantics.\nStatus: pending\n\n### C2. Active\nActive semantics.\nStatus: in-progress — implementing\n\n### C3. Blocked\nBlocked semantics.\nStatus: blocked — waiting on access\n\n### C4. Passing\nPassing semantics.\nStatus: pass — observed output\n\n### C5. Failing\nFailing semantics.\nStatus: fail — observed error\n`;
-    const id = await createWithText(project, text, "five-status-session");
+    const objective = "Ship recovery.\n\n### Constraints\n\nDo not change login. Verify desktop and mobile widths.";
+    const id = await createWithText(project, `# Objective\n\n${objective}\n\n## Phases\n\n1. Explore phases\n`);
     const status = await getCharterStatus(project, { charterId: id });
-    expect(status.statusCounts).toEqual({ pending: 1, "in-progress": 1, blocked: 1, pass: 1, fail: 1 });
-    expect(status).toMatchObject({ references: "- docs/spec.md", scope: "In: runtime. Out: scheduler." });
+    expect(status.objective).toBe(objective);
+    expect(renderRalphPrompt(status)).toContain(objective);
+    await completeCharter(project, { charterId: id, note: "Verified the full recovery flow and preserved login." });
+    expect(await readFile(reportPath(charterDir(project, id)), "utf8")).toContain(objective);
+  });
 
-    await expect(completeCharter(project, { charterId: id })).rejects.toThrow("REPORT.md scaffolded");
+  test("ordinary pause and explicit resume retain an outstanding warning until a guard pause", async () => {
+    const project = await tempProject();
+    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Explore phases\n");
+    const state = await loadCharterState(project, id);
+    state.ralph = { activations: [1000], warnedAt: 1000 };
+    await writeCharterState(charterDir(project, id), state);
+    await pauseCharter(project, { charterId: id });
+    await resumeCharter(project, { charterId: id, userInitiated: true });
+    expect((await loadCharterState(project, id)).ralph).toEqual({ activations: [1000], warnedAt: 1000 });
+  });
+  test("completion hooks receive phase count and can still veto completion", async () => {
+    const project = await tempProject();
+    const id = await createWithText(project, "# Objective\n\nDeliver safely.\n\n## Phases\n\n1. Explore phases\n");
+    let observed: unknown;
+    const unsubscribe = subscribeHook("charter:before_complete", (payload) => {
+      observed = payload;
+      return { decision: "block", reason: "Deployment approval required" };
+    });
+    try {
+      await expect(completeCharter(project, { charterId: id, note: "Worker audit" })).rejects.toThrow("Deployment approval required");
+      expect(observed).toMatchObject({ phaseCount: 1, completionNote: "Worker audit" });
+      expect(observed).not.toHaveProperty("criteriaCount");
+      expect((await getCharterStatus(project, { charterId: id })).status).toBe("active");
+      expect(await pathExists(reportPath(charterDir(project, id)))).toBe(false);
+    } finally {
+      unsubscribe();
+    }
+  });
+  test("status exposes the agreed phase projection and raw markdown", async () => {
+    const project = await tempProject();
+    const markdown = "# Objective\n\nShip it safely.\n\n## References\n\n- docs/spec.md\n\n## Scope\n\nCore only.\n\n## Phases\n\n1. Explore — done\n   Findings: [capture](work/explore.png)\n2. Build\n3. Verify\n";
+    const id = await createWithText(project, markdown);
+    const status = await getCharterStatus(project, { charterId: id });
+    expect(status).toMatchObject({
+      charterId: id, status: "active", objective: "Ship it safely.", references: "- docs/spec.md", scope: "Core only.",
+      legacy: false, charterMarkdown: markdown, phaseCounts: { upcoming: 1, current: 1, done: 1 }, reportExists: false,
+    });
+    expect(status.phases.map((phase) => phase.title)).toEqual(["Explore", "Build", "Verify"]);
+    for (const removed of ["criteria", "statusCounts", "readyNext", "openEnded", "blockers"]) expect(status).not.toHaveProperty(removed);
+    expect(status.nextActions.map((action) => action.action)).toContain("complete");
+  });
+
+  test("completion succeeds on the first attempt with zero phases and generates an artifact-rich report", async () => {
+    const project = await tempProject();
+    const markdown = "# Objective\n\nDeliver the bounded result.\n\n## References\n\n- [Spec](docs/spec.md)\n\n## Phases\n\n";
+    const id = await createWithText(project, markdown);
+    const completed = await completeCharter(project, { charterId: id, note: "Delivered after auditing the objective and references." });
+    expect(completed.status).toBe("completed");
     const report = await readFile(reportPath(charterDir(project, id)), "utf8");
-    expect(report).toContain("## References\n\n- docs/spec.md");
-    expect(report).toContain("## Scope\n\nIn: runtime. Out: scheduler.");
-    expect(report).toContain("Passing semantics.");
-    expect(report).toContain("Status: pass — observed output");
+    expect(report).toContain("## Objective\n\nDeliver the bounded result.");
+    expect(report).toContain("## Completion\n\nDelivered after auditing");
+    expect(report).toContain("## Visual Evidence");
   });
 
-  test("complete rejects fail, none, empty pass note, and stale pass", async () => {
+  test("report includes linked image/video evidence from phase bodies without walking work", async () => {
     const project = await tempProject();
-    const fail = await createWithText(project, md("fail — broken"), "fail-session");
-    await expect(completeCharter(project, { charterId: fail })).rejects.toThrow("REPORT.md scaffolded");
-    await expect(completeCharter(project, { charterId: fail })).rejects.toThrow("status is fail");
-
-    const pending = await createWithText(project, md("pending"), "pending-session");
-    await expect(completeCharter(project, { charterId: pending })).rejects.toThrow("REPORT.md scaffolded");
-    await expect(completeCharter(project, { charterId: pending })).rejects.toThrow("status is pending");
-
-    const blocked = await createWithText(project, md("blocked — waiting for access"), "blocked-session");
-    const blockedStatus = await getCharterStatus(project, { charterId: blocked });
-    expect(blockedStatus.criteria[0]).toMatchObject({ status: "blocked", note: "waiting for access" });
-    await expect(completeCharter(project, { charterId: blocked })).rejects.toThrow("REPORT.md scaffolded");
-    await expect(completeCharter(project, { charterId: blocked })).rejects.toThrow("status is blocked");
-
-    const active = await createWithText(project, md("in-progress — implementing"), "active-session");
-    await expect(completeCharter(project, { charterId: active })).rejects.toThrow("REPORT.md scaffolded");
-    await expect(completeCharter(project, { charterId: active })).rejects.toThrow("status is in-progress");
-
-    const empty = await createWithText(project, md("pass"), "empty-session");
-    await expect(completeCharter(project, { charterId: empty })).rejects.toThrow("REPORT.md scaffolded");
-    await expect(completeCharter(project, { charterId: empty })).rejects.toThrow("empty note");
-
-    const stale = await createWithText(project, md("pass — checked first"), "stale-session");
-    await getCharterStatus(project, { charterId: stale });
-    await recordSourceModification(project, { files: ["src/changed.ts"], sessionId: "stale-session" });
-    await expect(completeCharter(project, { charterId: stale })).rejects.toThrow("REPORT.md scaffolded");
-    await expect(completeCharter(project, { charterId: stale })).rejects.toThrow("stale");
+    const markdown = "# Objective\n\nShip UI.\n\n## Phases\n\n1. Verify — done\n   Drove the app: [screenshot](work/result.png) and [recording](work/flow.webm).\n   Ignore [external](https://example.com/image.png) and [source](src/file.ts).\n";
+    const id = await createWithText(project, markdown);
+    await completeCharter(project, { charterId: id, note: "Verified." });
+    const report = await readFile(reportPath(charterDir(project, id)), "utf8");
+    expect(report).toContain("[screenshot](work/result.png)");
+    expect(report).toContain("[recording](work/flow.webm)");
+    const evidence = report.slice(report.indexOf("## Visual Evidence"));
+    expect(evidence).not.toContain("https://example.com");
+    expect(evidence).not.toContain("src/file.ts");
   });
 
-  test("open-ended charters cannot complete", async () => {
+  test("terminal recordings are curated as visual evidence without inventing an audit note", async () => {
     const project = await tempProject();
-    const created = await createCharter(project, { objective: "Watch CI", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
-    const status = await getCharterStatus(project, { charterId: created.charterId });
-    expect(status.openEnded).toBe(true);
-    expect(status.nextActions.map((action) => action.action)).not.toContain("complete");
-    await expect(completeCharter(project, { charterId: created.charterId })).rejects.toThrow("Open-ended");
+    const id = await createWithText(project, "# Objective\n\nVerify the TUI.\n\n## Phases\n\n1. Exercise dashboard — done\n   [Terminal recording](work/session.cast) and [External capture](/tmp/session.cast)\n");
+    await completeCharter(project, { charterId: id });
+    const report = await readFile(reportPath(charterDir(project, id)), "utf8");
+    const evidence = report.slice(report.indexOf("## Visual Evidence"));
+    expect(evidence).toContain("[Terminal recording](work/session.cast)");
+    expect(evidence).toContain("[External capture](/tmp/session.cast)");
+    expect(evidence).not.toContain("No user-visible artifacts");
+    expect(report).toContain("No completion note was supplied.");
   });
 
-  test("one active charter per session", async () => {
+  test("existing curated report is preserved on completion", async () => {
     const project = await tempProject();
-    await createCharter(project, { objective: "One", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
-    await expect(createCharter(project, { objective: "Two", now: "2026-07-02T00:00:01.000Z", sessionId: "s1" })).rejects.toThrow("already has active");
+    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Explore phases\n");
+    await writeTextAtomic(reportPath(charterDir(project, id)), "# Curated\n\nKeep me.\n");
+    await completeCharter(project, { charterId: id, note: "Done." });
+    expect(await readFile(reportPath(charterDir(project, id)), "utf8")).toBe("# Curated\n\nKeep me.\n");
   });
 
-  test("abandon requires note", async () => {
+  test("legacy charters remain readable, cannot mutate, and do not block new work", async () => {
     const project = await tempProject();
-    const created = await createCharter(project, { objective: "Drop it", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
+    const dir = charterDir(project, "20260701-000000-legacy");
+    const markdown = "## Objective\n\nOld objective.\n\n## Criteria\n";
+    await writeTextAtomic(join(dir, "charter.md"), markdown);
+    await writeTextAtomic(join(dir, "events.jsonl"), "");
+    await writeTextAtomic(join(dir, "state.json"), `${JSON.stringify({ charterId: "20260701-000000-legacy", schemaVersion: "file-interface", objective: "Old objective.", status: "active", createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-01T00:00:00.000Z", sessionId: "s1", snapshotHash: "old" })}\n`);
+    const status = await getCharterStatus(project, { charterId: "20260701-000000-legacy" });
+    expect(status).toMatchObject({ legacy: true, objective: "Old objective.", charterMarkdown: markdown, phases: [], warnings: [] });
+    await expect(pauseCharter(project, { charterId: status.charterId })).rejects.toThrow("Legacy charters are read-only");
+    const fresh = await createCharter(project, { objective: "New work", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
+    expect(fresh.status).toBe("active");
+    expect((await getBoundCharterStatus(project, "s1"))?.charterId).toBe(fresh.charterId);
+  });
+
+  test("guard pause requires explicit user resume and clears guard history", async () => {
+    const project = await tempProject();
+    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Explore phases\n");
+    await pauseCharter(project, { charterId: id, guard: true });
+    await expect(resumeCharter(project, { charterId: id })).rejects.toThrow("/charter resume");
+    const resumed = await resumeCharter(project, { charterId: id, userInitiated: true });
+    expect(resumed.data?.ralph).toEqual({ activations: [] });
+  });
+
+  test("ordinary lifecycle remains active, paused, resumed, abandoned", async () => {
+    const project = await tempProject();
+    const created = await createCharter(project, { objective: "Lifecycle", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
+    expect((await pauseCharter(project, { charterId: created.charterId })).status).toBe("paused");
+    expect((await resumeCharter(project, { charterId: created.charterId })).status).toBe("active");
     await expect(abandonCharter(project, { charterId: created.charterId })).rejects.toThrow("note is required");
-    expect((await abandonCharter(project, { charterId: created.charterId, note: "not needed" })).status).toBe("abandoned");
+    expect((await abandonCharter(project, { charterId: created.charterId, note: "Stopped" })).status).toBe("abandoned");
   });
 });

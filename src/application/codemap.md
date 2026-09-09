@@ -2,29 +2,29 @@
 
 ## Responsibility
 
-Acts as the application/service layer for charter lifecycle operations and Pi host orchestration. It translates tool, command, session, and event-bus activity into domain decisions, persistence calls, UI refreshes, and deterministic Ralph continuation.
+Coordinates charter lifecycle operations and Pi host orchestration. It turns tool, command, session, and event-bus activity into domain decisions, persistence calls, UI refreshes, Objective-led Ralph continuation, and the bounded Ralph guard.
 
-## Design Patterns
+## Design patterns
 
-- **Application service:** `service.ts` implements create/list/status/pause/resume/complete/abandon use cases and returns results with legal `NextAction` guidance.
-- **Adapter registration:** `registration.ts` binds those use cases to one TypeBox-backed Pi tool, compact self-shell call/result rendering, `/charter` and `/charters` commands, host hooks, widgets, and a custom Ralph message renderer.
-- **Observer:** `hooks.ts` maintains in-memory subscribers for `charter:before_complete` and `charter:before_abandon`; a blocking decision aborts the transition.
-- **Monotonic snapshot clock:** `staleness.ts` assigns sequence numbers to charter edits and source modifications so a `pass` predating later source work is stale.
-- **Typed application error:** `errors.ts` carries recovery-oriented `nextActions`; `version.ts` exposes the package version.
+- **Application service:** `service.ts` implements create/list/status/pause/resume/complete/abandon and returns legal `NextAction` guidance.
+- **Adapter registration:** `registration.ts` binds those use cases to the one Pi tool, slash commands, hooks, widget, dashboard, and Ralph message renderer.
+- **Observer:** `hooks.ts` hosts `charter:before_complete` and `charter:before_abandon`; a blocking decision aborts the transition.
+- **Whole-file snapshot:** `snapshots.ts` hashes charter.md and journals meaningful changes without source invalidation or freshness.
+- **Serialized guard transition:** `ralph.ts` evaluates and persists the rolling activation history under the same project mutation lock as lifecycle writes.
 
-## Data and Control Flow
+## Data and control flow
 
-1. `registerCharterTools()` or `registerCharterCommands()` receives host input and dispatches it through `runCharterAction()` to `service.ts`; model-visible tool text compacts legal transitions to `next:` action names while structured `details.nextActions` retains full hints.
-2. `createCharter()` enforces one active charter per session, generates an ID, and asks the store to scaffold the workspace. Other lifecycle methods resolve an ID, lock the charter directory, validate the transition, dispatch pre-terminal hooks, update state, and append events.
-3. `getCharterStatus()` refreshes the parsed file snapshot, computes failure counts and stale passes, derives blockers/ready criteria, checks `REPORT.md`, and returns legal next actions.
-4. `tool_result` hooks call `tickToolResult()` to consume one sequence, diff direct `charter.md` edits, and mark non-`.charters` modified files as source changes. `turn_end` refreshes external edits.
-5. The Ralph loop observes Pi activity and pi-subagents events, waits for idle/debounce and interruption windows, reloads the session-bound active charter, then emits an action-specific continuation: author criteria, work/verify/update the next criterion, repair stale/missing pass notes, or enter report/completion. Warning events drive the widget countdown.
-6. Widget registration periodically loads the bound status, builds a UI view model, and publishes it above the editor; `/charters` builds dashboard snapshots and opens the pane overlay.
+1. Tool or slash-command input reaches `runCharterAction()` and the matching use case in `service.ts`.
+2. Creation enforces one active charter per session and asks the store for a phases workspace. Lifecycle methods resolve an id, reject legacy writes, validate the transition, persist state, and append events.
+3. `getCharterStatus()` returns Objective, References, Scope, Phases, phase counts, warnings, report presence, Markdown, legacy marker, optional guard state, and legal next actions.
+4. `registerCharterFileHooks()` handles tool-result and turn-end boundaries through `refreshSessionSnapshots()` in `snapshots.ts`, journaling whole-file changes for mutable phases charters.
+5. Ralph waits for the root agent and async subagents to become idle. `nextRalphActivation()` computes the guard transition; `attemptRalphActivation()` serializes eligibility, the actual send or pause, persistence, and journaling. Sends append `ralph_activated`; a guard pause appends `charter_paused` with reason `ralph-guard`.
+6. Completion audits through worker judgment, generates or preserves REPORT.md, dispatches the before-complete hook, and transitions without phase or freshness gates.
+7. Widget and dashboard registration project the same status data. Explicit slash resume is the only path that resets a guard pause. Lifecycle pause, complete, and abandon cancel pending local Ralph timers without touching unrelated jobs.
 
-## Integration Points
+## Integration points
 
-- Depends on `src/domain/charter-file.ts`, `src/domain/ids.ts`, and `src/domain/types.ts` for parsing, readiness, IDs, and state contracts.
-- Depends on `src/infrastructure/store.ts` for locking, workspace creation, state, journal, report, and snapshot I/O.
-- Uses `src/infrastructure/logger.ts` and `src/infrastructure/subagent-bridge.ts` for diagnostics and pi-subagents event names.
-- Supplies status data to `src/ui/widget.ts`, `src/ui/widget-service.ts`, `src/ui/picker-snapshot.ts`, and `src/ui/charter-picker.ts`.
-- Integrates with Pi `registerTool` custom `renderCall`/`renderResult` self-shell rendering, `registerCommand`, `registerMessageRenderer`, lifecycle hooks, `pi.events`, and `pi-extension-utils` widgets/pane overlay.
+- Uses `src/domain/charter-file.ts`, `ids.ts`, and `types.ts` for parsing and state contracts.
+- Uses `src/infrastructure/store.ts` for locking, workspace creation, state, journal, report, and snapshot I/O.
+- Uses `src/infrastructure/logger.ts` and `subagent-bridge.ts` for diagnostics and idle coordination.
+- Supplies status to `src/ui/widget.ts`, `widget-service.ts`, `picker-snapshot.ts`, and `charter-picker.ts`.

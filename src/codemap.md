@@ -2,33 +2,34 @@
 
 ## Responsibility
 
-Implements the Pi extension runtime and enforces the boundary between pure charter concepts, lifecycle orchestration, filesystem/host adapters, and terminal presentation.
+Implements the Pi extension runtime and keeps pure charter concepts, lifecycle orchestration, filesystem/host adapters, and terminal presentation separate.
 
-## Design Patterns
+## Design patterns
 
-- **Composition root:** `index.ts` is a thin entry point that registers all extension capabilities.
-- **Layered dependencies:** application and UI consume domain contracts; application and UI call infrastructure adapters; domain code remains independent of Pi APIs.
-- **Explicit projections:** application services return `CharterStatusResult`; UI reducers convert that result into picker snapshots and widget view models.
+- **Composition root:** `index.ts` registers extension capabilities and re-exports public contracts.
+- **Layered dependencies:** application and UI consume domain contracts and infrastructure adapters; domain code has no Pi host dependency.
+- **Explicit projections:** application services return the exact `CharterStatusResult`; UI reducers turn it into picker and widget view models.
 
-## Data and Control Flow
+## Data and control flow
 
-1. Pi invokes the default export in `index.ts` with an `ExtensionAPI`.
-2. Registration functions install the tool and its compact call/result renderer, commands, host lifecycle listeners, shared event-bus listeners, widget, and custom Ralph renderer.
-3. Inputs flow through `application/` services to `domain/` parsing/rules and `infrastructure/` persistence.
-4. Status results flow into `ui/` snapshot builders and pure view-model reducers before terminal rendering.
-5. `index.ts` also re-exports `CharterToolError`, package version access, charter-file parsing APIs, and identifier helpers for consumers and tests.
+1. Pi invokes the default export in `index.ts`.
+2. Registration installs the one tool, slash commands, `registerCharterFileHooks()`, Ralph loop and renderer, widget, and dashboard.
+3. Inputs flow through application services to Objective/Phase domain parsing and infrastructure persistence.
+4. Whole-file changes flow through `application/snapshots.ts`; Ralph guard transitions flow through `application/ralph.ts` under the shared mutation lock.
+5. Status results flow into UI snapshot builders and pure view-model reducers.
+6. `index.ts` re-exports public lifecycle, Phase/parser, identifier, error, and version contracts.
 
-## Integration Points
+## Integration points
 
-- Entry point declared by `package.json`: `src/index.ts`.
-- Pi host contracts enter only through `index.ts`, `application/registration.ts`, selected UI host adapters, and infrastructure logging.
-- Runtime project storage is `.charters/<id>/`; no source module reads legacy `.pi/charters/` data.
+- Entry point: `src/index.ts`.
+- Pi host contracts enter through `index.ts`, `application/registration.ts`, selected UI host adapters, and infrastructure logging.
+- Runtime storage is `.charters/<id>/`; legacy `file-interface` state under that root is display-only. No source module reads old `.pi/charters/` data.
 
-## Directory Map
+## Directory map
 
-| Directory | Responsibility | Detailed Map |
-| --- | --- | --- |
-| `application/` | Coordinates lifecycle actions, snapshot freshness, hooks, Pi registrations, and Ralph behavior. | [`application/codemap.md`](application/codemap.md) |
-| `domain/` | Defines the charter file model, IDs, templates, lifecycle types, and pure parsing rules. | [`domain/codemap.md`](domain/codemap.md) |
-| `infrastructure/` | Implements durable storage, atomic writes, logging, and external event-name bridges. | [`infrastructure/codemap.md`](infrastructure/codemap.md) |
-| `ui/` | Builds and renders dashboard and widget projections from charter status. | [`ui/codemap.md`](ui/codemap.md) |
+| Directory | Responsibility | Detailed map |
+|---|---|---|
+| `application/` | Lifecycle, whole-file snapshots, hooks, registrations, Ralph, and guard behavior. | [`application/codemap.md`](application/codemap.md) |
+| `domain/` | Objective/Phase file model, ids, templates, lifecycle and guard types, parsing. | [`domain/codemap.md`](domain/codemap.md) |
+| `infrastructure/` | Durable storage, locks, atomic writes, logging, event-name bridges. | [`infrastructure/codemap.md`](infrastructure/codemap.md) |
+| `ui/` | Dashboard and widget projections. | [`ui/codemap.md`](ui/codemap.md) |

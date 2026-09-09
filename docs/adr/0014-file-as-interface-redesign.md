@@ -1,8 +1,10 @@
 # The file is the interface
 
-Status: accepted; supersedes ADR-0010 and ADR-0011; amends ADR-0012 and ADR-0013
+Status: superseded in part by ADR-0016; supersedes ADR-0010 and ADR-0011; amends ADR-0012 and ADR-0013
 
-> **Amended by ADR-0015.** The single-file/tool/lifecycle design remains current, but ADR-0015 supersedes this ADR's criterion grammar and authoring guidance: canonical criteria now use one unified `Status:` line, optional References, and substantive criterion bodies. `Evidence:` is legacy input only.
+> **Superseded in part by ADR-0016.** One file, one tool, timestamp-slug ids, `.charters/`, and the worker-owned loop remain. New charters use a substantial Objective plus emergent Phases, with no criteria, status lines, global freshness, or mandatory failed completion attempt.
+
+> **Amended by ADR-0015 (historical).**
 
 ## Context
 

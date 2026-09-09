@@ -5,7 +5,7 @@ import { setTimeout } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
 import { renderCharterTemplate } from "../domain/template";
-import type { CharterEvent, CharterState, CriterionSnapshot } from "../domain/types";
+import type { CharterEvent, CharterState } from "../domain/types";
 
 export interface CreateCharterWorkspaceInput {
   charterId: string;
@@ -27,6 +27,7 @@ export interface CharterListRow {
   createdAt: string;
   updatedAt: string;
   sessionId?: string;
+  legacy: boolean;
 }
 
 const charterQueues = new Map<string, Promise<unknown>>();
@@ -71,20 +72,15 @@ export async function createCharterWorkspace(
 ): Promise<CreatedCharterWorkspace> {
   const dir = charterDir(projectDir, input.charterId);
   const text = renderCharterTemplate(input.objective);
-  const parsed = parseCharterFile(text);
-  const nowSeq = 1;
   const state: CharterState = {
     charterId: input.charterId,
-    schemaVersion: "file-interface",
+    schemaVersion: "phases",
     objective: input.objective.trim(),
     status: "active",
     createdAt: input.now,
     updatedAt: input.now,
     sessionId: input.sessionId,
-    nextSeq: nowSeq,
-    latestSourceSeq: 0,
     snapshotHash: hashText(text),
-    criteriaSnapshot: snapshotFromParsed(parsed, 0),
   };
 
   await mkdir(dir, { recursive: true });
@@ -113,6 +109,7 @@ export async function loadCharterState(dirOrProject: string, charterId?: string)
 }
 
 export async function writeCharterState(dir: string, state: CharterState): Promise<void> {
+  if (state.schemaVersion === "file-interface") throw new Error("Legacy charters are read-only.");
   state.updatedAt = new Date().toISOString();
   await writeJsonAtomic(join(dir, "state.json"), state);
 }
@@ -146,6 +143,7 @@ export async function listCharters(projectDir: string): Promise<CharterListRow[]
         createdAt: state.createdAt,
         updatedAt: state.updatedAt,
         sessionId: state.sessionId,
+        legacy: state.schemaVersion === "file-interface",
       });
     } catch {
       // Ignore malformed directories; parser tolerance applies to charter.md,
@@ -193,16 +191,6 @@ export async function writeTextAtomic(path: string, value: string): Promise<void
 
 export function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
-}
-
-export function snapshotFromParsed(parsed: ParsedCharterFile, statusSeq: number): CriterionSnapshot[] {
-  return parsed.criteria.map((criterion) => ({
-    id: criterion.id,
-    title: criterion.title,
-    depends: criterion.depends,
-    status: { ...criterion.status },
-    statusSeq,
-  }));
 }
 
 async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
@@ -300,10 +288,10 @@ function normalizeCharterState(value: unknown): CharterState {
   if (typeof raw.charterId !== "string" || raw.charterId.length === 0) throw new Error("Invalid charter state: charterId");
   if (typeof raw.objective !== "string") throw new Error("Invalid charter state: objective");
   if (!isStatus(raw.status)) throw new Error("Invalid charter state: status");
-  if (raw.schemaVersion !== "file-interface") throw new Error("Invalid charter state: schemaVersion");
+  if (raw.schemaVersion !== "phases" && raw.schemaVersion !== "file-interface") throw new Error("Invalid charter state: schemaVersion");
   return {
     charterId: raw.charterId,
-    schemaVersion: "file-interface",
+    schemaVersion: raw.schemaVersion,
     objective: raw.objective,
     status: raw.status,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
@@ -314,12 +302,8 @@ function normalizeCharterState(value: unknown): CharterState {
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
     completionNote: typeof raw.completionNote === "string" ? raw.completionNote : undefined,
     abandonReason: typeof raw.abandonReason === "string" ? raw.abandonReason : undefined,
-    nextSeq: typeof raw.nextSeq === "number" && raw.nextSeq > 0 ? Math.floor(raw.nextSeq) : 1,
-    latestSourceSeq: typeof raw.latestSourceSeq === "number" && raw.latestSourceSeq >= 0 ? Math.floor(raw.latestSourceSeq) : 0,
-    snapshotHash: typeof raw.snapshotHash === "string" ? raw.snapshotHash : "",
-    criteriaSnapshot: Array.isArray(raw.criteriaSnapshot)
-      ? raw.criteriaSnapshot.map(normalizeCriterionSnapshot).filter((criterion): criterion is CriterionSnapshot => criterion !== undefined)
-      : [],
+    snapshotHash: typeof raw.snapshotHash === "string" ? raw.snapshotHash : undefined,
+    ralph: normalizeRalph(raw.ralph),
   };
 }
 
@@ -327,36 +311,12 @@ function isStatus(value: unknown): value is CharterState["status"] {
   return value === "active" || value === "paused" || value === "completed" || value === "abandoned";
 }
 
-function normalizeCriterionSnapshot(value: unknown): CriterionSnapshot | undefined {
+function normalizeRalph(value: unknown): CharterState["ralph"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
-  if (typeof raw.id !== "string" || typeof raw.title !== "string" || !Array.isArray(raw.depends)) return undefined;
-  const depends = raw.depends.filter((item): item is string => typeof item === "string");
-  const status = raw.status as Record<string, unknown> | undefined;
-  if (status && isCriterionStatus(status.value) && typeof status.note === "string" && typeof raw.statusSeq === "number") {
-    return { id: raw.id, title: raw.title, depends, status: { value: status.value, note: status.note }, statusSeq: raw.statusSeq };
-  }
-
-  // ADR-0014 compatibility: normalize old sidecars in memory and write only
-  // the unified Status shape on the next state update.
-  const evidence = raw.evidence as Record<string, unknown> | undefined;
-  if (
-    evidence &&
-    (evidence.status === "pass" || evidence.status === "fail" || evidence.status === "none") &&
-    typeof evidence.note === "string" &&
-    typeof raw.evidenceSeq === "number"
-  ) {
-    return {
-      id: raw.id,
-      title: raw.title,
-      depends,
-      status: { value: evidence.status === "none" ? "pending" : evidence.status, note: evidence.note },
-      statusSeq: raw.evidenceSeq,
-    };
-  }
-  return undefined;
-}
-
-function isCriterionStatus(value: unknown): value is CriterionSnapshot["status"]["value"] {
-  return value === "pending" || value === "in-progress" || value === "blocked" || value === "pass" || value === "fail";
+  return {
+    activations: Array.isArray(raw.activations) ? raw.activations.filter((item): item is number => typeof item === "number" && Number.isFinite(item)) : [],
+    warnedAt: typeof raw.warnedAt === "number" && Number.isFinite(raw.warnedAt) ? raw.warnedAt : undefined,
+    pausedByGuard: raw.pausedByGuard === true ? true : undefined,
+  };
 }

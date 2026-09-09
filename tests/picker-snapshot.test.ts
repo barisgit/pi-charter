@@ -1,151 +1,63 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { abandonCharter, createCharter, getCharterStatus, pauseCharter } from "../src/application/service";
-import { buildPickerRows, buildPickerSnapshot, statusSummary, listAllCharters } from "../src/ui/picker-snapshot";
-import { appendEvent, charterDir, charterFilePath, loadCharterState, reportPath, writeCharterState } from "../src/infrastructure/store";
+import { abandonCharter, createCharter } from "../src/application/service";
+import { buildPickerRows, buildPickerSnapshot, listAllCharters, statusSummary } from "../src/ui/picker-snapshot";
+import { charterDir, charterFilePath, reportPath } from "../src/infrastructure/store";
 
-const CRITERIA = `# Charter: newest
-
-## Objective
-
-Ship the picker.
-
-## Criteria
-
-### C1. Passing check
-Status: pass — ok
-
-### C2. Failing check
-Depends: C1
-Status: fail — nope
-
-### C3. Missing check
-Status: pending
-`;
+const PHASES = `# Objective\n\nShip the picker.\n\n## References\n\ndocs/spec.md\n\n## Scope\n\nPicker only.\n\n## Phases\n\n1. Explore — done\n   Mapped the UI.\n\n2. Build — current\n   Implement dashboard. [capture](work/dashboard.png)\n\n3. Verify\n   Exercise the TUI.\n`;
 
 describe("picker snapshot", () => {
-  test("projects sorted charter rows with criterion status, stale, binding, and open-ended markers", async () => {
+  test("projects phases, current work, and done/total position", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-snapshot-"));
-    const old = await createCharter(project, { objective: "Watch deployments", now: "2026-07-01T09:00:00.000Z", sessionId: "other" });
-    await pauseCharter(project, { charterId: old.charterId, sessionId: "other" });
-
-    const newest = await createCharter(project, { objective: "Ship the picker", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
-    await writeFile(charterFilePath(charterDir(project, newest.charterId)), CRITERIA, "utf8");
-    await getCharterStatus(project, { charterId: newest.charterId });
-    const state = await loadCharterState(project, newest.charterId);
-    state.latestSourceSeq = state.nextSeq;
-    await writeCharterState(charterDir(project, newest.charterId), state);
+    const created = await createCharter(project, { objective: "Ship the picker", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
+    await writeFile(charterFilePath(charterDir(project, created.charterId)), PHASES, "utf8");
 
     const rows = await buildPickerRows(project, { sessionId: "session-1", now: new Date("2026-07-02T12:00:00.000Z") });
-
-    expect(rows.map((row) => row.charterId)).toEqual([newest.charterId, old.charterId]);
     expect(rows[0]).toMatchObject({
       status: "active",
-      slug: "ship-the-picker",
       sessionBound: true,
-      statusCounts: { pass: 1, fail: 1, pending: 1, blocked: 0, "in-progress": 0 },
-      staleCount: 1,
-      criteriaCount: 3,
-      openEnded: false,
+      phaseCounts: { done: 1, current: 1, upcoming: 1 },
+      phaseCount: 3,
+      currentPhase: { number: 2, title: "Build" },
+      legacy: false,
       age: "2h",
-  });
-    expect(statusSummary(rows[0])).toBe("pass=1 active=0 blocked=0 fail=1 pending=1 stale=1");
-    expect(rows[1]).toMatchObject({
-      status: "paused",
-      slug: "watch-deployments",
-      sessionBound: false,
-      statusCounts: { pass: 0, fail: 0, pending: 0, blocked: 0, "in-progress": 0 },
-      openEnded: true,
     });
-    expect(statusSummary(rows[1])).toContain("open-ended");
-  });
-
-  test("recent status uses the note recorded with that historical transition", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-history-"));
-    const created = await createCharter(project, { objective: "History", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
-    await writeFile(charterFilePath(charterDir(project, created.charterId)), `## Objective\n\nHistory.\n\n## Criteria\n\n### C1. Works\nStatus: pass — current success note\n`, "utf8");
-    const dir = charterDir(project, created.charterId);
-    await appendEvent(dir, { type: "criterion_changed", ts: "2026-07-02T10:10:00.000Z", charterId: created.charterId, seq: 7, criterion: "C1", field: "status.value", old: "in-progress", new: "fail" });
-    await appendEvent(dir, { type: "criterion_changed", ts: "2026-07-02T10:10:00.000Z", charterId: created.charterId, seq: 7, criterion: "C1", field: "status.note", old: "working", new: "failed then" });
+    expect(statusSummary(rows[0]!)).toBe("done=1/3 current=2");
 
     const snapshot = await buildPickerSnapshot(project, created.charterId);
-    expect(snapshot?.recentStatus[0]).toMatchObject({ criterionId: "C1", status: "fail", note: "failed then" });
-    expect(snapshot?.recentStatus[0]?.note).not.toBe("current success note");
-  });
-
-  test("builds a flat detail plan from ADR-0014 criteria", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-detail-"));
-    const created = await createCharter(project, { objective: "Ship the picker", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
-    await writeFile(charterFilePath(charterDir(project, created.charterId)), CRITERIA, "utf8");
-
-    const snapshot = await buildPickerSnapshot(project, created.charterId);
-
-    expect(snapshot?.header).toMatchObject({
-      name: "ship-the-picker",
-      status: "active",
-      passCount: 1,
-      totalCount: 3,
+    expect(snapshot).toMatchObject({
+      objective: "Ship the picker.",
+      references: "docs/spec.md",
+      scope: "Picker only.",
+      legacy: false,
+      header: { doneCount: 1, totalCount: 3 },
     });
-    expect(snapshot?.objective).toBe("Ship the picker.");
-    expect(snapshot?.blockingForComplete.length).toBeGreaterThan(0);
-    expect(snapshot?.plan).toEqual({
-      status: "in_progress",
-      passCount: 1,
-      totalCount: 3,
-      criteria: [
-        { criterionId: "C1", titleFromH3: "Passing check", body: "", depends: [], status: "pass", note: "ok", stale: false },
-        { criterionId: "C2", titleFromH3: "Failing check", body: "", depends: ["C1"], status: "fail", note: "nope", stale: false },
-        { criterionId: "C3", titleFromH3: "Missing check", body: "", depends: [], status: "pending", note: "", stale: false },
-      ],
-    });
-    expect(snapshot?.recentStatus.map((row) => row.criterionId)).toEqual(["C1", "C2", "C3"]);
+    expect(snapshot?.phases[1]).toEqual({ number: 2, title: "Build", status: "current", body: "Implement dashboard. [capture](work/dashboard.png)" });
   });
 
   test("includes REPORT.md content when present", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-report-"));
-    const created = await createCharter(project, { objective: "Archive done work", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
+    const created = await createCharter(project, { objective: "Archive work", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
     await writeFile(reportPath(charterDir(project, created.charterId)), "# Final report\n\n- work/output.txt\n", "utf8");
     await abandonCharter(project, { charterId: created.charterId, sessionId: "session-1", note: "done enough" });
-
     const snapshot = await buildPickerSnapshot(project, created.charterId);
-
-    expect(snapshot?.header.status).toBe("abandoned");
-    expect(snapshot?.report?.markdown).toContain("# Final report");
     expect(snapshot?.report?.markdown).toContain("work/output.txt");
   });
 
-  test("marks scaffolded REPORT.md for non-terminal charters without changing live status", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-report-active-"));
-    const created = await createCharter(project, { objective: "Finish active work", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
-    await writeFile(reportPath(charterDir(project, created.charterId)), "# Draft report\n", "utf8");
-
-    const snapshot = await buildPickerSnapshot(project, created.charterId);
-
-    expect(snapshot?.header.status).toBe("active");
-    expect(snapshot?.report?.markdown).toBe("# Draft report\n");
-  });
-
-  test("omits report data when REPORT.md is missing", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-report-missing-"));
-    const created = await createCharter(project, { objective: "No report yet", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
-
-    const snapshot = await buildPickerSnapshot(project, created.charterId);
-
-    expect(snapshot?.report).toBeUndefined();
-  });
-
-  test("listAllCharters keeps non-terminal rows before terminal rows", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-list-"));
-    const olderActive = await createCharter(project, { objective: "Older active", now: "2026-07-01T10:00:00.000Z", sessionId: "s1" });
-    const abandoned = await createCharter(project, { objective: "Abandoned work", now: "2026-07-02T10:00:00.000Z", sessionId: "s2" });
-    await abandonCharter(project, { charterId: abandoned.charterId, sessionId: "s2", note: "not needed" });
+  test("keeps legacy charters visible and marks them read-only without projecting criteria", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-picker-legacy-"));
+    const id = "20260701-100000-legacy-charter";
+    const dir = charterDir(project, id);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "state.json"), JSON.stringify({ charterId: id, schemaVersion: "file-interface", objective: "Old objective", status: "completed", createdAt: "2026-07-01T10:00:00.000Z", updatedAt: "2026-07-01T11:00:00.000Z" }), "utf8");
+    await writeFile(join(dir, "charter.md"), "# Charter\n\n## Objective\n\nOld objective\n\n## Criteria\n\n### C1. Old content\nStatus: pass — observed\n", "utf8");
 
     const rows = await listAllCharters(project);
-
-    expect(rows.map((row) => row.charterId)).toEqual([olderActive.charterId, abandoned.charterId]);
-    expect(rows[0]).toMatchObject({ name: "older-active", status: "active", passCount: 0, totalCount: 0 });
-    expect(rows[1]).toMatchObject({ name: "abandoned-work", status: "abandoned" });
+    expect(rows[0]).toMatchObject({ charterId: id, legacy: true, doneCount: 0, totalCount: 0, sessionId: undefined });
+    const snapshot = await buildPickerSnapshot(project, id);
+    expect(snapshot).toMatchObject({ legacy: true, phases: [], warnings: [] });
+    expect(snapshot?.charterMarkdown).toContain("### C1. Old content");
   });
 });

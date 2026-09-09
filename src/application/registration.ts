@@ -1,11 +1,13 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Markdown, Text } from "@earendil-works/pi-tui";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { connect, type UtilsClient } from "pi-extension-utils";
 import { Type } from "typebox";
 import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
 import { CharterToolError } from "./errors";
-import { tickToolResult, refreshSessionSnapshots } from "./staleness";
+import { refreshSessionSnapshots } from "./snapshots";
+import { attemptRalphActivation, renderRalphPrompt, RALPH_GUARD_PAUSE_NOTE } from "./ralph";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
 import { logger } from "../infrastructure/logger";
 import type { NextAction } from "../domain/types";
@@ -31,6 +33,7 @@ type CharterInput = {
 
 const RALPH_CUSTOM_TYPE = "charter-ralph-continue";
 const WIDGET_KEY = "charter-detail";
+const LIFECYCLE_EVENT = "pi-charter:lifecycle-changed";
 export const RALPH_WIDGET_WARNING_EVENT = "pi-charter:ralph-warning";
 export const RALPH_WIDGET_WARNING_CLEAR_EVENT = "pi-charter:ralph-warning-clear";
 const RALPH_DEBOUNCE_MS = 20_000;
@@ -55,7 +58,9 @@ export function registerCharterTools(pi: ExtensionAPI): void {
     renderShell: "self",
     promptSnippet: "Lifecycle: charter({action,id?,objective?,note?}). File interface: .charters/<id>/charter.md.",
     promptGuidelines: [
-      "Edit charter.md directly; each criterion has one `Status: pending|in-progress|blocked|pass|fail — <note>` line.",
+      "Keep the full Objective in charter.md; evolve a simple numbered phase map rather than a parallel task/criteria ledger.",
+      "Capture screenshots or recordings while verifying user-visible workflows, link them in phase notes, and curate REPORT.md from real artifacts before completing.",
+      "Before complete, audit the full Objective and authoritative references against current evidence; phase completion alone is not proof.",
       "Use each result's next actions; they are the legal lifecycle transitions.",
     ],
     parameters: CharterParams,
@@ -66,15 +71,15 @@ export function registerCharterTools(pi: ExtensionAPI): void {
       if (action === "create" && args.objective) {
         text += ` ${theme.fg("muted", JSON.stringify(compactInline(args.objective, 64)))}`;
       } else if (args.id) {
-        text += ` ${theme.fg("muted", compactInline(args.id, 48))}`;
+        text += ` ${theme.fg("muted", compactInline(displayName(args.id), 48))}`;
       }
       if (action !== "create" && args.note) {
         text += ` ${theme.fg("dim", JSON.stringify(compactInline(args.note, 64)))}`;
       }
-      return new Text(text, 0, 0);
+      return new Text(text, TOOL_PAD, 0);
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
-      if (isPartial) return new Text(theme.fg("dim", "working"), 0, 0);
+      if (isPartial) return new Text(theme.fg("dim", "working"), TOOL_PAD, 0);
       const details = (result.details ?? {}) as { nextActions?: NextAction[]; data?: unknown };
       const raw = result.content
         .filter((part): part is Extract<(typeof result.content)[number], { type: "text" }> => part.type === "text")
@@ -82,16 +87,16 @@ export function registerCharterTools(pi: ExtensionAPI): void {
         .join("\n");
       const message = raw.split(/\nnext:/, 1)[0] ?? raw;
       const isError = context.isError || (result as { isError?: boolean }).isError === true;
-      const summary = isError
-        ? `error: ${compactInline(message, 160)}`
-        : charterResultSummary(context.args as CharterInput, details.data, message);
-      let text = theme.fg(isError ? "error" : "muted", summary);
-      if (expanded && raw) text += `\n${theme.fg("dim", raw)}`;
-      return new Text(text, 0, 0);
+      const lines = isError
+        ? [theme.fg("error", compactInline(message, 200))]
+        : charterResultSummary(context.args as CharterInput, details.data, message, theme);
+      if (expanded) lines.push(...charterResultDetails(context.args as CharterInput, details, message, isError, theme));
+      return new Text(lines.join("\n"), TOOL_PAD, 0);
     },
     async execute(_toolCallId, params: CharterInput, _signal, _onUpdate, ctx) {
       try {
         const result = await runCharterAction(ctx.cwd, params, ctx.sessionManager.getSessionId?.());
+        if (params.action !== "status" && params.action !== "list") pi.events.emit(LIFECYCLE_EVENT, { action: params.action });
         return toolText(result.message, result.nextActions, result.data);
       } catch (error) {
         if (error instanceof CharterToolError) {
@@ -109,23 +114,47 @@ function compactInline(value: string, maxLength: number): string {
   return inline.length <= maxLength ? inline : `${inline.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
-function charterResultSummary(args: CharterInput, data: unknown, fallback: string): string {
+/** One column of left padding: self-shell tool rows get no Box padding. */
+const TOOL_PAD = 1;
+
+interface RenderTheme {
+  fg(color: string, text: string): string;
+  bold(text: string): string;
+}
+
+function displayName(charterId: string): string {
+  const match = /^\d{8}-\d{6}-(.+)$/.exec(charterId);
+  return match?.[1] ?? charterId;
+}
+
+function lifecycleColor(status: string): string {
+  if (status === "completed") return "success";
+  if (status === "abandoned") return "error";
+  if (status === "paused") return "warning";
+  return "accent";
+}
+
+function phaseColor(status: string): string {
+  return status === "done" ? "success" : status === "current" ? "accent" : "dim";
+}
+
+/** Collapsed result: lifecycle verb or state, then the charter name and phase orientation. */
+function charterResultSummary(args: CharterInput, data: unknown, fallback: string, theme: RenderTheme): string[] {
   const record = data && typeof data === "object" ? data as Record<string, unknown> : undefined;
   const charterId = typeof record?.charterId === "string" ? record.charterId : undefined;
-  if (args.action === "list" && Array.isArray(data)) return `${data.length} charter${data.length === 1 ? "" : "s"}`;
+  const name = charterId ? theme.fg("text", displayName(charterId)) : "";
+  if (args.action === "list" && Array.isArray(data)) {
+    return [theme.fg("muted", `${data.length} charter${data.length === 1 ? "" : "s"}`)];
+  }
   if (args.action === "status" && record) {
-    const counts = record.statusCounts as CharterStatusResult["statusCounts"] | undefined;
-    const criteria = Array.isArray(record.criteria) ? record.criteria : [];
+    const phases = (record.phases ?? []) as CharterStatusResult["phases"];
     const status = typeof record.status === "string" ? record.status : "status";
-    const parts = [`${status}${charterId ? ` ${charterId}` : ""}`];
-    if (counts) {
-      parts.push(`${counts.pass}/${criteria.length} pass`);
-      if (counts.blocked) parts.push(`${counts.blocked} blocked`);
-      if (counts.fail) parts.push(`${counts.fail} fail`);
-    }
-    const ready = Array.isArray(record.readyNext) ? record.readyNext.filter((value): value is string => typeof value === "string") : [];
-    if (ready.length) parts.push(`next ${ready.join(",")}`);
-    return parts.join(" · ");
+    const parts = [`${theme.fg(lifecycleColor(status), status)} ${name}`];
+    const current = phases.find((phase) => phase.status === "current");
+    if (record.legacy) parts.push(theme.fg("warning", "legacy, read-only"));
+    else if (current) parts.push(theme.fg("muted", `phase ${current.number}/${phases.length} · ${current.title}`));
+    else parts.push(theme.fg("muted", `${phases.filter((phase) => phase.status === "done").length}/${phases.length} phases done`));
+    return [parts.join(theme.fg("dim", " · "))];
   }
   const verbs: Partial<Record<CharterInput["action"], string>> = {
     create: "created",
@@ -135,8 +164,39 @@ function charterResultSummary(args: CharterInput, data: unknown, fallback: strin
     abandon: "abandoned",
   };
   const verb = verbs[args.action];
-  if (verb) return `${verb}${charterId ? ` ${charterId}` : ""}`;
-  return compactInline(fallback, 160);
+  if (verb) return [`${theme.fg(lifecycleColor(typeof record?.status === "string" ? record.status : "active"), verb)} ${name}`.trimEnd()];
+  return [theme.fg("muted", compactInline(fallback, 160))];
+}
+
+/** Expanded result: Objective and phase map for status, otherwise the full message, then legal next actions. */
+function charterResultDetails(
+  args: CharterInput,
+  details: { nextActions?: NextAction[]; data?: unknown },
+  message: string,
+  isError: boolean,
+  theme: RenderTheme,
+): string[] {
+  const lines: string[] = [];
+  const record = details.data && typeof details.data === "object" && !Array.isArray(details.data) ? details.data as Record<string, unknown> : undefined;
+  if (args.action === "status" && record && typeof record.objective === "string") {
+    lines.push("", theme.bold(theme.fg("warning", "Objective")), theme.fg("text", record.objective.trim()));
+    const phases = (record.phases ?? []) as CharterStatusResult["phases"];
+    if (phases.length > 0) {
+      lines.push("", theme.bold(theme.fg("accent", "Phases")));
+      for (const phase of phases) lines.push(theme.fg(phaseColor(phase.status), `${phase.number}. ${phase.title} — ${phase.status}`));
+    }
+    const ralph = record.ralph as { pausedByGuard?: boolean } | undefined;
+    if (ralph?.pausedByGuard) lines.push("", theme.fg("warning", "Paused by the Ralph guard; only /charter resume continues."));
+    const warnings = Array.isArray(record.warnings) ? record.warnings as string[] : [];
+    if (warnings.length > 0) lines.push("", ...warnings.map((warning) => theme.fg("warning", warning)));
+  } else if (!isError && args.action !== "list") {
+    lines.push("", theme.fg("muted", message.trim()));
+  }
+  const next = (details.nextActions ?? [])
+    .map((action) => action.tool === "charter" && action.action ? action.action : [action.tool, action.action].filter(Boolean).join("."))
+    .join(theme.fg("dim", " · "));
+  lines.push("", theme.fg("dim", "next ") + (next ? theme.fg("muted", next) : theme.fg("dim", "none")));
+  return lines;
 }
 
 export function registerCharterCommands(pi: ExtensionAPI): void {
@@ -145,7 +205,8 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const input = parseCommand(args);
       try {
-        const result = await runCharterAction(ctx.cwd, input, ctx.sessionManager.getSessionId?.());
+        const result = await runCharterAction(ctx.cwd, input, ctx.sessionManager.getSessionId?.(), true);
+        if (input.action !== "status" && input.action !== "list") pi.events.emit(LIFECYCLE_EVENT, { action: input.action });
         ctx.ui.notify(result.message, "info");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -188,15 +249,9 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
   });
 }
 
-export function registerCharterStalenessHooks(pi: ExtensionAPI): void {
-  pi.on("tool_result", async (event, ctx) => {
-    if (event.toolName === "charter") return;
-    const files = filesTouchedByToolResult(event);
-    await tickToolResult(ctx.cwd, {
-      sessionId: ctx.sessionManager.getSessionId?.(),
-      files,
-      source: event.toolName,
-    });
+export function registerCharterFileHooks(pi: ExtensionAPI): void {
+  pi.on("tool_result", async (_event, ctx) => {
+    await refreshSessionSnapshots(ctx.cwd, ctx.sessionManager.getSessionId?.());
   });
   pi.on("turn_end", async (_event, ctx) => {
     await refreshSessionSnapshots(ctx.cwd, ctx.sessionManager.getSessionId?.());
@@ -243,9 +298,22 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   let stopAsyncRunComplete: (() => void) | undefined;
   let stopAsyncComplete: (() => void) | undefined;
   let stopAllIdle: (() => void) | undefined;
+  let stopLifecycle: (() => void) | undefined;
 
   const subscribeToSubagentEvents = () => {
-    if (stopAsyncStarted || stopAsyncRunComplete || stopAsyncComplete || stopAllIdle) return;
+    if (stopAsyncStarted || stopAsyncRunComplete || stopAsyncComplete || stopAllIdle || stopLifecycle) return;
+    stopLifecycle = pi.events.on(LIFECYCLE_EVENT, (raw: unknown) => {
+      const action = (raw as { action?: string }).action;
+      if (action === "pause" || action === "complete" || action === "abandon") {
+        if (timer) clearTimeout(timer);
+        if (warningTimer) clearTimeout(warningTimer);
+        timer = undefined;
+        warningTimer = undefined;
+        if (lastCtx) clearWidgetWarning(lastCtx);
+      } else if (action === "resume" || action === "create") {
+        scheduleRalph(`charter-${action}`);
+      }
+    });
     stopAsyncStarted = pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, (raw: unknown) => {
       const payload = raw as { runId?: string; id?: string } | undefined;
       const id = payload?.runId ?? payload?.id;
@@ -280,6 +348,10 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     subscribeToSubagentEvents();
   });
   pi.on("agent_start", (event, ctx) => {
+    if (timer) clearTimeout(timer);
+    if (warningTimer) clearTimeout(warningTimer);
+    timer = undefined;
+    warningTimer = undefined;
     rememberCtx(event, ctx);
     clearWidgetWarning(ctx);
     observeInterruption(ctx);
@@ -325,6 +397,8 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     stopAsyncRunComplete?.();
     stopAsyncComplete?.();
     stopAllIdle?.();
+    stopLifecycle?.();
+    stopLifecycle = undefined;
     stopAsyncStarted = undefined;
     stopAsyncRunComplete = undefined;
     stopAsyncComplete = undefined;
@@ -422,59 +496,40 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         logger.debug("ralph: skipped without active charter", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, status: status?.status });
         return;
       }
-      const stale = status.criteria.filter((criterion) => criterion.stale).map((criterion) => criterion.id);
-      const repeatedFails = status.criteria.filter((criterion) => criterion.failCount >= 2 && criterion.status !== "pass").map((criterion) => `${criterion.id} failed ${criterion.failCount}x`);
-      const nextIds = status.readyNext.length ? status.readyNext : status.criteria.filter((criterion) => criterion.status !== "pass").map((criterion) => criterion.id);
-      const candidates = nextIds.map((id) => status.criteria.find((criterion) => criterion.id === id)).filter((criterion): criterion is CharterStatusResult["criteria"][number] => Boolean(criterion));
-      const nextCriterion = candidates.find((criterion) => criterion.status === "in-progress")
-        ?? candidates.find((criterion) => criterion.status === "fail")
-        ?? candidates.find((criterion) => criterion.status === "pending")
-        ?? candidates[0];
-      const blocked = status.criteria.find((criterion) => criterion.status === "blocked");
-      const topBlocker = blocked ? `${blocked.id}${blocked.note ? `: ${blocked.note}` : ""}` : "none";
-      const charterFile = `.charters/${status.charterId}/charter.md`;
-      let content: string;
-      if (status.criteria.length === 0) {
-        content = `Charter ${charterFile}: no criteria yet; cannot complete. Add ### C<n> + Status lines there.`;
-      } else {
-        const counts = [`${status.statusCounts.pass}/${status.criteria.length} pass`];
-        for (const key of ["in-progress", "blocked", "fail", "pending"] as const) {
-          if (status.statusCounts[key] > 0) counts.push(`${status.statusCounts[key]} ${key}`);
-        }
-        const parts = [`Charter ${charterFile}: ${counts.join(", ")}.`];
-        const missingNotes = status.criteria.filter((criterion) => criterion.status === "pass" && !criterion.note.trim()).map((criterion) => criterion.id);
-        if (stale.length) {
-          parts.push(`Reverify stale ${stale.join(",")}; update Status there.`);
-        } else if (missingNotes.length) {
-          parts.push(`Add verification notes to ${missingNotes.join(",")} Status there.`);
-        } else if (status.statusCounts.pass === status.criteria.length) {
-          parts.push(status.reportExists
-            ? "Next: charter complete."
-            : "Next: charter complete (scaffolds REPORT.md); curate it, then retry.");
-        } else if (nextCriterion?.status === "blocked") {
-          parts.push(`Unblock ${topBlocker}.`);
-        } else if (nextCriterion) {
-          parts.push(`Next ${nextCriterion.id}: ${nextCriterion.title}. Work, verify (use > observe > tests), update Status there.`);
-        }
-        if (blocked && nextCriterion?.id !== blocked.id) parts.push(`Blocked ${topBlocker}.`);
-        if (repeatedFails.length) parts.push(`Repeated ${repeatedFails.join(",")}; change approach or split.`);
-        content = parts.join(" ");
-      }
-      clearWidgetWarning(ctx);
-      pi.sendMessage({
-        customType: RALPH_CUSTOM_TYPE,
-        content,
-        display: true,
-        details: {
-          charterId: status.charterId,
-          statusCounts: status.statusCounts,
-          topBlocker,
-          stale,
-          readyNext: status.readyNext,
+      const result = await attemptRalphActivation({
+        projectDir: ctx.cwd,
+        charterId: status.charterId,
+        sessionId: ctx.sessionManager.getSessionId?.(),
+        at,
+        isEligible: () => !disposed && lastCtx === ctx && runningSubagents.size === 0
+          && ctx.isIdle() && !ctx.hasPendingMessages(),
+        send: (kind) => {
+          clearWidgetWarning(ctx);
+          pi.sendMessage({
+            customType: RALPH_CUSTOM_TYPE,
+            content: renderRalphPrompt(status, kind === "recovery"),
+            display: true,
+            details: {
+              charterId: status.charterId,
+              kind,
+              currentPhase: status.phases.find((phase) => phase.status === "current")?.title,
+              phaseCount: status.phases.length,
+            },
+          }, { deliverAs: "steer", triggerTurn: true });
         },
-      }, { deliverAs: "steer", triggerTurn: true });
-      lastSentAt = at;
-      logger.debug("ralph: message sent", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, charterId: status.charterId, payloadLength: content.length });
+      });
+      if (result === "pause") {
+        if (timer) clearTimeout(timer);
+        if (warningTimer) clearTimeout(warningTimer);
+        timer = undefined;
+        warningTimer = undefined;
+        clearWidgetWarning(ctx);
+        ctx.ui.notify(RALPH_GUARD_PAUSE_NOTE, "warning");
+        pi.events.emit(LIFECYCLE_EVENT, { action: "pause" });
+      } else if (result !== "skipped") {
+        lastSentAt = at;
+      }
+      logger.debug("ralph: activation handled", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, charterId: status.charterId, result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("stale after session replacement")) {
@@ -489,20 +544,27 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
 
 export function registerCharterRalphMessageRenderer(pi: ExtensionAPI): void {
   pi.registerMessageRenderer(RALPH_CUSTOM_TYPE, (message, options, theme) => {
-    const details = (message.details ?? {}) as { charterId?: string; statusCounts?: { pass: number; fail: number; pending: number; blocked: number; "in-progress": number }; topBlocker?: string; stale?: string[]; readyNext?: string[] };
-    const counts = details.statusCounts;
-    const summary = [
-      details.charterId ?? "charter",
-      counts ? `${counts.pass}/${counts.pass + counts.fail + counts.pending + counts.blocked + counts["in-progress"]} pass` : undefined,
-      details.readyNext?.length ? `next ${details.readyNext.join(",")}` : undefined,
-      details.stale?.length ? `stale ${details.stale.join(",")}` : undefined,
-    ].filter(Boolean).join(" · ");
-    let text = theme.fg("warning", "↻ ralph ") + theme.fg("muted", summary);
-    if (options.expanded) {
-      const content = typeof message.content === "string" ? message.content : "";
-      if (content) text += "\n" + theme.fg("dim", content);
+    const pad = options.outputPad;
+    const details = (message.details ?? {}) as { charterId?: string; kind?: string; currentPhase?: string };
+    const recovery = details.kind === "recovery";
+    const sep = theme.fg("dim", " · ");
+    let header = theme.fg(recovery ? "error" : "warning", theme.bold("ralph"));
+    header += ` ${theme.fg("text", details.charterId ? displayName(details.charterId) : "charter")}`;
+    if (details.currentPhase) header += sep + theme.fg("muted", details.currentPhase);
+    if (recovery) header += sep + theme.fg("error", "recovery: pause follows another activation within 5 min");
+    const content = typeof message.content === "string"
+      ? message.content
+      : message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    if (!options.expanded || !content) return new Text(header, pad, 0);
+    const container = new Container();
+    container.addChild(new Text(header, pad, 0));
+    container.addChild(new Text("", 0, 0));
+    try {
+      container.addChild(new Markdown(content, pad, 0, getMarkdownTheme()));
+    } catch {
+      container.addChild(new Text(theme.fg("muted", content), pad, 0));
     }
-    return new Text(text, 0, 0);
+    return container;
   });
 }
 
@@ -635,6 +697,7 @@ async function runCharterAction(
   projectDir: string,
   params: CharterInput,
   sessionId?: string,
+  userInitiated = false,
 ): Promise<CharterServiceResult | { message: string; nextActions: NextAction[]; data: CharterStatusResult; charterId: string; status: CharterStatusResult["status"] }> {
   switch (params.action) {
     case "create":
@@ -648,7 +711,7 @@ async function runCharterAction(
     case "pause":
       return pauseCharter(projectDir, { charterId: params.id, note: params.note, sessionId });
     case "resume":
-      return resumeCharter(projectDir, { charterId: params.id, sessionId });
+      return resumeCharter(projectDir, { charterId: params.id, sessionId, userInitiated });
     case "complete":
       return completeCharter(projectDir, { charterId: params.id, note: params.note, sessionId });
     case "abandon":
@@ -657,28 +720,14 @@ async function runCharterAction(
 }
 
 export function formatCharterStatusText(status: CharterStatusResult): string {
-  const total = status.criteria.length;
-  const countParts = [`${status.statusCounts.pass}/${total} pass`];
-  for (const key of ["in-progress", "blocked", "fail", "pending"] as const) {
-    const count = status.statusCounts[key];
-    if (count > 0) countParts.push(`${count} ${key}`);
-  }
   const lines = [
-    `${status.charterId} ${status.status} · ${countParts.join(" · ")}`,
+    `${status.charterId} ${status.status} · ${status.legacy ? "legacy, read-only" : `${status.phaseCounts.done}/${status.phases.length} phases done`}`,
     `objective: ${status.objective.replace(/\s+/g, " ").trim()}`,
   ];
-  if (status.openEnded) lines.push("open-ended: no criteria; cannot complete");
-  for (const criterion of status.criteria) {
-    if (criterion.status === "pass" && !criterion.stale && criterion.note.trim()) continue;
-    const stale = criterion.stale ? " stale" : "";
-    const fails = criterion.failCount >= 2 && criterion.status !== "pass" ? ` ${criterion.failCount}x` : "";
-    const missingNote = criterion.status === "pass" && !criterion.note.trim() ? " note-missing" : "";
-    const note = criterion.note ? ` — ${criterion.note}` : "";
-    lines.push(`${criterion.id} ${criterion.status}${stale}${fails}${missingNote}: ${criterion.title}${note}`);
-  }
-  if (!status.openEnded && !status.reportExists) lines.push("report: missing");
+  const current = status.phases.find((phase) => phase.status === "current");
+  if (current) lines.push(`phase ${current.number}/${status.phases.length}: ${current.title}`);
+  if (status.ralph?.pausedByGuard) lines.push("ralph: guard paused; user must run /charter resume");
   if (status.warnings.length > 0) lines.push(`warnings: ${status.warnings.join("; ")}`);
-  lines.push(`ready: ${status.readyNext.length ? status.readyNext.join(",") : "none"}`);
   return lines.join("\n");
 }
 
@@ -714,44 +763,4 @@ function parseCommand(args: string): CharterInput {
     return { action, note };
   }
   return { action: "status", id: action };
-}
-
-function filesTouchedByToolResult(event: { toolName: string; input?: unknown; details?: unknown; content?: unknown }): string[] {
-  const files = new Set<string>();
-  collectPathLike(event.input, files);
-  collectPathLike(event.details, files);
-  if (event.toolName === "bash") collectShellPathTokens(event.input, files);
-  return [...files];
-}
-
-function collectPathLike(value: unknown, files: Set<string>, key = ""): void {
-  if (!value) return;
-  if (typeof value === "string") {
-    if (isPathKey(key) && looksLikePath(value)) files.add(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectPathLike(item, files, key);
-    return;
-  }
-  if (typeof value === "object") {
-    for (const [childKey, child] of Object.entries(value)) collectPathLike(child, files, childKey);
-  }
-}
-
-function collectShellPathTokens(value: unknown, files: Set<string>): void {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return;
-  const command = (value as { command?: unknown }).command;
-  if (typeof command !== "string") return;
-  for (const match of command.matchAll(/(?:^|\s)([\w./-]+\.(?:ts|tsx|js|jsx|json|md|css|html|py|rs|go|java|c|cpp|h|hpp|yaml|yml))(?:\s|$)/g)) {
-    if (match[1]) files.add(match[1]);
-  }
-}
-
-function isPathKey(key: string): boolean {
-  return /^(path|paths|file|files|filename|filenames|artifact|artifacts)$/i.test(key);
-}
-
-function looksLikePath(value: string): boolean {
-  return value.length > 0 && !value.includes("\n") && (value.includes("/") || /\.[a-z0-9]+$/i.test(value));
 }

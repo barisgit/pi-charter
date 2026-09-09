@@ -1,51 +1,20 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { RunningSubagentRegistry } from "../src/ui/widget-service";
+import { createCharter } from "../src/application/service";
+import { charterDir, charterFilePath } from "../src/infrastructure/store";
+import { loadCharterSnapshot } from "../src/ui/widget-service";
 
-describe("RunningSubagentRegistry.forCharter", () => {
-  test("filters live subagents by charterId; returns [] for unknown ids", () => {
-    const reg = new RunningSubagentRegistry();
-    reg.start({
-      runId: "r1",
-      charterId: "A",
-      agent: "fixer",
-      metadata: { "pi-charter.featureId": "f1" },
-      startedAt: "2026-05-15T10:00:00.000Z",
-    });
-    reg.start({
-      runId: "r2",
-      charterId: "A",
-      agent: "charter-reviewer",
-      metadata: { "pi-charter.criterionId": "C1" },
-      startedAt: "2026-05-15T10:00:01.000Z",
-    });
-    reg.start({
-      runId: "r3",
-      charterId: "B",
-      agent: "fixer",
-      metadata: { "pi-charter.featureId": "f2" },
-      startedAt: "2026-05-15T10:00:02.000Z",
-    });
+describe("loadCharterSnapshot", () => {
+  test("projects Objective/Phases status into the compact widget view model", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-widget-service-"));
+    const created = await createCharter(projectDir, { objective: "Ship runtime", now: "2026-07-02T10:00:00.000Z", sessionId: "session-1" });
+    await writeFile(charterFilePath(charterDir(projectDir, created.charterId)), "# Objective\n\nShip runtime.\n\n## Phases\n\n1. Explore — done\n   Mapped it.\n\n2. Build — current\n   [capture](work/build.png)\n", "utf8");
 
-    const a = reg.forCharter("A");
-    expect(a).toHaveLength(2);
-    expect(a.map((r) => r.runId).sort()).toEqual(["r1", "r2"]);
-    for (const sub of a) expect(sub.charterId).toBe("A");
-
-    const b = reg.forCharter("B");
-    expect(b).toHaveLength(1);
-    expect(b[0]?.runId).toBe("r3");
-
-    expect(reg.forCharter("Z")).toEqual([]);
-  });
-
-  test("complete drops the entry from forCharter results", () => {
-    const reg = new RunningSubagentRegistry();
-    reg.start({ runId: "r1", charterId: "A", agent: "fixer", startedAt: "2026-05-15T10:00:00.000Z" });
-    reg.start({ runId: "r2", charterId: "A", agent: "fixer", startedAt: "2026-05-15T10:00:01.000Z" });
-    expect(reg.forCharter("A")).toHaveLength(2);
-    reg.complete("r1");
-    const remaining = reg.forCharter("A");
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0]?.runId).toBe("r2");
+    const vm = await loadCharterSnapshot({ projectDir, charterId: created.charterId, now: Date.parse("2026-07-02T11:00:00.000Z") });
+    expect(vm.objective).toBe("Ship runtime.");
+    expect(vm.position).toEqual({ done: 1, total: 2 });
+    expect(vm.currentPhase).toEqual({ number: 2, title: "Build", body: "[capture](work/build.png)" });
   });
 });

@@ -91,7 +91,7 @@ describe("glance widget cleanup", () => {
     await fireEvent(pi, "session_start", ctx);
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.key).toBe("charter-detail");
+    expect(calls[0]?.key).toBe('pi-extension-utils-fallback:["pi-charter","aboveEditor","charter-detail"]');
     expect(typeof calls[0]?.content).toBe("function");
     expect(calls[0]?.options).toEqual({ placement: "aboveEditor" });
 
@@ -119,6 +119,6 @@ describe("glance widget cleanup", () => {
     await fireEvent(pi, "turn_end", ctx);
 
     expect(calls).toHaveLength(2);
-    expect(calls[1]).toEqual({ key: "charter-detail", content: undefined, options: { placement: "aboveEditor" } });
+    expect(calls[1]).toEqual({ key: 'pi-extension-utils-fallback:["pi-charter","aboveEditor","charter-detail"]', content: undefined, options: { placement: "aboveEditor" } });
   });
 });

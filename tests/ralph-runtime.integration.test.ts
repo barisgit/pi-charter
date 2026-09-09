@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  AuthStorage,
   type CreateAgentSessionRuntimeFactory,
   createAgentSessionFromServices,
   createAgentSessionRuntime,
   createAgentSessionServices,
+  ModelRuntime,
   SessionManager,
   type ExtensionFactory,
 } from "@earendil-works/pi-coding-agent";
@@ -103,12 +103,12 @@ describe("Ralph host runtime integration", () => {
     };
 
     const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir: runtimeAgentDir, sessionManager, sessionStartEvent }) => {
-      const authStorage = AuthStorage.inMemory();
-      authStorage.setRuntimeApiKey(MODEL.provider, "test-key");
+      const modelRuntime = await ModelRuntime.create({ authPath: join(runtimeAgentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
+      await modelRuntime.setRuntimeApiKey(MODEL.provider, "test-key");
       const services = await createAgentSessionServices({
         cwd,
         agentDir: runtimeAgentDir,
-        authStorage,
+        modelRuntime,
         resourceLoaderOptions: {
           noExtensions: true,
           noSkills: true,
@@ -137,6 +137,9 @@ describe("Ralph host runtime integration", () => {
       sessionManager: SessionManager.create(project, sessionDir),
     });
     await firstRuntime.session.bindExtensions({});
+    // Pi only persists a new session after an assistant message; reopen a real transcript.
+    firstRuntime.session.sessionManager.appendMessage(assistantMessage("Initial work recorded."));
+    const sessionId = firstRuntime.session.sessionId;
     const sessionFile = firstRuntime.session.sessionFile;
     expect(sessionFile).toBeDefined();
     const created = await createCharter(project, {
@@ -158,6 +161,7 @@ describe("Ralph host runtime integration", () => {
     try {
       await Bun.sleep(50);
       expect(providerCalls).toBe(0);
+      expect(reopenedRuntime.session.sessionManager.getSessionId()).toBe(sessionId);
       await reopenedRuntime.session.prompt("Continue working on the bound charter.");
       await waitFor(() => providerCalls >= 2);
       await Bun.sleep(25);

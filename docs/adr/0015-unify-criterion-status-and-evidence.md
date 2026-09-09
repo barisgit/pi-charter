@@ -1,6 +1,8 @@
 # Unify criterion activity and evidence in Status
 
-Status: accepted; amends ADR-0013 and ADR-0014
+Status: superseded by ADR-0016; amends ADR-0013 and ADR-0014
+
+> **Superseded by ADR-0016.** New charters use a substantial Objective and lightweight Phases. Criterion Status, criterion counts, staleness, and criterion completion gates apply only to legacy `file-interface` charters, which are read-only in the dashboard.
 
 ## Context
 
