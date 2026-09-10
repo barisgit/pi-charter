@@ -66,10 +66,16 @@ export function renderCharterWidget({ width, theme, vm }: RenderOptions): string
   const lines: string[] = [];
   const lifecycle = `${statusLabel(vm.status)} · ${formatElapsed(vm.elapsedMs)}`;
   lines.push(renderHeader(width, vm.displayName, lifecycle, theme, statusColor(vm.status)));
-  const barWidth = Math.max(0, width - 4);
+  const count = `${vm.position.done}/${vm.position.total}`;
+  const barWidth = Math.max(0, width - 5 - visibleWidth(count));
   const filled = vm.position.total > 0 ? Math.round(barWidth * vm.position.done / vm.position.total) : 0;
-  const bar = theme.fg("success", "█".repeat(filled)) + theme.fg("borderMuted", "░".repeat(barWidth - filled));
-  lines.push(renderBodyLine(width, bar, theme));
+  const running = vm.currentPhase && vm.position.total > 0
+    ? Math.min(barWidth - filled, Math.max(1, Math.round(barWidth / vm.position.total)))
+    : 0;
+  const bar = theme.fg("success", "█".repeat(filled))
+    + theme.fg("accent", "▓".repeat(running))
+    + theme.fg("dim", "░".repeat(barWidth - filled - running));
+  lines.push(renderBodyLine(width, `${bar} ${theme.fg("muted", count)}`, theme));
 
   if (vm.legacy) {
     lines.push(renderBodyLine(width, theme.fg("warning", "Legacy charter") + theme.fg("dim", " · read-only"), theme));

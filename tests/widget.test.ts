@@ -60,7 +60,7 @@ describe("charter widget", () => {
     expect(text).not.toContain("Objective:");
     expect(text).not.toContain("Ship a resilient runtime");
     expect(text).not.toContain("work/build.png");
-    expect(text).not.toContain("1/3");
+    expect(text).toContain("1/3");
     expect(text).not.toContain("REPORT.md");
     expect(lines[0]).toMatch(/^╭.*╮$/);
     expect(lines[0]).toContain("active · 1h 00m");
@@ -106,16 +106,17 @@ describe("charter widget", () => {
     for (const width of [38, 64, 120]) {
       const lines = renderCharterWidget({ vm, theme, width });
       const text = lines.join("\n");
-      expect(text).not.toContain("1/3");
+      expect(text).toContain("1/3");
       expect(lines[0]).toContain("active · 1h 00m");
-      expect(lines[1]).toMatch(/^│ [█░]+ │$/);
-      expect(lines[1]!.match(/[█░]/g)).toHaveLength(width - 4);
+      expect(lines[1]).toMatch(/^│ [█▓░]+ 1\/3 │$/);
+      expect(lines[1]!.match(/[█▓░]/g)).toHaveLength(width - 8);
+      expect(lines[1]).toContain("▓");
       expect(lines[2]).toContain("Phase 2");
       expect(text).toContain("↻ Ralph continues in 12s");
       for (const line of lines) expect(visibleWidth(line)).toBe(width);
     }
     const empty = renderCharterWidget({ vm: buildViewModel({ ...BASE, phases: [] }), theme, width: 64 }).join("\n");
-    expect(empty).not.toContain("0/0");
+    expect(empty).toContain("0/0");
     expect(empty).not.toContain("█");
   });
 
