@@ -87,10 +87,11 @@ export function registerCharterTools(pi: ExtensionAPI): void {
         .join("\n");
       const message = raw.split(/\nnext:/, 1)[0] ?? raw;
       const isError = context.isError || (result as { isError?: boolean }).isError === true;
-      const lines = isError
-        ? [theme.fg("error", compactInline(message, 200))]
-        : charterResultSummary(context.args as CharterInput, details.data, message, theme);
-      if (expanded) lines.push(...charterResultDetails(context.args as CharterInput, details, message, isError, theme));
+      const lines = expanded
+        ? charterResultDetails(context.args as CharterInput, details, message, isError, theme)
+        : isError
+          ? [theme.fg("error", compactInline(message, 200))]
+          : charterResultSummary(context.args as CharterInput, details.data, message, theme);
       return new Text(lines.join("\n"), TOOL_PAD, 0);
     },
     async execute(_toolCallId, params: CharterInput, _signal, _onUpdate, ctx) {
@@ -168,7 +169,7 @@ function charterResultSummary(args: CharterInput, data: unknown, fallback: strin
   return [theme.fg("muted", compactInline(fallback, 160))];
 }
 
-/** Expanded result: Objective and phase map for status, otherwise the full message, then legal next actions. */
+/** Expanded result: complete human-facing data, then legal next actions. */
 function charterResultDetails(
   args: CharterInput,
   details: { nextActions?: NextAction[]; data?: unknown },
@@ -178,24 +179,82 @@ function charterResultDetails(
 ): string[] {
   const lines: string[] = [];
   const record = details.data && typeof details.data === "object" && !Array.isArray(details.data) ? details.data as Record<string, unknown> : undefined;
-  if (args.action === "status" && record && typeof record.objective === "string") {
-    lines.push("", theme.bold(theme.fg("warning", "Objective")), theme.fg("text", record.objective.trim()));
+  if (isError) {
+    lines.push(theme.bold(theme.fg("error", "Error")), theme.fg("error", message.trim()));
+  } else if (args.action === "status" && record && typeof record.objective === "string") {
+    const charterId = typeof record.charterId === "string" ? record.charterId : "charter";
+    const status = typeof record.status === "string" ? record.status : "status";
+    lines.push(
+      theme.bold(theme.fg("toolTitle", "Charter")) + ` ${theme.fg("text", charterId)}`,
+      theme.fg(lifecycleColor(status), status) + theme.fg("dim", statusMetadata(record)),
+      "",
+      theme.bold(theme.fg("accent", "Objective")),
+      theme.fg("text", record.objective.trim()),
+    );
+    if (typeof record.references === "string" && record.references.trim()) {
+      lines.push("", theme.bold(theme.fg("accent", "References")), theme.fg("text", record.references.trim()));
+    }
+    if (typeof record.scope === "string" && record.scope.trim()) {
+      lines.push("", theme.bold(theme.fg("accent", "Scope")), theme.fg("text", record.scope.trim()));
+    }
     const phases = (record.phases ?? []) as CharterStatusResult["phases"];
     if (phases.length > 0) {
       lines.push("", theme.bold(theme.fg("accent", "Phases")));
-      for (const phase of phases) lines.push(theme.fg(phaseColor(phase.status), `${phase.number}. ${phase.title} — ${phase.status}`));
+      for (const phase of phases) {
+        lines.push(theme.fg(phaseColor(phase.status), `${phase.number}. ${phase.title} — ${phase.status}`));
+        if (phase.body.trim()) lines.push(theme.fg("muted", phase.body.trim()));
+      }
     }
     const ralph = record.ralph as { pausedByGuard?: boolean } | undefined;
     if (ralph?.pausedByGuard) lines.push("", theme.fg("warning", "Paused by the Ralph guard; only /charter resume continues."));
     const warnings = Array.isArray(record.warnings) ? record.warnings as string[] : [];
-    if (warnings.length > 0) lines.push("", ...warnings.map((warning) => theme.fg("warning", warning)));
-  } else if (!isError && args.action !== "list") {
-    lines.push("", theme.fg("muted", message.trim()));
+    if (warnings.length > 0) lines.push("", theme.bold(theme.fg("warning", "Warnings")), ...warnings.map((warning) => theme.fg("warning", warning)));
+  } else if (args.action === "list" && Array.isArray(details.data)) {
+    lines.push(theme.bold(theme.fg("toolTitle", `Charters · ${details.data.length}`)));
+    for (const value of details.data) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Record<string, unknown>;
+      const status = typeof row.status === "string" ? row.status : "status";
+      const charterId = typeof row.charterId === "string" ? row.charterId : "charter";
+      lines.push(
+        "",
+        theme.fg(lifecycleColor(status), status) + ` ${theme.fg("text", charterId)}` + (row.legacy ? theme.fg("warning", " · legacy, read-only") : ""),
+      );
+      if (typeof row.objective === "string" && row.objective.trim()) lines.push(theme.fg("muted", row.objective.trim()));
+      const metadata = listRowMetadata(row);
+      if (metadata) lines.push(theme.fg("dim", metadata));
+    }
+  } else {
+    lines.push(theme.fg("text", message.trim()));
   }
-  const next = (details.nextActions ?? [])
-    .map((action) => action.tool === "charter" && action.action ? action.action : [action.tool, action.action].filter(Boolean).join("."))
-    .join(theme.fg("dim", " · "));
-  lines.push("", theme.fg("dim", "next ") + (next ? theme.fg("muted", next) : theme.fg("dim", "none")));
+  lines.push(...nextActionDetails(details.nextActions ?? [], theme));
+  return lines;
+}
+
+function statusMetadata(record: Record<string, unknown>): string {
+  const values: string[] = [];
+  if (typeof record.createdAt === "string") values.push(`created ${record.createdAt}`);
+  if (typeof record.reportExists === "boolean") values.push(record.reportExists ? "report ready" : "no report");
+  if (record.legacy) values.push("legacy, read-only");
+  return values.length > 0 ? ` · ${values.join(" · ")}` : "";
+}
+
+function listRowMetadata(row: Record<string, unknown>): string {
+  const values: string[] = [];
+  if (typeof row.createdAt === "string") values.push(`created ${row.createdAt}`);
+  if (typeof row.updatedAt === "string") values.push(`updated ${row.updatedAt}`);
+  return values.join(" · ");
+}
+
+function nextActionDetails(actions: NextAction[], theme: RenderTheme): string[] {
+  const lines = ["", theme.bold(theme.fg("accent", "Next actions"))];
+  if (actions.length === 0) return [...lines, theme.fg("dim", "none")];
+  for (const action of actions) {
+    const name = action.tool === "charter" && action.action
+      ? `/charter ${action.action}`
+      : [action.tool, action.action].filter(Boolean).join(".");
+    lines.push(theme.fg("text", name) + (action.hint ? ` ${theme.fg("muted", `— ${action.hint}`)}` : ""));
+  }
   return lines;
 }
 
@@ -548,7 +607,7 @@ export function registerCharterRalphMessageRenderer(pi: ExtensionAPI): void {
     const details = (message.details ?? {}) as { charterId?: string; kind?: string; currentPhase?: string };
     const recovery = details.kind === "recovery";
     const sep = theme.fg("dim", " · ");
-    let header = theme.fg(recovery ? "error" : "warning", theme.bold("ralph"));
+    let header = theme.fg(recovery ? "error" : "warning", theme.bold("↻ ralph"));
     header += ` ${theme.fg("text", details.charterId ? displayName(details.charterId) : "charter")}`;
     if (details.currentPhase) header += sep + theme.fg("muted", details.currentPhase);
     if (recovery) header += sep + theme.fg("error", "recovery: pause follows another activation within 5 min");

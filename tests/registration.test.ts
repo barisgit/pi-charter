@@ -21,6 +21,20 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const renderTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+
+function rendered(component: { render(width: number): string[] }, width: number): string {
+  return component.render(width).map((line) => line.trimEnd()).join("\n");
+}
+
+function expectOneColumnPadding(value: string): void {
+  expect(value.split("\n").every((line) => line === "" || (line.startsWith(" ") && !line.startsWith("  ")))).toBe(true);
+}
+
+function withoutWraps(value: string): string {
+  return value.split("\n").map((line) => line.trim()).join("");
+}
+
 function createRalphHarness(project: string, sessionId = "s1", ctxOverrides: Record<string, unknown> = {}) {
   const handlers: Record<string, (event: unknown, context: any) => void | Promise<void>> = {};
   const emitter = new EventEmitter();
@@ -76,7 +90,6 @@ describe("tool registration", () => {
     registerCharterTools(pi);
     expect(tools.map((tool) => tool.name)).toEqual(["charter"]);
     expect(tools[0].renderShell).toBe("self");
-    const renderTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
     const callText = tools[0].renderCall(
       { action: "create", objective: "Ship runtime" },
       renderTheme,
@@ -105,7 +118,8 @@ describe("tool registration", () => {
       renderTheme,
       { args: { action: "create", objective: "Ship runtime" }, isError: false },
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(expanded).toContain(" next status · pause · complete · abandon");
+    expect(expanded).toContain(" Next actions");
+    expect(expanded).toContain(" /charter complete — Complete when the Objective has been audited");
     expect(expanded).toContain("Refine the Objective");
     expect(expanded.split("\n").every((line: string) => line === "" || line.startsWith(" "))).toBe(true);
 
@@ -128,7 +142,7 @@ describe("tool registration", () => {
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
     expect(statusExpanded).toContain(" Objective\n Ship runtime");
     expect(statusExpanded).toContain(" Phases\n 1. Explore phases — current");
-    expect(statusExpanded).toContain(" next status · pause · complete · abandon");
+    expect(statusExpanded).toContain(" Next actions");
 
     const duplicate = await tools[0].execute("call", { action: "create", objective: "Another" }, undefined, undefined, ctx);
     const errorText = tools[0].renderResult(
@@ -144,10 +158,126 @@ describe("tool registration", () => {
     registerCharterRalphMessageRenderer({ registerMessageRenderer(type: string, renderer: any) { renderers[type] = renderer; } } as any);
     const message = { customType: "charter-ralph-continue", content: "Charter x: continue.\n\nObjective:\nShip runtime", details: { charterId: created.details.data.charterId, kind: "recovery", currentPhase: "Explore phases" } };
     const collapsedRalph = renderers["charter-ralph-continue"](message, { expanded: false, outputPad: 1 }, renderTheme).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(collapsedRalph).toBe(" ralph ship-runtime · Explore phases · recovery: pause follows another activation within 5 min");
+    expect(collapsedRalph).toBe(" ↻ ralph ship-runtime · Explore phases · recovery: pause follows another activation within 5 min");
     const expandedRalph = renderers["charter-ralph-continue"](message, { expanded: true, outputPad: 1 }, renderTheme).render(120).map((line: string) => line.trimEnd()).join("\n");
     expect(expandedRalph).toContain("Ship runtime");
     expect(expandedRalph.split("\n").every((line: string) => line === "" || line.startsWith(" "))).toBe(true);
+  });
+
+  test("tool renderers preserve compact orientation and complete expanded content", () => {
+    const tools: any[] = [];
+    registerCharterTools({
+      events: fakeEvents(),
+      registerTool(tool: any) { tools.push(tool); },
+    } as any);
+    const tool = tools[0];
+    const charterId = "20260909-205315-polished-terminal-rendering";
+    const objective = "Deliver a readable terminal interface at every supported width without losing the final objective marker OBJECTIVE_TAIL.";
+    const statusData = {
+      charterId,
+      status: "active",
+      objective,
+      references: "- [Renderer contract](docs/rendering.md) — authoritative REFERENCE_TAIL",
+      scope: "Rendering only; preserve lifecycle behavior. SCOPE_TAIL",
+      phases: [
+        { number: 1, title: "Explore rendering", status: "done", body: "Compared wide and narrow output. PHASE_ONE_TAIL" },
+        { number: 2, title: "Polish every state", status: "current", body: "Keep wrapped content readable and complete. PHASE_TWO_TAIL" },
+      ],
+      phaseCounts: { upcoming: 0, current: 1, done: 1 },
+      createdAt: "2026-09-09T20:53:15.000Z",
+      warnings: ["A long parser warning remains visible. WARNING_TAIL"],
+      reportExists: true,
+      nextActions: [{ tool: "charter", action: "complete", hint: "Audit the complete Objective first. ACTION_TAIL" }],
+      legacy: false,
+      charterMarkdown: "",
+    };
+    const statusResult = {
+      content: [{ type: "text", text: "status payload\nnext: complete" }],
+      details: { data: statusData, nextActions: statusData.nextActions },
+    };
+
+    for (const width of [38, 120]) {
+      const collapsed = rendered(tool.renderResult(statusResult, { expanded: false, isPartial: false }, renderTheme, { args: { action: "status" }, isError: false }), width);
+      expect(collapsed).toContain("active polished-terminal-rendering");
+      expect(collapsed).not.toContain("20260909-205315");
+      expect(collapsed).not.toContain("OBJECTIVE_TAIL");
+      expectOneColumnPadding(collapsed);
+
+      const expanded = rendered(tool.renderResult(statusResult, { expanded: true, isPartial: false }, renderTheme, { args: { action: "status" }, isError: false }), width);
+      for (const marker of [charterId, "OBJECTIVE_TAIL", "REFERENCE_TAIL", "SCOPE_TAIL", "PHASE_ONE_TAIL", "PHASE_TWO_TAIL", "WARNING_TAIL", "ACTION_TAIL"]) {
+        expect(withoutWraps(expanded)).toContain(marker);
+      }
+      expectOneColumnPadding(expanded);
+    }
+
+    const rows = [
+      { charterId, status: "active", objective: `${objective} LIST_ONE_TAIL`, createdAt: "2026-09-09T20:53:15.000Z", updatedAt: "2026-09-09T21:00:00.000Z", legacy: false },
+      { charterId: "20260808-101010-historical-charter", status: "completed", objective: "Historical objective LIST_TWO_TAIL", createdAt: "2026-08-08T10:10:10.000Z", updatedAt: "2026-08-08T11:00:00.000Z", legacy: true },
+    ];
+    const listResult = { content: [{ type: "text", text: "raw list\nnext: create" }], details: { data: rows, nextActions: [] } };
+    expect(rendered(tool.renderResult(listResult, { expanded: false, isPartial: false }, renderTheme, { args: { action: "list" }, isError: false }), 40)).toBe(" 2 charters");
+    const expandedList = rendered(tool.renderResult(listResult, { expanded: true, isPartial: false }, renderTheme, { args: { action: "list" }, isError: false }), 40);
+    expect(withoutWraps(expandedList)).toContain(rows[0].charterId);
+    expect(withoutWraps(expandedList)).toContain(rows[1].charterId);
+    expect(withoutWraps(expandedList)).toContain("LIST_ONE_TAIL");
+    expect(withoutWraps(expandedList)).toContain("LIST_TWO_TAIL");
+    expectOneColumnPadding(expandedList);
+
+    const longError = `The charter could not be resumed because the guard still owns this transition. ${"Inspect the current state before retrying. ".repeat(8)}ERROR_TAIL`;
+    const errorResult = {
+      isError: true,
+      content: [{ type: "text", text: `${longError}\nnext: status` }],
+      details: { nextActions: [{ tool: "charter", action: "status", hint: "Inspect the full charter state. ERROR_ACTION_TAIL" }] },
+    };
+    const collapsedError = rendered(tool.renderResult(errorResult, { expanded: false, isPartial: false }, renderTheme, { args: { action: "resume" }, isError: true }), 38);
+    expect(collapsedError).not.toContain("ERROR_TAIL");
+    const expandedError = rendered(tool.renderResult(errorResult, { expanded: true, isPartial: false }, renderTheme, { args: { action: "resume" }, isError: true }), 38);
+    expect(withoutWraps(expandedError)).toContain("ERROR_TAIL");
+    expect(withoutWraps(expandedError)).toContain("ERROR_ACTION_TAIL");
+    expect(withoutWraps(expandedError).split("The charter could not be resumed")).toHaveLength(2);
+    expectOneColumnPadding(expandedError);
+
+    const normalMessage = `Created charter ${charterId}. ${"Refine the Objective without dropping authorized constraints. ".repeat(6)}NORMAL_TAIL`;
+    const normalResult = {
+      content: [{ type: "text", text: `${normalMessage}\nnext: status` }],
+      details: { data: statusData, nextActions: [{ tool: "charter", action: "status", hint: "Inspect the complete charter. NORMAL_ACTION_TAIL" }] },
+    };
+    for (const width of [38, 120]) {
+      const collapsed = rendered(tool.renderResult(normalResult, { expanded: false, isPartial: false }, renderTheme, { args: { action: "create" }, isError: false }), width);
+      expect(collapsed).toContain("created polished-terminal-rendering");
+      expect(collapsed).not.toContain("NORMAL_TAIL");
+      expectOneColumnPadding(collapsed);
+      const expanded = rendered(tool.renderResult(normalResult, { expanded: true, isPartial: false }, renderTheme, { args: { action: "create" }, isError: false }), width);
+      expect(withoutWraps(expanded)).toContain("NORMAL_TAIL");
+      expect(withoutWraps(expanded)).toContain("NORMAL_ACTION_TAIL");
+      expect(withoutWraps(expanded).split("Created charter")).toHaveLength(2);
+      expectOneColumnPadding(expanded);
+    }
+  });
+
+  test("normal and recovery Ralph renderers keep the full prompt on native expansion", () => {
+    const renderers: Record<string, any> = {};
+    registerCharterRalphMessageRenderer({ registerMessageRenderer(type: string, renderer: any) { renderers[type] = renderer; } } as any);
+    const renderer = renderers["charter-ralph-continue"];
+    const charterId = "20260909-205315-full-charter-reprompt";
+    const content = `Charter .charters/${charterId}/charter.md: continue toward the full Objective.\n\nObjective:\n${"Preserve every authorized requirement while continuing useful work. ".repeat(8)}PROMPT_TAIL`;
+
+    for (const kind of ["normal", "recovery"] as const) {
+      const message = { customType: "charter-ralph-continue", content, details: { charterId, kind, currentPhase: "Verify terminal rendering" } };
+      for (const width of [38, 120]) {
+        const collapsed = rendered(renderer(message, { expanded: false, outputPad: 1 }, renderTheme), width);
+        expect(collapsed).toContain("ralph full-charter-reprompt");
+        expect(collapsed).not.toContain("20260909-205315");
+        expect(collapsed).not.toContain("PROMPT_TAIL");
+        expect(collapsed.includes("recovery")).toBe(kind === "recovery");
+        expectOneColumnPadding(collapsed);
+
+        const expanded = rendered(renderer(message, { expanded: true, outputPad: 1 }, renderTheme), width);
+        expect(withoutWraps(expanded)).toContain(charterId);
+        expect(withoutWraps(expanded)).toContain("PROMPT_TAIL");
+        expectOneColumnPadding(expanded);
+      }
+    }
   });
 
   test("warns the user shortly before Ralph continues", async () => {

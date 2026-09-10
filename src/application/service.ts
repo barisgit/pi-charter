@@ -104,7 +104,7 @@ export async function getCharterStatus(
 export async function getBoundCharterStatus(projectDir: string, sessionId?: string): Promise<CharterStatusResult | undefined> {
   if (!sessionId) return undefined;
   const rows = (await listCharters(projectDir)).filter((row) => !row.legacy && row.sessionId === sessionId);
-  const bound = rows.find((row) => row.status === "active" || row.status === "paused") ?? rows.find((row) => row.status === "completed" || row.status === "abandoned");
+  const bound = rows.find((row) => row.status === "active" || row.status === "paused");
   return bound ? getCharterStatus(projectDir, { charterId: bound.charterId }) : undefined;
 }
 
@@ -170,7 +170,7 @@ export async function completeCharter(
     const initial = await loadCharterState(dir);
     assertMutable(initial);
     const { parsed, state } = await refreshCharterSnapshotUnlocked(projectDir, charterId);
-    if (state.status !== "active") throw toolError(`Only active charters can complete (current: ${state.status}).`, "status");
+    if (state.status !== "active" && state.status !== "paused") throw toolError(`Only active or paused charters can complete (current: ${state.status}).`, "status");
     await dispatchHook("charter:before_complete", {
       type: "charter:before_complete",
       charterId,
@@ -212,6 +212,11 @@ export async function resolveCharterId(
   input: { charterId?: string; sessionId?: string } = {},
 ): Promise<string> {
   if (input.charterId) return resolveIdFromRoot(chartersRoot(projectDir), input.charterId);
+  if (input.sessionId) {
+    const bound = (await listCharters(projectDir)).find((row) =>
+      !row.legacy && row.sessionId === input.sessionId && (row.status === "active" || row.status === "paused"));
+    if (bound) return bound.charterId;
+  }
   const active = await activeChartersForSession(projectDir, input.sessionId);
   if (active.length === 1) return active[0].charterId;
   if (active.length > 1) throw new Error(`Multiple active charters for session: ${active.map((row) => row.charterId).join(", ")}`);
@@ -225,6 +230,7 @@ function nextActionsFor(state: CharterState, legacy: boolean): NextAction[] {
   if (legacy || state.status === "completed" || state.status === "abandoned") return [];
   if (state.status === "paused") return [
     { tool: "charter", action: "resume", hint: state.ralph?.pausedByGuard ? "Use `/charter resume` explicitly to resume after the Ralph guard pause." : "Resume this paused charter." },
+    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report." },
     { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted." },
   ];
   return [

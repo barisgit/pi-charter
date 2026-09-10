@@ -64,22 +64,31 @@ export function buildCharterWidgetView(status: CharterWidgetStatus | undefined, 
 export function renderCharterWidget({ width, theme, vm }: RenderOptions): string[] {
   if (width <= 0) return [];
   const lines: string[] = [];
-  const lifecycle = statusLabel(vm.status);
+  const lifecycle = `${statusLabel(vm.status)} · ${formatElapsed(vm.elapsedMs)}`;
   lines.push(renderHeader(width, vm.displayName, lifecycle, theme, statusColor(vm.status)));
+  const barWidth = Math.max(0, width - 4);
+  const filled = vm.position.total > 0 ? Math.round(barWidth * vm.position.done / vm.position.total) : 0;
+  const bar = theme.fg("success", "█".repeat(filled)) + theme.fg("borderMuted", "░".repeat(barWidth - filled));
+  lines.push(renderBodyLine(width, bar, theme));
 
   if (vm.legacy) {
-    lines.push(renderBodyLine(width, theme.fg("warning", "Legacy charter · read-only"), theme));
+    lines.push(renderBodyLine(width, theme.fg("warning", "Legacy charter") + theme.fg("dim", " · read-only"), theme));
   }
   if (vm.currentPhase) {
-    lines.push(renderBodyLine(width, theme.fg("accent", `Phase ${vm.currentPhase.number}: ${vm.currentPhase.title}`), theme));
-  } else {
-    lines.push(renderBodyLine(width, theme.fg("dim", vm.position.total === 0 ? "No phases yet" : "No current phase"), theme));
+    lines.push(renderBodyLine(width, theme.fg("accent", `Phase ${vm.currentPhase.number}`) + theme.fg("text", `  ${vm.currentPhase.title}`), theme));
+  } else if (!vm.guardPaused) {
+    const phaseState = vm.position.total === 0
+      ? "No phases yet"
+      : vm.position.done === vm.position.total
+        ? "Phases complete"
+        : "No current phase";
+    lines.push(renderBodyLine(width, theme.fg("dim", phaseState), theme));
   }
-  if (vm.guardPaused) lines.push(renderBodyLine(width, theme.fg("warning", "Execution paused by Ralph guard; use /charter resume"), theme));
-  else if (vm.guardWarning) lines.push(renderBodyLine(width, theme.fg("warning", "Ralph guard warning"), theme));
+  if (vm.guardPaused) lines.push(renderBodyLine(width, theme.fg("warning", "↻ Guard paused") + theme.fg("dim", " · resume with /charter resume"), theme));
+  else if (vm.guardWarning) lines.push(renderBodyLine(width, theme.fg("warning", "↻ Ralph guard warning"), theme));
   if (vm.status === "active" && (vm.ralphRemainingMs ?? 0) > 0) {
     const seconds = Math.max(1, Math.ceil(vm.ralphRemainingMs! / 1_000));
-    lines.push(renderBodyLine(width, theme.fg("warning", `Ralph continues in ${seconds}s`), theme));
+    lines.push(renderBodyLine(width, theme.fg("warning", `↻ Ralph continues in ${seconds}s`), theme));
   }
   lines.push(renderFooter(width, theme));
   return lines.map((line) => truncateToWidth(line, width));

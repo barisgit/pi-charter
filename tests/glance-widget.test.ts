@@ -3,7 +3,7 @@ import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createCharter } from "../src/application/service";
+import { createCharter, completeCharter, abandonCharter, listCharterSummaries } from "../src/application/service";
 import { registerCharterWidget } from "../src/application/registration";
 
 type SetWidgetCall = {
@@ -100,6 +100,22 @@ describe("glance widget cleanup", () => {
     expect(lines.join("\n")).toContain("glance-widget-fixture");
     expect(visibleWidth(lines[0]!)).toBeLessThanOrEqual(100);
     expect(created.charterId).toContain("glance-widget-fixture");
+  });
+
+  test("completion and abandonment remove the widget without removing dashboard history", async () => {
+    for (const close of [completeCharter, abandonCharter]) {
+      const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-terminal-widget-"));
+      const created = await createCharter(projectDir, { objective: "Demo", sessionId: "s1" });
+      const pi = makeFakePi();
+      registerCharterWidget(pi as never);
+      const { ctx, calls } = makeCtx(projectDir, "s1");
+      await fireEvent(pi, "session_start", ctx);
+      expect(typeof calls.at(-1)?.content).toBe("function");
+      await close(projectDir, { sessionId: "s1", note: "Demo closed." });
+      await fireEvent(pi, "turn_end", ctx);
+      expect(calls.at(-1)?.content).toBeUndefined();
+      expect(JSON.stringify(await listCharterSummaries(projectDir))).toContain(created.charterId);
+    }
   });
 
   test("missing session binding removes only the detail widget", async () => {

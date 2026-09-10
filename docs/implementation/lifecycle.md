@@ -4,7 +4,7 @@
 
 `active | paused | completed | abandoned`
 
-`completed` and `abandoned` are terminal. There is no planning, question, review, or open-ended state.
+`completed` and `abandoned` are terminal and disappear from the session widget. They remain visible in `/charters`. There is no archive action or flag, planning, question, review, or open-ended state. No-ID actions target the same active or paused session charter shown by the widget.
 
 ## Creation
 
@@ -49,7 +49,7 @@ Old `file-interface` charters cannot resume. Start a new phases charter to conti
 
 ## Completion
 
-A phases charter may complete with zero phases. The worker decides completion by auditing the full Objective and external References, then provides a concise completion note.
+An active or paused phases charter may complete with zero phases. Completion from a guard pause does not resume execution or clear guard history. The worker decides completion by auditing the full Objective and external References, then provides a concise completion note.
 
 Completion:
 

@@ -186,14 +186,12 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
           const row = ctx.selectedRow;
           const snapshot = row ? snapshots.get(row.charterId) : undefined;
           if (!snapshot) return { label: "(no selection)", labelColor: "dim", tailColor: "dim" };
-          const phasePosition = `${snapshot.header.doneCount}/${snapshot.header.totalCount} done`;
           const legacy = snapshot.legacy ? "  legacy · read-only" : "";
           const tailRendered = [
             t.fg(statusColor(snapshot.header.status), `[${snapshot.header.status}]`),
-            t.fg("accent", phasePosition),
             t.fg("muted", snapshot.header.elapsed),
           ].join("  ") + legacy;
-          const tailPlain = `[${snapshot.header.status}]  ${phasePosition}  ${snapshot.header.elapsed}${legacy}`;
+          const tailPlain = `[${snapshot.header.status}]  ${snapshot.header.elapsed}${legacy}`;
           // Coerce to string: titledTopSegment's truncateToWidth crashes pi on a
           // non-string label, and header.name derives from on-disk JSON.
           return { label: String(snapshot.header.name ?? ""), tailRendered, tailPlain };
@@ -240,17 +238,16 @@ function leftRow(
   opts: { isCursor: boolean; isBound: boolean; dim: boolean; width: number; statusWidth: number },
 ): string {
   const { isCursor, isBound, dim, width, statusWidth } = opts;
-  const cursorMark = isCursor ? theme.fg("accent", "►") : " ";
-  const boundMark = isBound ? theme.fg("accent", "*") : " ";
-  const prefix = `${cursorMark}${boundMark} `;
+  const prefix = "  ";
   const position = row.legacy ? "legacy" : `${row.doneCount}/${row.totalCount}`;
   const status = clipText(row.status, statusWidth);
-  const suffixPlain = `  ${position}  ${status}`;
+  const bound = isBound ? "  bound" : "";
+  const suffixPlain = `  ${position}  ${status}${bound}`;
   const nameWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffixPlain));
   const name = padRight(clipText(row.name, nameWidth), nameWidth);
-  const styledName = dim ? theme.fg("dim", name) : isCursor ? theme.bold(name) : name;
+  const styledName = dim ? theme.fg("dim", name) : isCursor ? theme.bold(theme.fg("accent", name)) : name;
   const positionColor = row.legacy ? "warning" : doneCountColor(row.doneCount, row.totalCount);
-  return clipStyled(`${prefix}${styledName}  ${theme.fg(positionColor, position)}  ${theme.fg(statusColor(row.status), status)}`, width);
+  return clipStyled(`${prefix}${styledName}  ${theme.fg(positionColor, position)}  ${theme.fg(statusColor(row.status), status)}${isBound ? theme.fg("accent", bound) : ""}`, width);
 }
 
 function buildInfoLines(
@@ -265,12 +262,11 @@ function buildInfoLines(
     const color: ThemeColorName = flash.kind === "error" ? "error" : flash.kind === "warning" ? "warning" : "success";
     return wrapText(flash.text, width).map((line) => theme.fg(color, line));
   }
-  if (!row) return [theme.fg("dim", "(no selection)")];
+  if (!row) return [theme.bold("No charters yet"), theme.fg("muted", "Create a charter to begin durable work.")];
   const out = [theme.bold(clipText(row.name, width))];
-  const position = row.legacy ? "legacy · read-only" : `${row.doneCount}/${row.totalCount} phases done`;
-  out.push(`${theme.fg(statusColor(row.status), `[${row.status}]`)} ${theme.fg(row.legacy ? "warning" : doneCountColor(row.doneCount, row.totalCount), position)}`);
+  out.push(...wrapText(row.charterId, width).map((line) => theme.fg("dim", line)));
   for (const line of formatTimestamps(row)) out.push(theme.fg("dim", clipText(line, width)));
-  if (snapshot) out.push(...wrapText(snapshot.objective, width).slice(0, Math.max(0, 8 - out.length)).map((line) => theme.fg("muted", line)));
+  if (!snapshot) out.push(theme.fg("error", "Charter unavailable"));
   return out;
 }
 
@@ -291,14 +287,14 @@ function buildDetailLines(
   expand: { allExpanded: boolean },
 ): string[] {
   if (width <= 0) return [];
-  if (!row) return [theme.fg("dim", "No charters.")];
-  if (!snapshot) return [theme.fg("dim", "No snapshot for this charter.")];
+  if (!row) return [theme.bold("No charters yet"), theme.fg("muted", "Create a charter to begin durable work.")];
+  if (!snapshot) return [theme.bold(theme.fg("error", "Unable to load charter")), "", ...wrapText("The charter files could not be read.", width).map((line) => theme.fg("muted", line))];
 
   const lines: string[] = [];
   const heading = (label: string, color: ThemeColorName = "accent") => theme.bold(theme.fg(color, label));
   if (snapshot.legacy) lines.push(heading("Legacy charter · read-only", "warning"), "");
 
-  lines.push(heading("Objective", "warning"));
+  lines.push(heading("Objective"));
   lines.push(...wrapText(snapshot.objective, Math.max(1, width - 2)).map((line) => `  ${line}`));
 
   if (snapshot.references) lines.push("", heading("References"), ...wrapText(snapshot.references, Math.max(1, width - 2)).map((line) => `  ${line}`));
@@ -308,22 +304,24 @@ function buildDetailLines(
     lines.push("", heading("charter.md"), ...renderMarkdownLines(theme, snapshot.charterMarkdown, width));
   } else {
     lines.push("", `${heading("Phases")} ${theme.fg(doneCountColor(snapshot.header.doneCount, snapshot.header.totalCount), `${snapshot.header.doneCount}/${snapshot.header.totalCount} done`)}`);
-    if (snapshot.phases.length === 0) lines.push(theme.fg("dim", "  No phases yet"));
+    if (snapshot.phases.length === 0) lines.push(theme.fg("muted", "  No phases recorded."));
     if (expand.allExpanded) for (const phase of snapshot.phases) lines.push(...phaseLines(theme, phase, width));
   }
 
-  if (snapshot.ralph?.pausedByGuard) lines.push("", heading("Ralph guard", "warning"), theme.fg("warning", "  Execution paused by Ralph guard; resume explicitly."));
+  if (snapshot.ralph?.pausedByGuard) lines.push("", heading("Ralph guard", "warning"), `  ${theme.fg("warning", "Paused before another Ralph activation.")}`, `  ${theme.fg("text", "Resume with /charter resume.")}`);
   else if (snapshot.ralph?.warnedAt !== undefined) lines.push("", heading("Ralph guard", "warning"), theme.fg("warning", "  Activation warning issued."));
 
-  if (snapshot.warnings.length > 0) lines.push("", heading("Parser warnings", "warning"), ...snapshot.warnings.map((warning) => theme.fg("warning", `  ${warning}`)));
+  if (snapshot.warnings.length > 0) lines.push("", heading("Parser warnings", "warning"), ...snapshot.warnings.flatMap((warning) => wrapText(warning, Math.max(1, width - 2)).map((line) => `  ${theme.fg("warning", line)}`)));
   if (snapshot.report) lines.push("", heading("REPORT.md"), ...renderMarkdownLines(theme, snapshot.report.markdown, width));
   return lines;
 }
 
 function phaseLines(theme: ThemeLike, phase: PickerSnapshot["phases"][number], width: number): string[] {
   const color: ThemeColorName = phase.status === "done" ? "success" : phase.status === "current" ? "accent" : "dim";
-  const marker = phase.status === "done" ? "done" : phase.status;
-  const out = [theme.fg(color, `  ${phase.number}. ${phase.title} — ${marker}`)];
+  const prefix = `  ${padRight(phase.status, 10)}${phase.number}. `;
+  const continuation = " ".repeat(visibleWidth(prefix));
+  const titleLines = wrapText(phase.title, Math.max(1, width - visibleWidth(prefix)));
+  const out = titleLines.map((line, index) => `${index === 0 ? theme.fg(color, prefix) : continuation}${theme.fg(index === 0 || phase.status === "current" ? "text" : "muted", line)}`);
   if (phase.body) out.push(...wrapText(phase.body, Math.max(8, width - 4)).map((line) => theme.fg(phase.status === "current" ? "text" : "muted", `    ${line}`)));
   return out;
 }
@@ -384,7 +382,9 @@ function wrapText(text: string, width: number): string[] {
           out.push(line);
           line = "";
         }
-        out.push(clipText(word, width));
+        const chunks = splitWordByWidth(word, width);
+        out.push(...chunks.slice(0, -1));
+        line = chunks.at(-1) ?? "";
         continue;
       }
       const next = line ? `${line} ${word}` : word;
@@ -398,6 +398,25 @@ function wrapText(text: string, width: number): string[] {
     if (line) out.push(line);
   }
   return out.length > 0 ? out : [""];
+}
+
+function splitWordByWidth(word: string, width: number): string[] {
+  const graphemes = Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(word), ({ segment }) => segment);
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const grapheme of graphemes) {
+    if (chunk && visibleWidth(chunk + grapheme) > width) {
+      chunks.push(chunk);
+      chunk = "";
+    }
+    if (!chunk && visibleWidth(grapheme) > width) {
+      chunks.push(grapheme);
+      continue;
+    }
+    chunk += grapheme;
+  }
+  if (chunk) chunks.push(chunk);
+  return chunks;
 }
 
 function statusColor(status: CharterStatus): ThemeColorName {

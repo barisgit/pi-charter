@@ -92,11 +92,31 @@ describe("createCharterPickerOverlay", () => {
     expect(detail).toContain("Preserve every authorized constraint");
     expect(detail).toContain("Verify that navigation and scrolling remain");
     expect(detail).toContain("Phases");
-    expect(detail).toContain("2. Build — current");
+    expect(detail).toContain("current   2. Build");
     expect(detail).toContain("work/dashboard.png");
     expect(detail).not.toContain("[o for full]");
     expect(text).not.toContain("Blocking complete");
     expect(text).not.toContain("Recent status");
+  });
+
+  test("shows charter names and preserves narrow CJK Objective tails", () => {
+    const id = "20260702-120000-ship-the-runtime";
+    const longWord = "authorizationconstraintwithoutbreaks";
+    const cjkWord = `${"界".repeat(24)}尾`;
+    const row = charter(id, { name: "ship-the-runtime" });
+    const lines = makePicker({
+      charters: [row],
+      snapshots: new Map([[id, snapshot(id, {
+        header: { ...snapshot(id).header, name: "ship-the-runtime" },
+        objective: `Keep ${longWord} intact.\n\n${cjkWord}`,
+      })]]),
+    }).render(54);
+    const text = lines.join("\n");
+    const detail = rightPane(lines).replace(/\s+/g, "");
+    expect(text).toContain("ship-the-runtime");
+    expect(detail).toContain(longWord);
+    expect(detail).toContain(cjkWord);
+    for (const line of lines) expect(visibleWidth(line)).toBe(54);
   });
 
   test("shows REPORT.md for live and terminal charters", () => {
@@ -121,7 +141,15 @@ describe("createCharterPickerOverlay", () => {
   test("shows guard warning and guard-paused reason", () => {
     const warning = rightPane(makePicker({ snapshots: new Map([["alpha", snapshot("alpha", { ralph: { activations: [1], warnedAt: 2, pausedByGuard: true } })]]) , charters: [charter("alpha")] }).render(110));
     expect(warning).toContain("Ralph guard");
-    expect(warning).toContain("paused by Ralph guard");
+    expect(warning).toContain("Paused before another Ralph activation");
+    expect(warning).toContain("Resume with /charter resume");
+  });
+
+  test("renders deliberate empty and unavailable states", () => {
+    expect(makePicker({ charters: [], snapshots: new Map() }).render(80).join("\n")).toContain("No charters yet");
+    const text = rightPane(makePicker({ charters: [charter("broken")], snapshots: new Map() }).render(90));
+    expect(text).toContain("Unable to load charter");
+    expect(text).toContain("charter files could not be read");
   });
 
   test("arrow keys navigate between charter details", () => {
@@ -134,9 +162,9 @@ describe("createCharterPickerOverlay", () => {
   test("space folds and restores phase details", () => {
     const picker = makePicker({ charters: [charter("alpha")] });
     picker.handleInput("\t");
-    expect(rightPane(picker.render(110))).toContain("2. Build — current");
+    expect(rightPane(picker.render(110))).toContain("current   2. Build");
     picker.handleInput(" ");
-    expect(rightPane(picker.render(110))).not.toContain("2. Build — current");
+    expect(rightPane(picker.render(110))).not.toContain("current   2. Build");
   });
 
   test("bare /charters opens as a focused fullscreen overlay", async () => {

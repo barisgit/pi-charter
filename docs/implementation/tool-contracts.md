@@ -86,8 +86,10 @@ Legacy `file-interface` state is decoded only far enough to render a read-only d
 ## UI projections
 
 - Terse status reports lifecycle, Objective, phase counts/current phase, warnings, and legal next actions.
-- The compact widget presents the short charter name, lifecycle, and current phase title without the Objective, phase body, or duplicate progress chrome.
-- `/charters` always renders the full Objective and phase narrative. Legacy charters remain visible and clearly read-only.
+- The bordered widget presents the short charter slug, lifecycle, current phase, a full-width phase-completion bar without a numeric count, and elapsed wall-clock time since creation (including pauses) beside lifecycle in the top border. The bar fills the entire inner row with one column of padding on each side, with phase detail below it. The bar describes the phase map, not Objective completion. The Objective and phase bodies stay in the dashboard. Ralph countdowns and guard guidance carry the loop icon, as do Ralph message headers.
+- `/charters` always renders the full Objective and phase narrative. Legacy charters remain visible and clearly read-only; long content wraps within the scrollable detail pane.
+- Custom tool calls and results have one column of horizontal padding, including wrapped lines. Collapsed results show orientation; expanded results preserve the full message or structured status/list details, warnings, and legal next-action hints.
+- Ralph messages use Pi's native collapsed/expanded state: a compact header by default, the complete continuation prompt when expanded. Rendering never changes the model-facing tool result or prompt.
 
 ## Ralph
 

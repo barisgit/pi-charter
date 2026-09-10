@@ -46,7 +46,7 @@ describe("widget-state reducer", () => {
 });
 
 describe("charter widget", () => {
-  test("shows only the short name, lifecycle, and current phase in the compact widget", () => {
+  test("shows the short name, lifecycle, and current phase in a bordered widget", () => {
     const vm = buildCharterWidgetView({
       ...STATUS,
       objective: "Ship a resilient runtime for users.\n\nKeep the complete Objective visible in the dashboard only.",
@@ -55,13 +55,18 @@ describe("charter widget", () => {
     const text = lines.join("\n");
     expect(text).toContain("ship-runtime");
     expect(text).toContain("active");
-    expect(text).toContain("Phase 2: Build");
+    expect(text.match(/active/g)).toHaveLength(1);
+    expect(text).toContain("Phase 2  Build");
     expect(text).not.toContain("Objective:");
     expect(text).not.toContain("Ship a resilient runtime");
     expect(text).not.toContain("work/build.png");
-    expect(text).not.toContain("1/3 done");
+    expect(text).not.toContain("1/3");
     expect(text).not.toContain("REPORT.md");
-    expect(lines).toHaveLength(3);
+    expect(lines[0]).toMatch(/^╭.*╮$/);
+    expect(lines[0]).toContain("active · 1h 00m");
+    expect(text).not.toContain("Elapsed");
+    expect(text).toContain("█");
+    expect(lines).toHaveLength(4);
   });
 
   test("shows Ralph guard warning and guard-paused reason", () => {
@@ -69,7 +74,49 @@ describe("charter widget", () => {
     expect(renderCharterWidget({ vm: warning!, theme, width: 100 }).join("\n")).toContain("Ralph guard warning");
 
     const paused = buildCharterWidgetView({ ...STATUS, status: "paused", ralph: { activations: [1, 2, 3, 4, 5], warnedAt: 5, pausedByGuard: true } });
-    expect(renderCharterWidget({ vm: paused!, theme, width: 100 }).join("\n")).toContain("paused by Ralph guard");
+    expect(renderCharterWidget({ vm: paused!, theme, width: 100 }).join("\n")).toContain("Guard paused · resume with /charter resume");
+  });
+
+  test("does not invent a missing-current-phase error for a guard-paused all-done charter", () => {
+    const paused = buildCharterWidgetView({
+      ...STATUS,
+      status: "paused",
+      phases: STATUS.phases.map((phase) => ({ ...phase, status: "done" as const })),
+      ralph: { activations: [1, 2, 3, 4, 5], warnedAt: 5, pausedByGuard: true },
+    });
+    const text = renderCharterWidget({ vm: paused!, theme, width: 80 }).join("\n");
+    expect(text).not.toContain("No current phase");
+    expect(text).not.toContain("All phases");
+    expect(text).toContain("Guard paused · resume with /charter resume");
+  });
+
+  test("does not call unfinished upcoming phases complete when none is current", () => {
+    const vm = buildCharterWidgetView({
+      ...STATUS,
+      phases: STATUS.phases.map((phase) => ({ ...phase, status: "upcoming" as const })),
+    });
+    const text = renderCharterWidget({ vm: vm!, theme, width: 80 }).join("\n");
+    expect(text).toContain("No current phase");
+    expect(text).not.toContain("Phases complete");
+  });
+
+  test("keeps progress, elapsed time, and the Ralph loop visible at wide and narrow widths", () => {
+    const vm = buildViewModel(BASE);
+    vm.ralphRemainingMs = 12_000;
+    for (const width of [38, 64, 120]) {
+      const lines = renderCharterWidget({ vm, theme, width });
+      const text = lines.join("\n");
+      expect(text).not.toContain("1/3");
+      expect(lines[0]).toContain("active · 1h 00m");
+      expect(lines[1]).toMatch(/^│ [█░]+ │$/);
+      expect(lines[1]!.match(/[█░]/g)).toHaveLength(width - 4);
+      expect(lines[2]).toContain("Phase 2");
+      expect(text).toContain("↻ Ralph continues in 12s");
+      for (const line of lines) expect(visibleWidth(line)).toBe(width);
+    }
+    const empty = renderCharterWidget({ vm: buildViewModel({ ...BASE, phases: [] }), theme, width: 64 }).join("\n");
+    expect(empty).not.toContain("0/0");
+    expect(empty).not.toContain("█");
   });
 
   test("keeps every line within a narrow terminal width", () => {

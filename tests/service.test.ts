@@ -17,6 +17,27 @@ async function createWithText(project: string, text: string, sessionId = "s1") {
 }
 
 describe("Objective/Phases service", () => {
+  test("terminal charters leave the widget binding but remain readable", async () => {
+    for (const action of [completeCharter, abandonCharter]) {
+      const project = await tempProject();
+      const id = await createWithText(project, "# Objective\n\nDemo.\n\n## Phases\n");
+      await action(project, { sessionId: "s1", note: "Demo finished." });
+      expect(await getBoundCharterStatus(project, "s1")).toBeUndefined();
+      expect((await getCharterStatus(project, { charterId: id })).charterId).toBe(id);
+    }
+  });
+
+  test("no-id completion targets the displayed paused charter among historical charters", async () => {
+    const project = await tempProject();
+    const old = await createWithText(project, "# Objective\n\nOld demo.\n\n## Phases\n", "other");
+    await completeCharter(project, { charterId: old, note: "Old demo finished." });
+    const current = await createCharter(project, { objective: "Current demo", sessionId: "s1", now: "2026-07-03T00:00:00.000Z" });
+    await pauseCharter(project, { sessionId: "s1" });
+    expect((await getBoundCharterStatus(project, "s1"))?.charterId).toBe(current.charterId);
+    expect((await getCharterStatus(project, { sessionId: "s1" })).charterId).toBe(current.charterId);
+    await completeCharter(project, { sessionId: "s1", note: "Audited demo." });
+    expect(await getBoundCharterStatus(project, "s1")).toBeUndefined();
+  });
   test("subheaded Objective constraints reach status, Ralph and the completion report intact", async () => {
     const project = await tempProject();
     const objective = "Ship recovery.\n\n### Constraints\n\nDo not change login. Verify desktop and mobile widths.";
