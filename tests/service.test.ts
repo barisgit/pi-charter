@@ -17,6 +17,43 @@ async function createWithText(project: string, text: string, sessionId = "s1") {
 }
 
 describe("Objective/Phases service", () => {
+  test("active and paused bindings block siblings until complete or abandon", async () => {
+    for (const finish of [completeCharter, abandonCharter]) {
+      const project = await tempProject();
+      const created = await createCharter(project, { objective: "Governing objective", sessionId: "s1" });
+      await expect(createCharter(project, { objective: "Sibling", sessionId: "s1" })).rejects.toMatchObject({ code: "create.non_terminal_exists" });
+      await pauseCharter(project, { sessionId: "s1" });
+      await expect(createCharter(project, { objective: "Sibling", sessionId: "s1" })).rejects.toThrow("complete or abandon");
+      expect((await getBoundCharterStatus(project, "s1"))?.charterId).toBe(created.charterId);
+      await finish(project, { sessionId: "s1", note: "Finished" });
+      expect((await createCharter(project, { objective: "Next", sessionId: "s1" })).status).toBe("active");
+    }
+  });
+
+  test("mutations cannot target a different charter from the session binding", async () => {
+    const project = await tempProject();
+    const bound = await createCharter(project, { objective: "Bound", sessionId: "s1" });
+    const other = await createCharter(project, { objective: "Other", sessionId: "s2" });
+    await pauseCharter(project, { sessionId: "s2" });
+    for (const mutate of [pauseCharter, resumeCharter, completeCharter, abandonCharter]) {
+      await expect(mutate(project, { charterId: other.charterId, sessionId: "s1", note: "Stop" })).rejects.toThrow(bound.charterId);
+    }
+    expect((await getCharterStatus(project, { charterId: other.charterId, sessionId: "s1" })).status).toBe("paused");
+    expect((await getBoundCharterStatus(project, "s1"))?.charterId).toBe(bound.charterId);
+  });
+
+  test("an unbound session can only adopt a paused charter through explicit resume", async () => {
+    const project = await tempProject();
+    const other = await createCharter(project, { objective: "Previous session", sessionId: "old" });
+    await pauseCharter(project, { sessionId: "old" });
+    for (const mutate of [pauseCharter, completeCharter, abandonCharter]) {
+      await expect(mutate(project, { charterId: other.charterId, sessionId: "new", note: "Stop" })).rejects.toThrow("no bound charter");
+    }
+    await expect(resumeCharter(project, { sessionId: "new" })).rejects.toThrow("explicit id");
+    await resumeCharter(project, { charterId: other.charterId, sessionId: "new" });
+    expect((await getBoundCharterStatus(project, "new"))?.charterId).toBe(other.charterId);
+    expect(await getBoundCharterStatus(project, "old")).toBeUndefined();
+  });
   test("terminal charters leave the widget binding but remain readable", async () => {
     for (const action of [completeCharter, abandonCharter]) {
       const project = await tempProject();
@@ -41,7 +78,7 @@ describe("Objective/Phases service", () => {
   test("subheaded Objective constraints reach status, Ralph and the completion report intact", async () => {
     const project = await tempProject();
     const objective = "Ship recovery.\n\n### Constraints\n\nDo not change login. Verify desktop and mobile widths.";
-    const id = await createWithText(project, `# Objective\n\n${objective}\n\n## Phases\n\n1. Explore phases\n`);
+    const id = await createWithText(project, `# Objective\n\n${objective}\n\n## Phases\n\n1. Inspect behavior\n`);
     const status = await getCharterStatus(project, { charterId: id });
     expect(status.objective).toBe(objective);
     expect(renderRalphPrompt(status)).toContain(objective);
@@ -51,7 +88,7 @@ describe("Objective/Phases service", () => {
 
   test("ordinary pause and explicit resume retain an outstanding warning until a guard pause", async () => {
     const project = await tempProject();
-    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Explore phases\n");
+    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Inspect behavior\n");
     const state = await loadCharterState(project, id);
     state.ralph = { activations: [1000], warnedAt: 1000 };
     await writeCharterState(charterDir(project, id), state);
@@ -61,7 +98,7 @@ describe("Objective/Phases service", () => {
   });
   test("completion hooks receive phase count and can still veto completion", async () => {
     const project = await tempProject();
-    const id = await createWithText(project, "# Objective\n\nDeliver safely.\n\n## Phases\n\n1. Explore phases\n");
+    const id = await createWithText(project, "# Objective\n\nDeliver safely.\n\n## Phases\n\n1. Inspect behavior\n");
     let observed: unknown;
     const unsubscribe = subscribeHook("charter:before_complete", (payload) => {
       observed = payload;
@@ -130,7 +167,7 @@ describe("Objective/Phases service", () => {
 
   test("existing curated report is preserved on completion", async () => {
     const project = await tempProject();
-    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Explore phases\n");
+    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Inspect behavior\n");
     await writeTextAtomic(reportPath(charterDir(project, id)), "# Curated\n\nKeep me.\n");
     await completeCharter(project, { charterId: id, note: "Done." });
     expect(await readFile(reportPath(charterDir(project, id)), "utf8")).toBe("# Curated\n\nKeep me.\n");
@@ -153,7 +190,7 @@ describe("Objective/Phases service", () => {
 
   test("guard pause requires explicit user resume and clears guard history", async () => {
     const project = await tempProject();
-    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Explore phases\n");
+    const id = await createWithText(project, "# Objective\n\nShip.\n\n## Phases\n\n1. Inspect behavior\n");
     await pauseCharter(project, { charterId: id, guard: true });
     await expect(resumeCharter(project, { charterId: id })).rejects.toThrow("/charter resume");
     const resumed = await resumeCharter(project, { charterId: id, userInitiated: true });

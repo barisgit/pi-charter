@@ -20,7 +20,7 @@ describe("charter store", () => {
     expect(created.state).not.toHaveProperty("criteriaSnapshot");
     expect(await pathExists(join(created.charterDir, "work"))).toBe(false);
     const parsed = await loadParsedCharter(created.charterDir);
-    expect(parsed.phases).toEqual([{ number: 1, title: "Explore phases", status: "current", body: "" }]);
+    expect(parsed.phases).toEqual([]);
   });
 
   test("lists legacy charters read-only and marks them legacy", async () => {

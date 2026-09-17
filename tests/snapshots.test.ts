@@ -13,7 +13,7 @@ describe("whole-file snapshots", () => {
   test("journals one event when charter.md changes and none when unchanged", async () => {
     const project = await tempProject();
     const created = await createCharterWorkspace(project, { charterId: "20260702-000000-observe", objective: "Observe", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
-    await writeTextAtomic(join(created.charterDir, "charter.md"), "# Objective\n\nObserve.\n\n## Phases\n\n1. Explore phases — done\n2. Build\n");
+    await writeTextAtomic(join(created.charterDir, "charter.md"), "# Objective\n\nObserve.\n\n## Phases\n\n1. Inspect behavior — done\n2. Build\n");
     const first = await refreshCharterSnapshot(project, created.charterId);
     expect(first.changed).toBe(true);
     expect((await readEvents(created.charterDir)).map((event) => event.type)).toEqual(["charter_created", "charter_file_changed"]);
@@ -26,8 +26,8 @@ describe("whole-file snapshots", () => {
     const project = await tempProject();
     const match = await createCharterWorkspace(project, { charterId: "20260702-000000-match", objective: "Match", now: "2026-07-02T00:00:00.000Z", sessionId: "s1" });
     const other = await createCharterWorkspace(project, { charterId: "20260702-000001-other", objective: "Other", now: "2026-07-02T00:00:01.000Z", sessionId: "s2" });
-    await writeTextAtomic(join(match.charterDir, "charter.md"), "# Objective\nMatch changed\n## Phases\n1. Explore phases");
-    await writeTextAtomic(join(other.charterDir, "charter.md"), "# Objective\nOther changed\n## Phases\n1. Explore phases");
+    await writeTextAtomic(join(match.charterDir, "charter.md"), "# Objective\nMatch changed\n## Phases\n1. Inspect behavior");
+    await writeTextAtomic(join(other.charterDir, "charter.md"), "# Objective\nOther changed\n## Phases\n1. Inspect behavior");
     await refreshSessionSnapshots(project, "s1");
     expect((await readEvents(match.charterDir)).some((event) => event.type === "charter_file_changed")).toBe(true);
     expect((await readEvents(other.charterDir)).some((event) => event.type === "charter_file_changed")).toBe(false);

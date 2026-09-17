@@ -2,7 +2,7 @@
 
 pi-charter keeps a user's objective present during durable agent work. The objective is the completion contract. Lightweight phases explain the route through the work; they do not replace the objective or prove completion.
 
-This file defines domain language, not TypeScript structure. ADR-0016 records the redesign.
+This file defines domain language, not TypeScript structure. ADR-0016 records the redesign; ADR-0017 amends session binding, initial phases, and Objective reminders.
 
 ## Language
 
@@ -32,15 +32,14 @@ _Avoid_: Mission boundaries, non-authorized constraints
 A numbered, lightweight description of an emerging part of the work. A phase has a title, optional body, and an upcoming, current, or done presentation status. It may include links to evidence captured while verifying. Phases are not acceptance criteria, dependencies, gates, milestones, or tactical tasks.
 _Avoid_: Criterion, VAL, checklist item, work package
 
-**Explore phase**
-The one initial phase in every new charter. It is current by inference until the agent develops the next useful phases from the work.
-_Avoid_: Planning state, discovery gate
-
 **CharterId**
 A timestamp-sortable identifier of the form `<YYYYMMDD-HHMMSS>-<slug>`.
 _Avoid_: UUID, session id, goal id
 
 ### Lifecycle
+
+**Session binding**
+A session binds to at most one non-terminal charter: active or paused. Complete or abandon it before opening another. Mutations target only the bound charter. A session with no non-terminal charter may pick up a paused charter through resume with an explicit id. Sub-slices belong in phases or pi-dag-tasks, never sibling charters.
 
 **Active**
 The execution state from creation until the charter pauses or reaches a terminal state. There is no separate planning or review state.
@@ -59,6 +58,9 @@ The terminal state for work intentionally stopped without delivering the Objecti
 _Avoid_: Failed verification, deleted
 
 ### Loop
+
+**Objective reminder**
+A periodic restatement of the bound active charter's path, verbatim Objective as user-authored data, and current phase title when present. It asks whether current work still serves the Objective. The shared reminder host receives it after 100 tool calls or 20 minutes of agent activity, whichever comes first; registration options may change these thresholds. User messages and reminders reset the counters. Turns already carrying the Objective through Ralph do not receive another reminder.
 
 **Ralph**
 The idle continuation mechanism. When the root worker and async subagents are idle, Ralph asks the worker to inspect the Objective, evidence, and current situation and choose the next move. Ralph does not plan, evaluate, schedule workers, or run checks.
@@ -99,8 +101,8 @@ _Avoid_: Phase, charter task
 
 ## Relationships
 
-- One session binds to at most one active Charter.
-- `charter.md` contains the Objective, optional References and Scope, and zero or more Phases.
+- One session binds to at most one active or paused Charter.
+- `charter.md` contains the Objective, optional References and Scope, and zero or more Phases. New charters have an empty Phases section; add phases only when they help explain the route.
 - The Objective carries the completion contract. Phases communicate the route and current progress.
 - The worker chooses how to act and verify. pi-charter persists lifecycle, presents state, journals file changes, and supplies Ralph continuation.
 - Verification artifacts are captured during verification, linked from phase bodies when useful, and curated into REPORT.md.
@@ -111,7 +113,7 @@ _Avoid_: Phase, charter task
 
 > **Dev:** "Should I turn the request into ten criteria before I start?"
 >
-> **Domain expert:** "No. Preserve the authorized outcome in the Objective. Start with Explore, then add only the phases that emerge from the work."
+> **Domain expert:** "No. Preserve the authorized outcome in the Objective. Start without phases, then add them only when they help explain the route."
 >
 > **Dev:** "The source changed after I took a screenshot. Is the screenshot stale?"
 >

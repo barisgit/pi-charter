@@ -13,7 +13,7 @@ Defines framework-independent charter language and pure rules: Objective/Phase p
 
 ## Data and control flow
 
-1. `renderCharterTemplate()` writes the substantial Objective guidance and exact initial `1. Explore phases`.
+1. `renderCharterTemplate()` writes the substantial Objective guidance and an empty optional `## Phases` section.
 2. `parseCharterFile()` strips HTML comments, extracts sections, parses phase suffix/body Markdown, infers a current phase when needed, and returns warnings without blocking work.
 3. `types.ts` supplies the four lifecycle states, `schemaVersion: "phases" | "file-interface"`, optional whole-file snapshot hash, optional Ralph guard state, events, and next actions.
 4. Application and UI consume the parsed Objective/Phase projection directly.

@@ -1,6 +1,6 @@
 # Objective and emergent phases
 
-Status: accepted; supersedes ADR-0014 and ADR-0015; amends ADR-0009, ADR-0012, and ADR-0013
+Status: accepted; supersedes ADR-0014 and ADR-0015; amends ADR-0009, ADR-0012, and ADR-0013. Amended by ADR-0017: new charters have no scaffolded phase, sessions retain one active or paused charter, and periodic Objective reminders supplement Ralph.
 
 ## Context
 

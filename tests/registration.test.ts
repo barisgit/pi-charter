@@ -133,7 +133,7 @@ describe("tool registration", () => {
       renderTheme,
       { args: { action: "status" }, isError: false },
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(statusSummary).toBe(" active ship-runtime · phase 1/1 · Explore phases");
+    expect(statusSummary).toBe(" active ship-runtime · 0/0 phases done");
     const statusExpanded = tools[0].renderResult(
       status,
       { expanded: true, isPartial: false },
@@ -141,7 +141,7 @@ describe("tool registration", () => {
       { args: { action: "status" }, isError: false },
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
     expect(statusExpanded).toContain(" Objective\n Ship runtime");
-    expect(statusExpanded).toContain(" Phases\n 1. Explore phases — current");
+    expect(statusExpanded).not.toContain(" Phases\n");
     expect(statusExpanded).toContain(" Next actions");
 
     const duplicate = await tools[0].execute("call", { action: "create", objective: "Another" }, undefined, undefined, ctx);
@@ -151,14 +151,14 @@ describe("tool registration", () => {
       renderTheme,
       { args: { action: "create", objective: "Another" }, isError: true },
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(errorText).toMatch(/^ Session already has active charter/);
+    expect(errorText).toMatch(/^ Session already has non-terminal charter/);
     expect(errorText).not.toContain("error:");
 
     const renderers: Record<string, any> = {};
     registerCharterRalphMessageRenderer({ registerMessageRenderer(type: string, renderer: any) { renderers[type] = renderer; } } as any);
-    const message = { customType: "charter-ralph-continue", content: "Charter x: continue.\n\nObjective:\nShip runtime", details: { charterId: created.details.data.charterId, kind: "recovery", currentPhase: "Explore phases" } };
+    const message = { customType: "charter-ralph-continue", content: "Charter x: continue.\n\nObjective:\nShip runtime", details: { charterId: created.details.data.charterId, kind: "recovery", currentPhase: "Inspect behavior" } };
     const collapsedRalph = renderers["charter-ralph-continue"](message, { expanded: false, outputPad: 1 }, renderTheme).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(collapsedRalph).toBe(" ↻ ralph ship-runtime · Explore phases · recovery: pause follows another activation within 5 min");
+    expect(collapsedRalph).toBe(" ↻ ralph ship-runtime · Inspect behavior · recovery: pause follows another activation within 5 min");
     const expandedRalph = renderers["charter-ralph-continue"](message, { expanded: true, outputPad: 1 }, renderTheme).render(120).map((line: string) => line.trimEnd()).join("\n");
     expect(expandedRalph).toContain("Ship runtime");
     expect(expandedRalph.split("\n").every((line: string) => line === "" || line.startsWith(" "))).toBe(true);
@@ -507,7 +507,7 @@ describe("Ralph loop registration", () => {
   test("done phases still require an Objective audit, not automatic completion", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-complete-"));
     const created = await createCharter(project, { objective: "Finish cleanly", sessionId: "s1" });
-    await writeFile(join(charterDir(project, created.charterId), "charter.md"), "# Objective\nFinish cleanly\n\n## Phases\n1. Explore phases — done\n");
+    await writeFile(join(charterDir(project, created.charterId), "charter.md"), "# Objective\nFinish cleanly\n\n## Phases\n1. Inspect behavior — done\n");
     const h = createRalphHarness(project);
     registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
     h.fire("session_start");

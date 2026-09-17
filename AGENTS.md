@@ -4,7 +4,7 @@ Reference for coding agents working in this repository.
 
 ## Project stance
 
-`pi-charter` is a successor concept, not a cosmetic rename of `pi-goals` v1. ADR-0016 defines the current Objective/Phases model and supersedes the criterion surface in ADR-0014 and ADR-0015. Treat earlier ADRs and v1 as history where they conflict.
+`pi-charter` is a successor concept, not a cosmetic rename of `pi-goals` v1. ADR-0016, as amended by ADR-0017, defines the current Objective/Phases model and supersedes the criterion surface in ADR-0014 and ADR-0015. Treat earlier ADRs and v1 as history where they conflict.
 
 ## Read order
 
@@ -17,10 +17,10 @@ Reference for coding agents working in this repository.
 ## Invariants
 
 - `charter.md` is the single authored file: substantial `# Objective`, optional `## References` and `## Scope`, and `## Phases` containing ordered Markdown items.
-- Every new charter starts with exact `1. Explore phases`. If no phase is explicitly `current`, the initial bare phase or first unfinished unmarked phase is `current` by inference; other unmarked phases are `upcoming`. Explicit suffixes are `— upcoming`, `— current`, or `— done`. Indented Markdown is the phase body.
+- Every new charter starts with an empty `## Phases` section. Phases are optional. If no phase is explicitly `current`, the first unfinished unmarked phase is `current` by inference; other unmarked phases are `upcoming`. Explicit suffixes are `— upcoming`, `— current`, or `— done`. Indented Markdown is the phase body.
 - A Phase is `{ number, title, status, body }`. It is progress narrative, not a criterion, task, dependency, evidence schema, freshness unit, or completion gate. There is no phase-count quota.
 - One LLM tool remains: `charter({ action, id?, objective?, note? })` with `create | list | status | pause | resume | complete | abandon`. Every return carries legal `nextActions[]`.
-- Lifecycle remains `active | paused | completed | abandoned`. A new charter can complete with zero phases.
+- Lifecycle remains `active | paused | completed | abandoned`. A session binds to at most one active or paused charter; complete or abandon it before opening another. Mutations target only that binding, except explicit resume may bind a paused charter to an unbound session. A new charter can complete with zero phases.
 - New state uses `schemaVersion: "phases"`, lifecycle/session fields, optional whole-file `snapshotHash`, and optional Ralph guard state. Do not restore criterion snapshots or global source/tool sequences.
 - `schemaVersion: "file-interface"` charters are dashboard-visible, read-only history. Never mutate, resume, or migrate them. Continued work starts in a new charter.
 - Completion is worker judgment after auditing the Objective and external references. It needs a concise note, a curated `REPORT.md`, and approval from `charter:before_complete`; it does not require phases done, fresh passes, artifact counts, or a deliberately failed first call. Preserve an already curated report.

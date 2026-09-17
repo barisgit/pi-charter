@@ -61,7 +61,7 @@ export async function listCharterSummaries(projectDir: string): Promise<CharterS
     status: "active",
     message: rows.length === 0 ? "No charters." : rows.map((row) => `${row.charterId} ${row.status}${row.legacy ? " legacy" : ""} — ${row.objective}`).join("\n"),
     data: rows,
-    nextActions: [{ tool: "charter", action: "create", hint: "Create a charter for durable bounded work." }],
+    nextActions: [{ tool: "charter", action: "create", hint: "Create a charter for durable bounded work only when this session has no active or paused charter; otherwise complete or abandon that charter first." }],
   };
 }
 
@@ -129,7 +129,7 @@ export async function resumeCharter(
   input: { charterId?: string; sessionId?: string; userInitiated?: boolean },
 ): Promise<CharterServiceResult<CharterState>> {
   return withCharterLock(chartersRoot(projectDir), async () => {
-    const { charterId, dir, state } = await mutableCharter(projectDir, input);
+    const { charterId, dir, state } = await mutableCharter(projectDir, input, true);
     if (state.status !== "paused") throw toolError(`Only paused charters can be resumed (current: ${state.status}).`, "status");
     if (state.ralph?.pausedByGuard && !input.userInitiated) {
       throw toolError("This charter was paused by the Ralph guard. Use explicit user command `/charter resume` to continue.", "status");
@@ -150,7 +150,7 @@ export async function bindCharterToSession(
 ): Promise<CharterServiceResult<CharterState>> {
   return withCharterLock(chartersRoot(projectDir), async () => {
     if (!input.sessionId) throw toolError("No session id available for binding.", "status");
-    const { charterId, dir, state } = await mutableCharter(projectDir, input);
+    const { charterId, dir, state } = await mutableCharter(projectDir, input, true);
     if (state.status !== "active") throw toolError(`Only active charters can be bound (current: ${state.status}).`, "status");
     await assertSessionAvailable(projectDir, input.sessionId, charterId);
     state.sessionId = input.sessionId;
@@ -165,10 +165,7 @@ export async function completeCharter(
   input: { charterId?: string; note?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   return withCharterLock(chartersRoot(projectDir), async () => {
-    const charterId = await resolveCharterId(projectDir, input);
-    const dir = charterDir(projectDir, charterId);
-    const initial = await loadCharterState(dir);
-    assertMutable(initial);
+    const { charterId, dir } = await mutableCharter(projectDir, input);
     const { parsed, state } = await refreshCharterSnapshotUnlocked(projectDir, charterId);
     if (state.status !== "active" && state.status !== "paused") throw toolError(`Only active or paused charters can complete (current: ${state.status}).`, "status");
     await dispatchHook("charter:before_complete", {
@@ -217,9 +214,6 @@ export async function resolveCharterId(
       !row.legacy && row.sessionId === input.sessionId && (row.status === "active" || row.status === "paused"));
     if (bound) return bound.charterId;
   }
-  const active = await activeChartersForSession(projectDir, input.sessionId);
-  if (active.length === 1) return active[0].charterId;
-  if (active.length > 1) throw new Error(`Multiple active charters for session: ${active.map((row) => row.charterId).join(", ")}`);
   const rows = await listCharters(projectDir);
   if (rows.length === 1) return rows[0].charterId;
   if (rows.length === 0) throw new Error("No charters found.");
@@ -230,19 +224,31 @@ function nextActionsFor(state: CharterState, legacy: boolean): NextAction[] {
   if (legacy || state.status === "completed" || state.status === "abandoned") return [];
   if (state.status === "paused") return [
     { tool: "charter", action: "resume", hint: state.ralph?.pausedByGuard ? "Use `/charter resume` explicitly to resume after the Ralph guard pause." : "Resume this paused charter." },
-    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report." },
-    { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted." },
+    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report; complete or abandon this charter before opening another." },
+    { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted; complete or abandon this charter before opening another." },
   ];
   return [
     { tool: "charter", action: "status", hint: "Inspect the Objective and emerging phases." },
     { tool: "charter", action: "pause", hint: "Pause if this work should stop temporarily." },
-    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report." },
-    { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted." },
+    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report; complete or abandon this charter before opening another." },
+    { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted; complete or abandon this charter before opening another." },
   ];
 }
 
-async function mutableCharter(projectDir: string, input: { charterId?: string; sessionId?: string }) {
+async function mutableCharter(projectDir: string, input: { charterId?: string; sessionId?: string }, allowResume = false) {
+  const bound = input.sessionId ? (await nonTerminalChartersForSession(projectDir, input.sessionId))[0] : undefined;
+  if (input.sessionId && !bound && !(allowResume && input.charterId)) {
+    throw toolError("This session has no bound charter. Use resume with an explicit id to pick up a paused charter.", "resume");
+  }
   const charterId = await resolveCharterId(projectDir, input);
+  if (bound && charterId !== bound.charterId) {
+    throw new CharterToolError(`This session is bound to charter ${bound.charterId}; mutate only that charter. Complete or abandon it before opening another.`, {
+      code: "session.charter_mismatch",
+      nextActions: [
+        { tool: "charter", action: "status", hint: `Inspect the bound charter ${bound.charterId}.` },
+      ],
+    });
+  }
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
   assertMutable(state);
@@ -254,19 +260,19 @@ function assertMutable(state: CharterState): void {
 }
 
 async function assertSessionAvailable(projectDir: string, sessionId?: string, charterId?: string): Promise<void> {
-  const existing = (await activeChartersForSession(projectDir, sessionId)).filter((row) => row.charterId !== charterId);
+  const existing = (await nonTerminalChartersForSession(projectDir, sessionId)).filter((row) => row.charterId !== charterId);
   if (existing.length === 0) return;
-  throw new CharterToolError(`Session already has active charter ${existing[0].charterId}; status or pause it before creating another.`, {
-    code: "create.active_exists",
+  throw new CharterToolError(`Session already has non-terminal charter ${existing[0].charterId}; complete or abandon the current charter first.`, {
+    code: "create.non_terminal_exists",
     nextActions: [
-      { tool: "charter", action: "status", hint: `Inspect ${existing[0].charterId}.` },
-      { tool: "charter", action: "pause", hint: "Pause the active charter before creating a replacement." },
+      { tool: "charter", action: "complete", hint: `Complete ${existing[0].charterId} when the Objective is met before opening another charter.` },
+      { tool: "charter", action: "abandon", hint: `Abandon ${existing[0].charterId} with a reason before opening another charter.` },
     ],
   });
 }
 
-async function activeChartersForSession(projectDir: string, sessionId?: string) {
-  return (await listCharters(projectDir)).filter((row) => !row.legacy && row.status === "active" && (!sessionId || row.sessionId === sessionId));
+async function nonTerminalChartersForSession(projectDir: string, sessionId?: string) {
+  return (await listCharters(projectDir)).filter((row) => !row.legacy && (row.status === "active" || row.status === "paused") && row.sessionId === sessionId);
 }
 
 function renderReport(parsed: ParsedCharterFile, completionNote?: string): string {

@@ -5,6 +5,7 @@ import {
   registerCharterRalphLoop,
   registerCharterRalphMessageRenderer,
   registerCharterFileHooks,
+  registerCharterObjectiveReminder,
   registerCharterTools,
   registerCharterWidget,
 } from "./application/registration";
@@ -19,6 +20,7 @@ export default function charterExtension(pi: ExtensionAPI): void {
   registerCharterTools(pi);
   registerCharterCommands(pi);
   registerCharterFileHooks(pi);
+  registerCharterObjectiveReminder(pi);
   registerCharterWidget(pi);
   registerCharterRalphLoop(pi);
   registerCharterRalphMessageRenderer(pi);

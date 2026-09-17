@@ -18,23 +18,6 @@ ${objective.trim()}
 
 ## Phases
 
-1. Explore phases
-
-<!-- Add, split, rename, or finish phases as the work becomes understood:
-
-     1. Explore phases — done
-        Findings and durable links may live in this indented body.
-     2. Build the bounded outcome — current
-     3. Verify through the real product — upcoming
-
-     Status suffixes are optional: upcoming | current | done. When no phase is
-     explicitly current, the first unfinished unmarked phase is current and
-     other unmarked phases are upcoming. Phases organize the work; they do not
-     gate completion and have no evidence schema, freshness, or dependencies.
-
-     For user-visible verification, capture screenshots or recordings at the
-     time of verification under work/ and link them from the relevant phase
-     body. REPORT.md later curates already-linked evidence; never fabricate
-     retroactive evidence for the report. -->
+<!-- Phases are optional. Add them only when they help explain the route. -->
 `;
 }

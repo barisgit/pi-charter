@@ -8,14 +8,14 @@
 
 ## Creation
 
-`charter({ action: "create", objective })` creates a timestamp-sortable workspace, writes a comment-guided `charter.md`, initializes `schemaVersion: "phases"` state and the journal, and binds the current session when available. Only one charter may be active for a session.
+`charter({ action: "create", objective })` creates a timestamp-sortable workspace, writes a comment-guided `charter.md`, initializes `schemaVersion: "phases"` state and the journal, and binds the current session when available. A session may have only one active or paused charter. Complete or abandon it before creating another.
 
-The Objective must be substantial enough to carry the authorized completion contract. The scaffold begins with exact:
+The Objective must be substantial enough to carry the authorized completion contract. Phases are optional. New charters start with an empty section:
 
 ```md
 ## Phases
 
-1. Explore phases
+<!-- Phases are optional. Add them only when they help explain the route. -->
 ```
 
 The agent can expand the Objective only with constraints, verification expectations, and reporting requirements the user authorized. It cannot change or narrow user intent.
@@ -33,7 +33,7 @@ Phase status communicates progress. It does not gate work or completion.
 
 ## Pause and resume
 
-A worker pauses when work intentionally stops or needs a user decision. A normal pause can resume through the legal lifecycle action.
+A worker pauses when work intentionally stops or needs a user decision. A normal pause can resume through the legal lifecycle action. Pause, resume, complete, and abandon target only the session-bound charter. An explicit resume id may bind a paused charter from another session only when the current session has no active or paused charter.
 
 Ralph may also pause before a send when its loop guard trips. After that pause, only an explicit user `/charter resume` clears the warning and rolling activation history. `charter({ action: "resume" })` cannot bypass the guard. The pause does not kill unrelated jobs.
 

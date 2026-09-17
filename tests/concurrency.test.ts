@@ -69,7 +69,7 @@ test("independent same-session creation allows one active charter", async () => 
         await createCharter(${JSON.stringify(project)}, { objective: "Writer ${writer}", sessionId: "shared" });
         console.log("created");
       } catch (error) {
-        if (error.code !== "create.active_exists") throw error;
+        if (error.code !== "create.non_terminal_exists") throw error;
         console.log("rejected");
       }
     `));
@@ -131,7 +131,7 @@ test("concurrent session binding revalidates the one-active invariant", async ()
         await ${call};
         console.log("bound");
       } catch (error) {
-        if (!/already has active/.test(error.message)) throw error;
+        if (!/already has non-terminal|session is bound to/.test(error.message)) throw error;
         console.log("rejected");
       }
     `));
