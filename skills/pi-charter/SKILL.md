@@ -1,6 +1,6 @@
 ---
 name: pi-charter
-description: "Use for durable Objective-led work in pi-charter: create/list/status/pause/resume/complete/abandon, edit charter.md under .charters, grow lightweight Phases, capture verification artifacts, and curate REPORT.md. Skip quick single-turn fixes."
+description: "Create, list, inspect, pause, resume, complete, or abandon durable Pi charters; author objectives and phases, record verification evidence, handle recovery pauses, and curate REPORT.md. Use for multi-turn resumable work or explicit charter requests; skip quick single-turn fixes."
 ---
 
 # pi-charter
