@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
 import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
@@ -125,7 +126,7 @@ export async function loadParsedCharter(dir: string): Promise<ParsedCharterFile>
 export async function listCharterIds(projectDir: string): Promise<string[]> {
   try {
     const entries = await readdir(chartersRoot(projectDir), { withFileTypes: true });
-    return entries.filter((entry) => entry.isDirectory() && entry.name !== ".mutation.lock").map((entry) => entry.name).sort().reverse();
+    return entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".mutation.lock")).map((entry) => entry.name).sort().reverse();
   } catch {
     return [];
   }
@@ -206,73 +207,120 @@ async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// Local filesystems only. The owner filename publishes complete metadata atomically.
-// Hostname mismatch/unknown ownership fails closed; PID reuse is treated as live.
+// Local filesystems only. SQLite owns the cross-process lock, so process exit
+// releases it without deleting the persistent lock file. Legacy directory locks
+// are recovered conservatively during the format transition.
 const lockHost = createHash("sha256").update(hostname()).digest("hex");
 const lockOwnerPattern = /^owner-([a-f0-9]{64})-([1-9][0-9]*)-([a-f0-9]{32})$/;
+const legacyReleasingPattern = /^releasing-[a-f0-9]{32}$/;
+const legacyCleanupPattern = /^cleanup-([a-f0-9]{64})-([1-9][0-9]*)-([a-f0-9]{32})$/;
 
 async function withFileLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
   await mkdir(dirname(path), { recursive: true });
-  const owner = `owner-${lockHost}-${process.pid}-${randomBytes(16).toString("hex")}`;
   const deadline = Date.now() + 10_000;
-  let unknownSince: number | undefined;
-  const recoveryError = (reason: string) => new Error(`Charter lock ${path}: ${reason}. Stop all project writers, inspect state/history, then remove the orphan lock directory before retrying.`);
   for (;;) {
+    await recoverLegacyLock(path, deadline);
+    let db: DatabaseSync;
     try {
-      await mkdir(path);
-      break;
+      db = new DatabaseSync(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if ((await stat(path).catch(() => undefined))?.isDirectory()) continue;
+      throw error;
     }
+    try {
+      db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE");
+    } catch (error) {
+      db.close();
+      if ((error as { errcode?: number }).errcode !== 5) throw error;
+      if (Date.now() >= deadline) throw new Error(`Charter lock ${path}: timed out waiting for owner.`);
+      await setTimeout(10);
+      continue;
+    }
+    try {
+      return await fn();
+    } finally {
+      try {
+        db.exec("ROLLBACK");
+      } finally {
+        db.close();
+      }
+    }
+  }
+}
+
+async function recoverLegacyLock(path: string, deadline: number): Promise<void> {
+  const recoveryError = (reason: string) => new Error(`Charter lock ${path}: ${reason}. Stop all project writers, inspect state/history, then remove the orphan lock directory before retrying.`);
+  let unknownSince: number | undefined;
+  for (;;) {
+    const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (!info || info.isFile()) return;
+    if (!info.isDirectory()) throw recoveryError("ownership unknown");
+
     let entries: string[];
     try {
       entries = await readdir(path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) continue;
       throw error;
     }
-    const match = entries.length === 1 ? lockOwnerPattern.exec(entries[0]) : null;
-    if (!match) {
-      // Allow publication/release to finish, but never remove an ownerless lock.
+    const entry = entries.length === 1 ? entries[0] : undefined;
+    const owner = entry ? lockOwnerPattern.exec(entry) : null;
+    const cleanup = entry ? legacyCleanupPattern.exec(entry) : null;
+    if (entry && legacyReleasingPattern.test(entry)) {
+      await claimLegacyRelease(path, entry);
+      continue;
+    }
+    const held = owner ?? cleanup;
+    if (!held) {
+      // An empty directory may belong to a live old writer paused between mkdir
+      // and owner publication, so it cannot be reclaimed without excluding it.
       unknownSince ??= Date.now();
       if (Date.now() - unknownSince >= 100) throw recoveryError("ownership unknown");
     } else {
       unknownSince = undefined;
-      if (match[1] !== lockHost) throw recoveryError("owner is on another host");
-      const pid = Number(match[2]);
+      if (held[1] !== lockHost) throw recoveryError("owner is on another host");
+      const pid = Number(held[2]);
       if (!Number.isSafeInteger(pid) || pid > 2_147_483_647) throw recoveryError("invalid owner pid");
       try {
         process.kill(pid, 0);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw recoveryError("owner liveness cannot be established");
-        await releaseFileLock(path, entries[0]);
+        await claimLegacyRelease(path, entry!);
         continue;
       }
     }
     if (Date.now() >= deadline) throw recoveryError("timed out waiting for live owner");
     await setTimeout(10);
   }
-  try {
-    await writeFile(join(path, owner), "", { flag: "wx" });
-    return await fn();
-  } finally {
-    await releaseFileLock(path, owner);
-  }
 }
 
-async function releaseFileLock(path: string, owner: string): Promise<void> {
-  // Only the successful renamer may rmdir. Concurrent unlink can report success
-  // to multiple callers on macOS. A stale reclaimer cannot rename a replacement
-  // owner's random filename. A crash during release leaves unknown ownership.
-  const releasing = join(path, `releasing-${randomBytes(16).toString("hex")}`);
+async function claimLegacyRelease(path: string, owner: string): Promise<void> {
+  const cleanup = `cleanup-${lockHost}-${process.pid}-${randomBytes(16).toString("hex")}`;
   try {
-    await rename(join(path, owner), releasing);
+    await rename(join(path, owner), join(path, cleanup));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return;
+    if (code === "EINVAL" && !(await stat(join(path, owner)).catch(() => undefined))) return;
     throw error;
   }
-  await unlink(releasing);
-  await rmdir(path);
+  await finishLegacyRelease(path);
+}
+
+async function finishLegacyRelease(path: string): Promise<void> {
+  const tombstone = `${path}.legacy-${randomBytes(16).toString("hex")}`;
+  try {
+    await rename(path, tombstone);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return;
+    if (code === "EINVAL" && !(await stat(path).catch(() => undefined))) return;
+    throw error;
+  }
+  await rm(tombstone, { recursive: true, force: true });
 }
 
 async function writeTextAtomicUnsafe(path: string, value: string): Promise<void> {

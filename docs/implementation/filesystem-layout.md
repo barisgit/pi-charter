@@ -62,6 +62,12 @@ A state with `schemaVersion: "file-interface"` is legacy. The store may load it 
 
 The append-only journal records lifecycle transitions and meaningful whole-file charter changes. It is not a second authored phase state.
 
+## Internal lock files
+
+`.charters/.mutation.lock` and each `events.jsonl.lock` are persistent SQLite files. An exclusive transaction provides cross-process locking, and the operating system releases it if a process exits. The files remain after unlock; their presence does not mean a writer is active.
+
+The store converts legacy lock directories with a dead local PID or a `releasing-*` marker before opening the SQLite file. It leaves empty, malformed, and foreign-host legacy directories untouched because their owner cannot be identified safely.
+
 ## `work/`
 
 The worker saves screenshots, recordings, output, and other artifacts here at verification time. Relevant files may be linked from an indented phase body. The runtime does not require an artifact count.

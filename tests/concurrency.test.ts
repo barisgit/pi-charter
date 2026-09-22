@@ -1,11 +1,25 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test } from "bun:test";
-import { listCharters, readEvents } from "../src/infrastructure/store";
+import { listCharters, readEvents, withCharterLock } from "../src/infrastructure/store";
 
 const store = resolve(import.meta.dir, "../src/infrastructure/store.ts");
 const service = resolve(import.meta.dir, "../src/application/service.ts");
+
+test("the lock store loads in the Node host runtime", async () => {
+  const build = await mkdtemp(join(tmpdir(), "pi-charter-node-lock-"));
+  try {
+    const output = join(build, "store.mjs");
+    const bundled = Bun.spawnSync([process.execPath, "build", store, "--target=node", "--packages=external", `--outfile=${output}`]);
+    expect(bundled.exitCode, bundled.stderr.toString()).toBe(0);
+    const loaded = Bun.spawnSync(["node", output]);
+    expect(loaded.exitCode, loaded.stderr.toString()).toBe(0);
+  } finally {
+    await rm(build, { recursive: true, force: true });
+  }
+});
 
 async function runWriters(project: string, bodies: string[]) {
   const children = bodies.map((body) => Bun.spawn([process.execPath, "--eval", `console.log("ready");\n${body}`], {
@@ -55,6 +69,86 @@ test("independent processes preserve every complete journal event", async () => 
     expect(events.map((event) => event.writer).sort((a, b) => Number(a) - Number(b))).toEqual(Array.from({ length: 30 }, (_, i) => i));
     for (const event of events) expect(event.payload).toBe("x".repeat(100000));
   } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("legacy dead PID owners recover with competing independent reclaimers", async () => {
+  const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
+  try {
+    const lock = join(project, ".mutation.lock");
+    const host = createHash("sha256").update(hostname()).digest("hex");
+    await mkdir(lock);
+    await writeFile(join(lock, `owner-${host}-2147483647-${"a".repeat(32)}`), "");
+    await runWriters(project, Array.from({ length: 20 }, () => `
+      import { withCharterLock } from ${JSON.stringify(store)};
+      import { mkdir, rmdir } from "node:fs/promises";
+      await Bun.stdin.text();
+      await withCharterLock(${JSON.stringify(project)}, async () => {
+        await mkdir(${JSON.stringify(join(project, "exclusive"))});
+        await Bun.sleep(5);
+        await rmdir(${JSON.stringify(join(project, "exclusive"))});
+      });
+    `));
+    expect((await lstat(lock)).isFile()).toBe(true);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("legacy interrupted release is completed before acquiring the crash-safe lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
+  try {
+    const lock = join(project, ".mutation.lock");
+    await mkdir(lock);
+    await writeFile(join(lock, `releasing-${"a".repeat(32)}`), "");
+    await runWriters(project, Array.from({ length: 20 }, () => `
+      import { withCharterLock } from ${JSON.stringify(store)};
+      import { mkdir, rmdir } from "node:fs/promises";
+      await Bun.stdin.text();
+      await withCharterLock(${JSON.stringify(project)}, async () => {
+        await mkdir(${JSON.stringify(join(project, "exclusive"))});
+        await Bun.sleep(5);
+        await rmdir(${JSON.stringify(join(project, "exclusive"))});
+      });
+    `));
+    expect((await lstat(lock)).isFile()).toBe(true);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+}, 20000);
+
+test("process crashes release the persistent mutation lock", async () => {
+  const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
+  const lock = join(project, ".mutation.lock");
+  const holder = Bun.spawn([process.execPath, "--eval", `
+    import { withCharterLock } from ${JSON.stringify(store)};
+    await withCharterLock(${JSON.stringify(project)}, async () => {
+      console.log("held");
+      await Bun.sleep(Infinity);
+    });
+  `], { stdout: "pipe", stderr: "pipe" });
+  try {
+    const reader = holder.stdout.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value).trim()).toBe("held");
+    reader.releaseLock();
+    expect((await lstat(lock)).isFile()).toBe(true);
+    holder.kill("SIGKILL");
+    await holder.exited;
+    await runWriters(project, Array.from({ length: 20 }, () => `
+      import { withCharterLock } from ${JSON.stringify(store)};
+      import { mkdir, rmdir } from "node:fs/promises";
+      await Bun.stdin.text();
+      await withCharterLock(${JSON.stringify(project)}, async () => {
+        await mkdir(${JSON.stringify(join(project, "exclusive"))});
+        await Bun.sleep(5);
+        await rmdir(${JSON.stringify(join(project, "exclusive"))});
+      });
+    `));
+    expect((await lstat(lock)).isFile()).toBe(true);
+  } finally {
+    holder.kill();
+    await holder.exited;
     await rm(project, { recursive: true, force: true });
   }
 }, 20000);
@@ -194,7 +288,7 @@ test("concurrent completion and abandonment commit only one terminal transition"
   }
 }, 20000);
 
-test("mutation and journal locks release after exceptions", async () => {
+test("mutation and journal locks unlock after exceptions", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
     await runWriters(project, [`
@@ -220,7 +314,9 @@ test("mutation and journal locks release after exceptions", async () => {
     `]);
     expect(await readEvents(project)).toHaveLength(1);
     const { readdir } = await import("node:fs/promises");
-    expect(await readdir(project)).toEqual(["events.jsonl"]);
+    expect(await readdir(project)).toEqual([".mutation.lock", "events.jsonl", "events.jsonl.lock"]);
+    expect((await lstat(join(project, ".mutation.lock"))).isFile()).toBe(true);
+    expect((await lstat(join(project, "events.jsonl.lock"))).isFile()).toBe(true);
   } finally {
     await rm(project, { recursive: true, force: true });
   }
@@ -284,12 +380,12 @@ test("live owners are not stolen by another process", async () => {
     const reader = holder.stdout.getReader();
     expect(new TextDecoder().decode((await reader.read()).value).trim()).toBe("held");
     reader.releaseLock();
-    const waiting = runWriters(project, [`
-      import { withCharterLock } from ${JSON.stringify(store)};
-      await Bun.stdin.text();
-      await withCharterLock(${JSON.stringify(project)}, () => Bun.write(${JSON.stringify(join(project, "entered"))}, "yes"));
-    `]);
+    let ticks = 0;
+    const interval = setInterval(() => ticks++, 10);
+    const waiting = withCharterLock(project, () => Bun.write(join(project, "entered"), "yes"));
     await Bun.sleep(200);
+    clearInterval(interval);
+    expect(ticks).toBeGreaterThan(5);
     expect(await Bun.file(join(project, "entered")).exists()).toBe(false);
     holder.stdin.end();
     await waiting;

@@ -1,4 +1,4 @@
-import { appendEvent, charterDir, chartersRoot, hashText, listCharterIds, loadCharterState, loadCharterText, pathExists, writeCharterState, withCharterLock } from "../infrastructure/store";
+import { appendEvent, charterDir, chartersRoot, hashText, listCharterIds, loadCharterState, loadCharterText, writeCharterState, withCharterLock } from "../infrastructure/store";
 import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
 import type { CharterState } from "../domain/types";
 
@@ -36,13 +36,22 @@ export async function refreshCharterSnapshotUnlocked(projectDir: string, charter
 }
 
 export async function refreshSessionSnapshots(projectDir: string, sessionId?: string): Promise<void> {
-  if (!(await pathExists(chartersRoot(projectDir)))) return;
+  if (!sessionId) return;
+  const isRelevant = (state: CharterState | undefined): boolean =>
+    state?.schemaVersion === "phases" && state.sessionId === sessionId &&
+    (state.status === "active" || state.status === "paused");
+  const candidates: string[] = [];
+  for (const id of await listCharterIds(projectDir)) {
+    const state = await loadCharterState(projectDir, id).catch(() => undefined);
+    if (isRelevant(state)) candidates.push(id);
+  }
+  if (candidates.length === 0) return;
+
   await withCharterLock(chartersRoot(projectDir), async () => {
-    for (const id of await listCharterIds(projectDir)) {
+    for (const id of candidates) {
+      // Binding and lifecycle may have changed while waiting for the lock.
       const state = await loadCharterState(projectDir, id).catch(() => undefined);
-      if (!state || state.schemaVersion === "file-interface") continue;
-      if (state.status === "completed" || state.status === "abandoned") continue;
-      if (sessionId && state.sessionId && state.sessionId !== sessionId) continue;
+      if (!isRelevant(state)) continue;
       await refreshCharterSnapshotUnlocked(projectDir, id);
     }
   });
