@@ -7,8 +7,6 @@ description: "Create, list, inspect, pause, resume, complete, or abandon durable
 
 Use this skill for durable, multi-turn, resumable work or when the user explicitly requests a charter. Work normally for quick fixes.
 
-`CONTEXT.md`, ADR-0016 as amended by ADR-0017, `AGENTS.md`, and `src/domain/template.ts` are binding. Earlier criterion-based docs are historical where they conflict.
-
 ## Create only when ready
 
 Create after the authorized outcome is clear enough to begin:
@@ -74,7 +72,7 @@ A phase is a progress narrative. It is not a criterion, tactical task, evidence 
 6. Inspect artifacts before embedding or linking them from a phase body.
 7. Re-verify only when the actual change calls earlier evidence into question. There is no global source-change invalidation.
 
-A shared reminder periodically restates the active Objective and current phase, if any, to check that the work still serves the requested outcome.
+A shared reminder periodically restates the active Objective and current phase, if any, to check that the work still serves the requested outcome. When the user adds a lasting constraint or correction during the work, write it into the Objective or Scope right away; compacted history is not a reliable place for live instructions.
 
 A failed check ends that verification pass, not the charter lifecycle. Fix and verify again. Pause only when work intentionally stops or needs a user decision.
 
