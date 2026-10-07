@@ -119,7 +119,7 @@ describe("tool registration", () => {
       { args: { action: "create", objective: "Ship runtime" }, isError: false },
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
     expect(expanded).toContain(" Next actions");
-    expect(expanded).toContain(" /charter complete — Complete when the Objective has been audited");
+    expect(expanded).toContain(" /charter complete — Complete with a concise note once the Objective is satisfied");
     expect(expanded).toContain("Refine the Objective");
     expect(expanded.split("\n").every((line: string) => line === "" || line.startsWith(" "))).toBe(true);
 
@@ -133,7 +133,7 @@ describe("tool registration", () => {
       renderTheme,
       { args: { action: "status" }, isError: false },
     ).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(statusSummary).toBe(" active ship-runtime · 0/0 phases done");
+    expect(statusSummary).toBe(" active ship-runtime");
     const statusExpanded = tools[0].renderResult(
       status,
       { expanded: true, isPartial: false },
@@ -156,9 +156,9 @@ describe("tool registration", () => {
 
     const renderers: Record<string, any> = {};
     registerCharterRalphMessageRenderer({ registerMessageRenderer(type: string, renderer: any) { renderers[type] = renderer; } } as any);
-    const message = { customType: "charter-ralph-continue", content: "Charter x: continue.\n\nObjective:\nShip runtime", details: { charterId: created.details.data.charterId, kind: "recovery", currentPhase: "Inspect behavior" } };
+    const message = { customType: "charter-ralph-continue", content: "Charter x: continue.\n\nObjective:\nShip runtime", details: { charterId: created.details.data.charterId, kind: "recovery" } };
     const collapsedRalph = renderers["charter-ralph-continue"](message, { expanded: false, outputPad: 1 }, renderTheme).render(120).map((line: string) => line.trimEnd()).join("\n");
-    expect(collapsedRalph).toBe(" ↻ ralph ship-runtime · Inspect behavior · recovery: pause follows another activation within 5 min");
+    expect(collapsedRalph).toBe(" ↻ ralph ship-runtime · recovery: pause follows another activation within 5 min");
     const expandedRalph = renderers["charter-ralph-continue"](message, { expanded: true, outputPad: 1 }, renderTheme).render(120).map((line: string) => line.trimEnd()).join("\n");
     expect(expandedRalph).toContain("Ship runtime");
     expect(expandedRalph.split("\n").every((line: string) => line === "" || line.startsWith(" "))).toBe(true);
@@ -179,11 +179,7 @@ describe("tool registration", () => {
       objective,
       references: "- [Renderer contract](docs/rendering.md) — authoritative REFERENCE_TAIL",
       scope: "Rendering only; preserve lifecycle behavior. SCOPE_TAIL",
-      phases: [
-        { number: 1, title: "Explore rendering", status: "done", body: "Compared wide and narrow output. PHASE_ONE_TAIL" },
-        { number: 2, title: "Polish every state", status: "current", body: "Keep wrapped content readable and complete. PHASE_TWO_TAIL" },
-      ],
-      phaseCounts: { upcoming: 0, current: 1, done: 1 },
+      notes: "## Phases\n\n1. Explore rendering — done NOTES_TAIL",
       createdAt: "2026-09-09T20:53:15.000Z",
       warnings: ["A long parser warning remains visible. WARNING_TAIL"],
       reportExists: true,
@@ -204,7 +200,7 @@ describe("tool registration", () => {
       expectOneColumnPadding(collapsed);
 
       const expanded = rendered(tool.renderResult(statusResult, { expanded: true, isPartial: false }, renderTheme, { args: { action: "status" }, isError: false }), width);
-      for (const marker of [charterId, "OBJECTIVE_TAIL", "REFERENCE_TAIL", "SCOPE_TAIL", "PHASE_ONE_TAIL", "PHASE_TWO_TAIL", "WARNING_TAIL", "ACTION_TAIL"]) {
+      for (const marker of [charterId, "OBJECTIVE_TAIL", "REFERENCE_TAIL", "SCOPE_TAIL", "NOTES_TAIL", "WARNING_TAIL", "ACTION_TAIL"]) {
         expect(withoutWraps(expanded)).toContain(marker);
       }
       expectOneColumnPadding(expanded);
@@ -263,7 +259,7 @@ describe("tool registration", () => {
     const content = `Charter .charters/${charterId}/charter.md: continue toward the full Objective.\n\nObjective:\n${"Preserve every authorized requirement while continuing useful work. ".repeat(8)}PROMPT_TAIL`;
 
     for (const kind of ["normal", "recovery"] as const) {
-      const message = { customType: "charter-ralph-continue", content, details: { charterId, kind, currentPhase: "Verify terminal rendering" } };
+      const message = { customType: "charter-ralph-continue", content, details: { charterId, kind } };
       for (const width of [38, 120]) {
         const collapsed = rendered(renderer(message, { expanded: false, outputPad: 1 }, renderTheme), width);
         expect(collapsed).toContain("ralph full-charter-reprompt");
@@ -384,21 +380,14 @@ describe("tool registration", () => {
   });
 });
 
-test("status text shows the current phase without a verification checklist", () => {
+test("status text shows lifecycle and Objective without phase or report interpretation", () => {
   const status: CharterStatusResult = {
     charterId: "20260714-170000-compact", status: "active", objective: "Ship the compact contract.",
-    references: "", scope: "", createdAt: "2026-07-14T17:00:00.000Z", legacy: false, charterMarkdown: "",
-    phases: [
-      { number: 1, title: "Explore", status: "done", body: "" },
-      { number: 2, title: "Deliver", status: "current", body: "![Real UI](work/ui.png)" },
-      { number: 3, title: "Verify integration", status: "upcoming", body: "" },
-    ],
-    phaseCounts: { done: 1, current: 1, upcoming: 1 }, warnings: [], reportExists: false, nextActions: [],
+    references: "", scope: "", notes: "## Phases\n\n1. Deliver — current", createdAt: "2026-07-14T17:00:00.000Z", legacy: false, charterMarkdown: "",
+    warnings: [], reportExists: false, nextActions: [],
   };
   const text = formatCharterStatusText(status);
-  expect(text).toContain("active · 1/3 phases done");
-  expect(text).toContain("phase 2/3: Deliver");
-  expect(text).not.toContain("stale");
+  expect(text).toBe("20260714-170000-compact active\nobjective: Ship the compact contract.");
   expect(text).not.toContain("report: missing");
   expect(text).not.toContain("33%");
 });
@@ -424,7 +413,7 @@ describe("Ralph loop registration", () => {
     await delay(60);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message.details.kind).toBe("recovery");
-    expect(h.sent[0].message.content).toContain("RECOVERY:");
+    expect(h.sent[0].message.content).toContain("another within five minutes pauses the charter");
     // Bookkeeping and reloading the extension must not clear the persisted warning.
     await writeFile(join(charterDir(project, created.charterId), "charter.md"), "# Objective\nFinish the entire objective\n\n## Phases\n1. Keep working — current\n");
     h.fire("session_shutdown");
@@ -484,8 +473,9 @@ describe("Ralph loop registration", () => {
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message.customType).toBe("charter-ralph-continue");
     expect(h.sent[0].message.content).toContain(`.charters/${created.charterId}/charter.md`);
-    expect(h.sent[0].message.content).toContain("Preserve the full Objective");
-    expect(h.sent[0].message.content).toContain("screenshots or recordings");
+    expect(h.sent[0].message.content).toContain("Objective:\nKeep going");
+    expect(h.sent[0].message.content).toContain("complete the charter with a concise note");
+    expect(h.sent[0].message.details).toEqual({ charterId: created.charterId, kind: "normal" });
     expect(h.sent[0].message.content).not.toContain("no criteria yet");
     expect(h.sent[0].options).toEqual({ deliverAs: "steer", triggerTurn: true });
   });
@@ -504,7 +494,7 @@ describe("Ralph loop registration", () => {
     expect(h.sent).toHaveLength(0);
   });
 
-  test("done phases still require an Objective audit, not automatic completion", async () => {
+  test("historical done phases do not complete the charter automatically", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-complete-"));
     const created = await createCharter(project, { objective: "Finish cleanly", sessionId: "s1" });
     await writeFile(join(charterDir(project, created.charterId), "charter.md"), "# Objective\nFinish cleanly\n\n## Phases\n1. Inspect behavior — done\n");
@@ -514,13 +504,12 @@ describe("Ralph loop registration", () => {
     h.emit(SUBAGENT_ALL_IDLE_EVENT);
     await delay(40);
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0].message.content).toContain("All phases marked done is not proof");
-    expect(h.sent[0].message.content).not.toContain("curate it, then retry");
+    expect(h.sent[0].message.content).not.toMatch(/phase|REPORT/i);
     expect((await loadCharterState(project, created.charterId)).status).toBe("active");
     h.fire("session_shutdown");
   });
 
-  test("Ralph preserves the Objective and phase orientation without prescribing stale verification", async () => {
+  test("Ralph restates the Objective without interpreting historical phase text", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-work-"));
     const created = await createCharter(project, { objective: "Work deliberately", sessionId: "s1" });
     await writeFile(join(charterDir(project, created.charterId), "charter.md"), "# Objective\nWork deliberately\n\n## Phases\n1. Exercise the runtime — current\n");
@@ -530,9 +519,9 @@ describe("Ralph loop registration", () => {
     h.emit(SUBAGENT_ALL_IDLE_EVENT);
     await delay(40);
     const content = h.sent[0].message.content as string;
-    expect(content).toContain("Current phase 1: Exercise the runtime");
-    expect(content).toContain("Capture evidence while verifying");
-    expect(content).toContain(`Charter .charters/${created.charterId}/charter.md:`);
+    expect(content).toContain("Objective:\nWork deliberately");
+    expect(content).not.toContain("Exercise the runtime");
+    expect(content).toContain(`Continue the charter at .charters/${created.charterId}/charter.md.`);
     expect(content).not.toContain("update Status");
     expect(content).not.toContain("Reverify stale");
     h.fire("session_shutdown");
@@ -826,7 +815,7 @@ describe("widget registration", () => {
 });
 
 
-test("read, search, artifact and source tool results cannot invalidate phase evidence", async () => {
+test("read, search, artifact and source tool results do not rewrite charter state", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-observation-"));
   const created = await createCharter(project, { objective: "Keep verified work while implementing", sessionId: "s1" });
   const dir = charterDir(project, created.charterId);

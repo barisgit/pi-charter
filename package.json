@@ -1,7 +1,7 @@
 {
   "name": "pi-charter",
   "version": "0.0.0",
-  "description": "Pi extension for durable objectives, evolving phases, visual evidence reports, and bounded autonomous continuation.",
+  "description": "Pi extension for durable objectives with guarded idle continuation.",
   "type": "module",
   "private": true,
   "keywords": [

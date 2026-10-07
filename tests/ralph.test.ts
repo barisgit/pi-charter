@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { nextRalphActivation } from "../src/application/ralph";
+import { nextRalphActivation, renderRalphPrompt } from "../src/application/ralph";
 
 const minute = 60_000;
 
@@ -31,5 +31,33 @@ describe("Ralph activation guard", () => {
     const result = nextRalphActivation({ activations: [0, 3 * minute, 6 * minute, 9 * minute] }, 12 * minute);
     expect(result.kind).toBe("recovery");
     expect(result.state).toEqual({ activations: [0, 3 * minute, 6 * minute, 9 * minute, 12 * minute], warnedAt: 12 * minute });
+  });
+});
+
+
+describe("Ralph prompt", () => {
+  const objective = "Ship recovery.\n\n### Constraints\n\nDo not change login.";
+  const base = { charterId: "20260101-000000-demo", objective, references: "- docs/spec.md", scope: "Web only." };
+  const continuation = "Take the next useful step toward the Objective; if a job is already running, check on it instead of starting another. When the Objective is satisfied, complete the charter with a concise note. If you are blocked, pause and say why.";
+
+  test("normal prompt restates the exact Objective, references and scope with a short continue-or-finish instruction", () => {
+    const prompt = renderRalphPrompt(base);
+    expect(prompt).toBe([
+      "Continue the charter at .charters/20260101-000000-demo/charter.md.",
+      `Objective:\n${objective}`,
+      "References:\n- docs/spec.md",
+      "Scope:\nWeb only.",
+      continuation,
+    ].join("\n\n"));
+    expect(prompt).not.toMatch(/phase|REPORT|evidence|user-authored|instructions/i);
+  });
+
+  test("recovery prompt adds the guard warning and omits absent sections", () => {
+    expect(renderRalphPrompt({ ...base, references: "", scope: "" }, true)).toBe([
+      "Continue the charter at .charters/20260101-000000-demo/charter.md.",
+      `Objective:\n${objective}`,
+      "Ralph has sent five continuations in fifteen minutes; another within five minutes pauses the charter. If you are repeating checks or waiting with nothing running, do something different or pause and say what blocks you.",
+      continuation,
+    ].join("\n\n"));
   });
 });

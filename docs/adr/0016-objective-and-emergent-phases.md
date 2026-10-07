@@ -1,6 +1,8 @@
 # Objective and emergent phases
 
-Status: accepted; supersedes ADR-0014 and ADR-0015; amends ADR-0009, ADR-0012, and ADR-0013. Amended by ADR-0017: new charters have no scaffolded phase, sessions retain one active or paused charter, and periodic Objective reminders supplement Ralph.
+Status: accepted; supersedes ADR-0014 and ADR-0015; amends ADR-0009, ADR-0012, and ADR-0013. Amended by ADR-0017: new charters have no scaffolded phase, sessions retain one active or paused charter, and periodic Objective reminders supplement Ralph. Phase, reminder, and mandatory-report decisions superseded by ADR-0018.
+
+> **Partly superseded by ADR-0018.** Structured phases and mandatory or generated REPORT.md are removed. The Objective, lifecycle, worker-judged completion with `charter:before_complete`, legacy read-only history, and the Ralph guard survive; see `docs/adr/0018-quiet-objective-backstop.md`.
 
 ## Context
 

@@ -9,7 +9,7 @@ async function tempProject(): Promise<string> {
 }
 
 describe("charter store", () => {
-  test("creates a phase-schema workspace without criterion sequence state", async () => {
+  test("creates a writable workspace under the historical phases discriminator without criterion state", async () => {
     const project = await tempProject();
     const created = await createCharterWorkspace(project, {
       charterId: "20260702-000000-ship-runtime", objective: "Ship runtime", now: "2026-07-02T00:00:00.000Z", sessionId: "s1",
@@ -20,7 +20,7 @@ describe("charter store", () => {
     expect(created.state).not.toHaveProperty("criteriaSnapshot");
     expect(await pathExists(join(created.charterDir, "work"))).toBe(false);
     const parsed = await loadParsedCharter(created.charterDir);
-    expect(parsed.phases).toEqual([]);
+    expect(parsed).toMatchObject({ objective: "Ship runtime", notes: "", warnings: [] });
   });
 
   test("lists legacy charters read-only and marks them legacy", async () => {

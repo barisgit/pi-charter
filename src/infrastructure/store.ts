@@ -97,12 +97,6 @@ export async function createCharterWorkspace(
   return { charterId: input.charterId, charterDir: dir, state };
 }
 
-export async function ensureWorkDir(dir: string): Promise<string> {
-  const path = join(dir, "work");
-  await mkdir(path, { recursive: true });
-  return path;
-}
-
 export async function loadCharterState(dirOrProject: string, charterId?: string): Promise<CharterState> {
   const dir = charterId ? charterDir(dirOrProject, charterId) : dirOrProject;
   const raw = JSON.parse(await readFile(join(dir, "state.json"), "utf8")) as unknown;

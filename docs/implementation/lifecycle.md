@@ -8,36 +8,21 @@
 
 ## Creation
 
-`charter({ action: "create", objective })` creates a timestamp-sortable workspace, writes a comment-guided `charter.md`, initializes `schemaVersion: "phases"` state and the journal, and binds the current session when available. A session may have only one active or paused charter. Complete or abandon it before creating another.
+`charter({ action: "create", objective })` creates a timestamp-sortable workspace, writes `charter.md` with the Objective and commented, optional References and Scope sections, initializes state and the journal, and binds the current session when available. A session may have only one active or paused charter. Complete or abandon it before creating another.
 
-The Objective must be substantial enough to carry the authorized completion contract. Phases are optional. New charters start with an empty section:
+The Objective carries the full authorized outcome. The worker may add only constraints, verification expectations, and deliverable requirements the user authorized, and never changes or narrows user intent.
 
-```md
-## Phases
+## While active
 
-<!-- Phases are optional. Add them only when they help explain the route. -->
-```
-
-The agent can expand the Objective only with constraints, verification expectations, and reporting requirements the user authorized. It cannot change or narrow user intent.
-
-## Active loop
-
-1. Audit the Objective and References.
-2. Explore the work and add lightweight phases only as they become useful.
-3. Implement normally. Tactical tasks remain outside pi-charter.
-4. Verify the real result. Capture screenshots or recordings during verification for user-visible behavior.
-5. Link useful artifacts in an indented phase body and keep the phase narrative current.
-6. Ask what move best advances the Objective when Ralph continues the loop.
-
-Phase status communicates progress. It does not gate work or completion.
+The worker works normally; tactical steps stay outside pi-charter. Charter sends nothing while work is underway. When the root worker and async subagents are idle, Ralph restates the Objective with any References and Scope and asks the worker to continue or finish.
 
 ## Pause and resume
 
-A worker pauses when work intentionally stops or needs a user decision. A normal pause can resume through the legal lifecycle action. Pause, resume, complete, and abandon target only the session-bound charter. An explicit resume id may bind a paused charter from another session only when the current session has no active or paused charter.
+A worker pauses when work intentionally stops or needs a user decision. A normal pause can resume through the legal lifecycle action. Pause, resume, complete, and abandon target only the session-bound charter. An explicit resume id may bind a paused charter from another session only when the current session has no active or paused charter. Resuming never rewrites `charter.md`.
 
 Ralph may also pause before a send when its loop guard trips. After that pause, only an explicit user `/charter resume` clears the warning and rolling activation history. `charter({ action: "resume" })` cannot bypass the guard. The pause does not kill unrelated jobs.
 
-Old `file-interface` charters cannot resume. Start a new phases charter to continue their work.
+Old `file-interface` charters cannot resume. Start a new charter to continue their work.
 
 ## Ralph guard
 
@@ -49,16 +34,9 @@ Old `file-interface` charters cannot resume. Start a new phases charter to conti
 
 ## Completion
 
-An active or paused phases charter may complete with zero phases. Completion from a guard pause does not resume execution or clear guard history. The worker decides completion by auditing the full Objective and external References, then provides a concise completion note.
+An active or paused charter completes when the worker judges the Objective met after auditing it and its References, supplies a concise completion note, and `charter:before_complete` allows the transition. Completion from a guard pause does not resume execution or clear guard history.
 
-Completion:
-
-- generates REPORT.md when needed without requiring a failed scaffold call;
-- preserves an already curated REPORT.md;
-- invokes the existing `charter:before_complete` hook;
-- transitions to completed when the hook allows.
-
-There is no all-phases-done gate, freshness sweep, evidence count, screenshot quota, or failed-first-call protocol.
+Completion does not generate, require, or modify `REPORT.md`. Verification and any requested report are part of meeting the Objective, done by the worker beforehand.
 
 ## Abandonment
 

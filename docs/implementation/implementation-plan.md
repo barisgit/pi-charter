@@ -1,32 +1,31 @@
 # Implementation map
 
-ADR-0016 replaces the criterion/freshness model with one Objective-led vertical model.
+ADR-0018 reduces pi-charter to a quiet Objective backstop. This map lists where that contract lives.
 
 ## Components
 
-1. `src/domain/types.ts` — `PhaseStatus`, `Phase`, phases-state shape, and the exact status result contract.
-2. `src/domain/charter-file.ts` — tolerant `# Objective`, optional References/Scope, and ordered Phases parser.
-3. `src/domain/template.ts` — substantial Objective guidance and exact initial `1. Explore phases`.
-4. `src/infrastructure/store.ts` — `schemaVersion: "phases"` persistence and read-only `file-interface` loading for display.
-5. `src/application/service.ts` — phase projection, whole-file journaling, worker-judged completion, report generation/preservation, and existing before-complete hook.
-6. The staleness implementation is removed or reduced to whole-file change journaling. No criterion snapshots or source/tool sequences remain.
-7. `src/application/registration.ts` and the guard module — commands, Ralph continuation, exact rolling 15/5/5 guard, and explicit user-resume reset path.
-8. `src/ui/**` — Objective/Phase projections and a read-only legacy dashboard path.
-9. `CONTEXT.md`, ADR-0016, `skills/pi-charter/SKILL.md`, and this directory — domain and worker guidance.
+1. `src/domain/types.ts` — lifecycle and status result types, with no phase types.
+2. `src/domain/charter-file.ts` — tolerant `# Objective` and optional References/Scope parser; other Markdown is inert.
+3. `src/domain/template.ts` — creation template with the Objective and no phase section.
+4. `src/infrastructure/store.ts` — writable `schemaVersion: "phases"` persistence (historical label, unchanged shape) and read-only `file-interface` loading.
+5. `src/application/service.ts` — lifecycle, status projection, whole-file journaling, and completion through `charter:before_complete` without report generation.
+6. `src/application/registration.ts` and the Ralph guard module — commands, idle-only Ralph, the exact rolling 15/5/5 guard, and the explicit user-resume reset path. No periodic reminder registration or options.
+7. `src/ui/**` — widget and dashboard without phase projections; legacy charters read-only.
+8. `CONTEXT.md`, ADR-0018, `skills/pi-charter/SKILL.md`, and this directory — domain and worker guidance.
 
-## Vertical verification slices
+## Behavior slices
 
-Use a failing behavior test before each implementation slice:
+Use a failing behavior test before each slice:
 
-1. parse canonical and inferred phase grammar;
-2. create exact Explore scaffold and phases state;
-3. project the new status contract and read legacy state without writes;
-4. complete with zero phases, concise note, report generation/preservation, and hook approval;
-5. journal whole-file changes without freshness invalidation;
+1. parse Objective, References, and Scope, treating an existing `## Phases` section as inert notes;
+2. create without a phase scaffold and resume an existing charter without rewriting it;
+3. project the status contract without phase fields and read legacy state without writes;
+4. complete with a required note and hook approval, leaving any `REPORT.md` untouched and generating none;
+5. send no Objective prompt while work is underway; send Ralph only when idle;
 6. apply fifth-send recovery and next-eligible guard pause, including explicit slash-resume reset;
-7. render Objective/Phases and legacy read-only dashboard state.
+7. render widget and dashboard without phases, and legacy charters read-only.
 
-Run focused tests for each slice. Before release, run:
+Before release, run:
 
 ```bash
 bun run check-types

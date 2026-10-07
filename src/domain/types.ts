@@ -20,6 +20,12 @@ export interface RalphGuardState {
 
 export interface CharterState {
   charterId: string;
+  /**
+   * Storage discriminator. `"phases"` is a historical label for every writable
+   * charter (ADR-0018 removed the phase feature but kept the persisted shape, so
+   * existing charters resume without migration). `"file-interface"` marks
+   * read-only legacy history.
+   */
   schemaVersion: "phases" | "file-interface";
   objective: string;
   status: CharterStatus;

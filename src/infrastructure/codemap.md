@@ -15,11 +15,11 @@ Provides durable charter storage, serialized writes, diagnostic logging, and cro
 
 ## Data and control flow
 
-1. `createCharterWorkspace()` renders the phases scaffold and writes `charter.md`, phases `state.json`, and `events.jsonl`.
-2. Load functions normalize phases or legacy state, parse charter.md, list timestamp-sorted directories, and omit malformed list entries.
+1. `createCharterWorkspace()` renders the Objective template and writes `charter.md`, a writable `state.json` (historical `schemaVersion: "phases"`), and `events.jsonl`.
+2. Load functions normalize writable or legacy state, parse charter.md, list timestamp-sorted directories, and omit malformed list entries.
 3. `snapshots.ts` uses `hashText()` and store writes to persist optional whole-file hashes and append change events.
 4. Lifecycle and Ralph operations use `withCharterLock()`; lower-level writes and journal appends use path/file locks.
-5. `ensureWorkDir()` and `reportPath()` expose artifact/report locations without deciding verification quality.
+5. `reportPath()` locates an optional worker-authored REPORT.md for display; the store never creates one.
 
 ## Integration points
 

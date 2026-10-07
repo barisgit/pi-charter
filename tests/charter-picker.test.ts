@@ -19,8 +19,6 @@ function charter(id: string, overrides: Partial<CharterListRow> = {}): CharterLi
     createdAt: "2026-07-02T10:00:00.000Z",
     updatedAt: "2026-07-02T11:00:00.000Z",
     objective: "Ship a focused picker.",
-    doneCount: 1,
-    totalCount: 3,
     legacy: false,
     ...overrides,
   };
@@ -28,16 +26,11 @@ function charter(id: string, overrides: Partial<CharterListRow> = {}): CharterLi
 
 function snapshot(id: string, overrides: Partial<PickerSnapshot> = {}): PickerSnapshot {
   return {
-    header: { name: id, status: "active", elapsed: "1h", doneCount: 1, totalCount: 3 },
+    header: { name: id, status: "active", elapsed: "1h" },
     objective: "Ship a focused picker render implementation.",
     references: "docs/spec.md",
     scope: "Picker only.",
-    phases: [
-      { number: 1, title: "Explore", status: "done", body: "Mapped the UI." },
-      { number: 2, title: "Build", status: "current", body: "Implement dashboard. [capture](work/dashboard.png)" },
-      { number: 3, title: "Verify", status: "upcoming", body: "Capture a recording." },
-    ],
-    phaseCounts: { done: 1, current: 1, upcoming: 1 },
+    notes: "## Phases\n\n2. Build — current\n   Implement dashboard. [capture](work/dashboard.png)",
     legacy: false,
     charterMarkdown: "# Objective\n\nShip a focused picker render implementation.",
     warnings: [],
@@ -73,7 +66,7 @@ describe("createCharterPickerOverlay", () => {
     for (const line of lines) expect(visibleWidth(line)).toBe(100);
   });
 
-  test("always shows the full Objective with ordered phases, lifecycle, and done/total position", () => {
+  test("always shows the full Objective, lifecycle, and authored notes verbatim", () => {
     const longObjective = [
       "Ship a focused picker render implementation with a long Objective that wraps across several terminal lines.",
       "Preserve every authorized constraint in the dashboard instead of hiding the completion contract behind a preview toggle.",
@@ -87,12 +80,12 @@ describe("createCharterPickerOverlay", () => {
     const text = lines.join("\n");
     const detail = rightPane(lines);
     expect(text).toContain("[active]");
-    expect(text).toContain("1/3 done");
+    expect(text).not.toMatch(/\d+\/\d+ done/);
     expect(detail).toContain("Objective");
     expect(detail).toContain("Preserve every authorized constraint");
     expect(detail).toContain("Verify that navigation and scrolling remain");
-    expect(detail).toContain("Phases");
-    expect(detail).toContain("current   2. Build");
+    expect(detail).toContain("Notes");
+    expect(detail).toContain("2. Build — current");
     expect(detail).toContain("work/dashboard.png");
     expect(detail).not.toContain("[o for full]");
     expect(text).not.toContain("Blocking complete");
@@ -130,8 +123,8 @@ describe("createCharterPickerOverlay", () => {
   });
 
   test("keeps legacy files visible as read-only raw charter content", () => {
-    const row = charter("legacy", { status: "completed", legacy: true, doneCount: 0, totalCount: 0 });
-    const snap = snapshot("legacy", { legacy: true, phases: [], phaseCounts: { done: 0, current: 0, upcoming: 0 }, charterMarkdown: "# Charter\n\n### C1. Historic criterion" });
+    const row = charter("legacy", { status: "completed", legacy: true });
+    const snap = snapshot("legacy", { legacy: true, notes: "", charterMarkdown: "# Charter\n\n### C1. Historic criterion" });
     const text = makePicker({ charters: [row], snapshots: new Map([["legacy", snap]]), boundCharterId: "legacy" }).render(110).join("\n");
     expect(text).toContain("Legacy charter · read-only");
     expect(text).toContain("Historic criterion");
@@ -157,14 +150,6 @@ describe("createCharterPickerOverlay", () => {
     expect(picker.render(100).join("\n")).toContain("alpha");
     picker.handleInput("\x1b[B");
     expect(picker.render(100).join("\n")).toContain("beta");
-  });
-
-  test("space folds and restores phase details", () => {
-    const picker = makePicker({ charters: [charter("alpha")] });
-    picker.handleInput("\t");
-    expect(rightPane(picker.render(110))).toContain("current   2. Build");
-    picker.handleInput(" ");
-    expect(rightPane(picker.render(110))).not.toContain("current   2. Build");
   });
 
   test("bare /charters opens as a focused fullscreen overlay", async () => {

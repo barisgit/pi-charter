@@ -265,7 +265,6 @@ test("concurrent completion and abandonment commit only one terminal transition"
     const created = await createCharter(project, { objective: "Finish", sessionId: "shared" });
     const dir = charterDir(project, created.charterId);
     await writeTextAtomic(join(dir, "charter.md"), "## Objective\nFinish\n\n### C1. Works\nStatus: pass — checked\n");
-    // Completion now generates the report and commits in one attempt.
     const results = await runWriters(project, Array.from({ length: 10 }, (_, writer) => `
       import { completeCharter, abandonCharter } from ${JSON.stringify(service)};
       await Bun.stdin.text();
@@ -314,7 +313,7 @@ test("mutation and journal locks unlock after exceptions", async () => {
     `]);
     expect(await readEvents(project)).toHaveLength(1);
     const { readdir } = await import("node:fs/promises");
-    expect(await readdir(project)).toEqual([".mutation.lock", "events.jsonl", "events.jsonl.lock"]);
+    expect((await readdir(project)).sort()).toEqual([".mutation.lock", "events.jsonl", "events.jsonl.lock"]);
     expect((await lstat(join(project, ".mutation.lock"))).isFile()).toBe(true);
     expect((await lstat(join(project, "events.jsonl.lock"))).isFile()).toBe(true);
   } finally {

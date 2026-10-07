@@ -1,36 +1,36 @@
 # pi-charter Context
 
-pi-charter keeps a user's objective present during durable agent work. The objective is the completion contract. Lightweight phases explain the route through the work; they do not replace the objective or prove completion.
+pi-charter keeps a user's authorized Objective available when durable agent work needs to continue. It is a quiet, opt-in backstop, not a planning or progress system.
 
-This file defines domain language, not TypeScript structure. ADR-0016 records the redesign; ADR-0017 amends session binding, initial phases, and Objective reminders.
+This file defines domain language, not TypeScript structure. ADR-0018 records the current model; ADR-0016 and ADR-0017 contribute the surviving session-binding, lifecycle, legacy, and guard rules.
 
 ## Language
 
 ### Core identity
 
 **Charter**
-A binding document that authorizes and constrains an agent run. It carries one substantial Objective, optional References and Scope, and an emerging account of Phases.
-_Avoid_: Goal, mission, contract, quest
+A durable record of one authorized Objective, bound to the session doing the work.
+_Avoid_: Goal, mission, contract, quest, plan
 
 **charter.md**
-The single authored file. The agent edits it directly as understanding and progress change.
+The single authored file: the Objective, optional References and Scope, and optional notes.
 _Avoid_: criteria.md, task list, evidence ledger
 
 **Objective**
-The full completion contract authorized by the user: intended outcome, why it matters, constraints, verification expectations, and report requirements. An agent may add authorized constraints or verification and reporting detail. It must not change or narrow the user's intent.
+The full outcome the user authorized, including constraints, verification expectations, and requested deliverables. It may gain authorized detail but is never summarized, changed, or narrowed.
 _Avoid_: Task title, prompt summary, criterion container
 
 **References**
-Optional durable pointers to external sources of authority, with each source's role. The worker audits them before completion.
+Optional durable pointers to external sources of authority, with each source's role.
 _Avoid_: Context dump, mutable progress
 
 **Scope**
-Optional boundaries that clarify what is in and out without replacing or narrowing the Objective.
+Optional boundaries that clarify what is in and out without narrowing the Objective.
 _Avoid_: Mission boundaries, non-authorized constraints
 
-**Phase**
-A numbered, lightweight description of an emerging part of the work. A phase has a title, optional body, and an upcoming, current, or done presentation status. It may include links to evidence captured while verifying. Phases are not acceptance criteria, dependencies, gates, milestones, or tactical tasks.
-_Avoid_: Criterion, VAL, checklist item, work package
+**Notes**
+Ordinary Markdown the worker keeps in `charter.md` when useful, outside the Objective. Notes carry no status and gate nothing; older phase lists are notes.
+_Avoid_: Phase, checklist, progress tracker
 
 **CharterId**
 A timestamp-sortable identifier of the form `<YYYYMMDD-HHMMSS>-<slug>`.
@@ -39,60 +39,58 @@ _Avoid_: UUID, session id, goal id
 ### Lifecycle
 
 **Session binding**
-A session binds to at most one non-terminal charter: active or paused. Complete or abandon it before opening another. Mutations target only the bound charter. A session with no non-terminal charter may pick up a paused charter through resume with an explicit id. Sub-slices belong in phases or pi-dag-tasks, never sibling charters.
+A session's link to at most one active or paused charter. Mutations target only the bound charter; an unbound session may pick up a paused charter by resuming it explicitly.
+_Avoid_: Sibling charter
 
 **Active**
-The execution state from creation until the charter pauses or reaches a terminal state. There is no separate planning or review state.
+The working state from creation until the charter pauses or ends. There is no planning or review state.
 _Avoid_: Running, planning, review
 
 **Paused**
-A non-terminal interruption that preserves the charter binding. A worker may pause for a user decision. The Ralph guard may also pause a repeating idle loop.
+A non-terminal interruption that keeps the binding, chosen by the worker or imposed by a guard pause.
 _Avoid_: Abandoned, awaiting-user state
 
 **Completed**
-The terminal state reached when the worker judges the Objective met, provides a concise completion note, curates the report, and the completion hook allows. Phase count and phase status do not decide completion.
+The terminal state reached when the worker judges the Objective met, gives a completion note, and the completion hook allows.
 _Avoid_: All phases done, fresh passes
 
 **Abandoned**
 The terminal state for work intentionally stopped without delivering the Objective. A reason is required.
 _Avoid_: Failed verification, deleted
 
-### Loop
-
-**Objective reminder**
-A periodic restatement of the bound active charter's path, verbatim Objective as user-authored data, and current phase title when present. It asks whether current work still serves the Objective. The shared reminder host receives it after 100 tool calls or 20 minutes of agent activity, whichever comes first; registration options may change these thresholds. User messages and reminders reset the counters. Turns already carrying the Objective through Ralph do not receive another reminder.
+### Continuation
 
 **Ralph**
-The idle continuation mechanism. When the root worker and async subagents are idle, Ralph asks the worker to inspect the Objective, evidence, and current situation and choose the next move. Ralph does not plan, evaluate, schedule workers, or run checks.
-_Avoid_: Auto worker, evaluator, scheduler
+The idle-only continuation: when the root worker and async subagents are idle, it restates the Objective with any References and Scope and asks the worker to continue or finish. It does not plan, evaluate, schedule workers, or run checks.
+_Avoid_: Auto worker, evaluator, scheduler, periodic reminder
 
 **Ralph activation**
-An actual continuation message sent by Ralph. Guard accounting follows activations, not turns, compactions, or file edits.
+An actual continuation message sent by Ralph. Guard accounting counts activations, not turns, compactions, or edits.
 
 **Recovery prompt**
-The message that replaces the fifth normal Ralph activation in a rolling fifteen-minute window. It asks the worker to recover deliberately instead of repeating the same loop.
+The message that replaces the fifth Ralph activation in a rolling fifteen-minute window, asking the worker to recover deliberately instead of repeating the loop.
 
 **Guard pause**
-A runtime pause before the next eligible activation when it arrives at or before the five-minute warning boundary. Quiet time alone never pauses a charter. Only an explicit user `/charter resume` clears a guard pause and its activation history; a tool resume cannot bypass it.
+A pause applied before the next eligible activation when it arrives at or before the five-minute warning boundary. Only an explicit user `/charter resume` clears it.
 
-### Evidence and delivery
+### Completion and history
 
 **Worker judgment**
-The worker's reasoned decision that the Objective and its external authorities have been satisfied. pi-charter records and presents this judgment; it does not manufacture a proof system around it.
+The worker's reasoned decision that the Objective and its References are satisfied. pi-charter records it; it does not prove it.
 
-**Verification artifact**
-A screenshot, recording, output, or other file captured while verifying the real result. User-visible work should be exercised as a user would exercise it. Relevant artifacts are linked from phase bodies and later curated into the report.
-_Avoid_: Retroactive screenshot, artifact quota
+**Completion note**
+The worker's concise reason the Objective is met, required to complete.
+_Avoid_: Generated report, audit checklist
 
 **REPORT.md**
-The reviewable, artifact-rich account of what was delivered and why it satisfies the Objective. It curates evidence created during verification. Completion preserves an already curated report.
-_Avoid_: Generated checklist, evidence creation step
+An optional report file, written only when the Objective asks for one. pi-charter never generates or overwrites it.
+_Avoid_: Completion gate, mandatory report
 
 **Journal**
-The append-only history of lifecycle and meaningful whole-file changes. It is history, not a second authored state model.
+The append-only history of lifecycle transitions and meaningful whole-file changes.
 
 **Legacy charter**
-A charter from the prior file-interface schema. It remains visible in the dashboard as read-only history. It cannot resume or mutate; continued work starts in a new charter.
+A charter from the file-interface schema: visible in the dashboard as read-only history, never resumed or migrated.
 _Avoid_: Migrated charter, compatibility mode
 
 **Tactical task**
@@ -102,32 +100,17 @@ _Avoid_: Phase, charter task
 ## Relationships
 
 - One session binds to at most one active or paused Charter.
-- `charter.md` contains the Objective, optional References and Scope, and zero or more Phases. New charters have an empty Phases section; add phases only when they help explain the route.
-- The Objective carries the completion contract. Phases communicate the route and current progress.
-- The worker chooses how to act and verify. pi-charter persists lifecycle, presents state, journals file changes, and supplies Ralph continuation.
-- Verification artifacts are captured during verification, linked from phase bodies when useful, and curated into REPORT.md.
-- A new charter may complete with zero phases. There is no empty-list open-ended mode.
-- Old file-interface charters are read-only history. New work always starts with a new phases charter.
+- The Objective is the completion contract; notes, artifacts, and reports serve it but never replace it.
+- The worker chooses how to act and verify. pi-charter persists lifecycle, journals file changes, and supplies guarded Ralph continuation.
+- Older writable charters keep their authored text unchanged; their phase lists read as notes.
+- Legacy charters are read-only history; continued work starts in a new charter.
 
 ## Example dialogue
 
-> **Dev:** "Should I turn the request into ten criteria before I start?"
+> **Dev:** "Should I break the request into phases or criteria before I start?"
 >
-> **Domain expert:** "No. Preserve the authorized outcome in the Objective. Start without phases, then add them only when they help explain the route."
+> **Domain expert:** "No. Record the authorized outcome in the Objective and work normally. Use pi-dag-tasks for steps."
 >
-> **Dev:** "The source changed after I took a screenshot. Is the screenshot stale?"
+> **Dev:** "Do I have to write REPORT.md to complete?"
 >
-> **Domain expert:** "There is no global freshness rule. Decide whether the artifact still supports the Objective. Re-verify only when the change actually affects what it shows."
->
-> **Dev:** "Can every phase be done while the charter remains active?"
->
-> **Domain expert:** "Yes. Phase status communicates progress; it is not the lifecycle or a completion gate. Audit the Objective and references, curate the report, and complete with a concise reason when the work is truly done."
-
-## Recommended defaults while the user is away
-
-- Preserve the user's wording and intent in the Objective.
-- Add constraints, verification expectations, or report detail only when the user authorized them.
-- Let phases emerge. Do not impose counts, dependencies, question states, or gates.
-- Capture UI evidence while exercising user-visible behavior, not later to fill a report.
-- Treat a repeating Ralph loop as a reason to recover or pause, not to add another evaluator.
-- Keep tactical todos outside the charter.
+> **Domain expert:** "Only when the user asked for a report. Completion needs your concise note and the hook's approval."

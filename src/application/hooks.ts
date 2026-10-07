@@ -7,8 +7,8 @@ export interface HookPayloadBase {
 
 export interface BeforeCompletePayload extends HookPayloadBase {
   type: "charter:before_complete";
-  phaseCount: number;
-  completionNote?: string;
+  /** The worker's required, nonblank completion note. */
+  completionNote: string;
 }
 
 export interface BeforeAbandonPayload extends HookPayloadBase {

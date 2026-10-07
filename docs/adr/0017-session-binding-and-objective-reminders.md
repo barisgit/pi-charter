@@ -1,6 +1,8 @@
 # Session binding, optional phases, and Objective reminders
 
-Status: accepted; amends ADR-0016
+Status: accepted; amends ADR-0016. Optional-phase and periodic-reminder decisions superseded by ADR-0018.
+
+> **Partly superseded by ADR-0018.** Session binding survives. Charters have no phases and pi-charter sends no periodic Objective reminders; see `docs/adr/0018-quiet-objective-backstop.md`.
 
 ## Context
 

@@ -54,7 +54,7 @@ type Ctx = PaneOverlayContext<null, CharterListRow>;
  * The pane-overlay content callbacks receive only a `PaneOverlayContext`, not
  * the theme. The picker colorizes via `theme.fg`/`theme.bold`, so the options
  * (and their callbacks) are constructed INSIDE the returned factory where the
- * theme — plus mutable closure state (flash message, phase folding) — is in
+ * theme — plus mutable closure state (the flash message) — is in
  * scope. Read-only: the picker never resolves a charter id; it only closes with
  * `null`.
  */
@@ -68,7 +68,6 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
     const totalHeight = (): number => (tui as { terminal?: { rows?: number } }).terminal?.rows ?? heightProvider();
 
     // Mutable closure state (replaces the old component's instance fields).
-    let allExpanded = true;
     let flash: FlashMessage | null = null;
 
     const setFlash = (text: string, kind: FlashMessage["kind"] = "info"): void => {
@@ -196,16 +195,9 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
           // non-string label, and header.name derives from on-disk JSON.
           return { label: String(snapshot.header.name ?? ""), tailRendered, tailPlain };
         },
-        rows: (ctx) => buildDetailLines(t, ctx.selectedRow, ctx.selectedRow ? snapshots.get(ctx.selectedRow.charterId) : undefined, ctx.detail.width, bodyHeight(), { allExpanded }),
+        rows: (ctx) => buildDetailLines(t, ctx.selectedRow, ctx.selectedRow ? snapshots.get(ctx.selectedRow.charterId) : undefined, ctx.detail.width),
       },
       customActions: [
-        {
-          keys: "space",
-          label: "fold",
-          showInLegend: false,
-          when: (ctx) => ctx.detailFocus,
-          run: (ctx) => { allExpanded = !allExpanded; ctx.requestRender(); },
-        },
         {
           keys: "shift+o",
           label: "open dir",
@@ -225,13 +217,6 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
 
 type ThemeColorName = "success" | "warning" | "error" | "accent" | "muted" | "dim" | "text" | "borderAccent" | "borderMuted";
 
-function doneCountColor(done: number, total: number): ThemeColorName {
-  if (total === 0) return "dim";
-  if (done === total) return "success";
-  if (done === 0) return "muted";
-  return "accent";
-}
-
 function leftRow(
   theme: ThemeLike,
   row: CharterListRow,
@@ -239,15 +224,14 @@ function leftRow(
 ): string {
   const { isCursor, isBound, dim, width, statusWidth } = opts;
   const prefix = "  ";
-  const position = row.legacy ? "legacy" : `${row.doneCount}/${row.totalCount}`;
+  const legacy = row.legacy ? "  legacy" : "";
   const status = clipText(row.status, statusWidth);
   const bound = isBound ? "  bound" : "";
-  const suffixPlain = `  ${position}  ${status}${bound}`;
+  const suffixPlain = `${legacy}  ${status}${bound}`;
   const nameWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffixPlain));
   const name = padRight(clipText(row.name, nameWidth), nameWidth);
   const styledName = dim ? theme.fg("dim", name) : isCursor ? theme.bold(theme.fg("accent", name)) : name;
-  const positionColor = row.legacy ? "warning" : doneCountColor(row.doneCount, row.totalCount);
-  return clipStyled(`${prefix}${styledName}  ${theme.fg(positionColor, position)}  ${theme.fg(statusColor(row.status), status)}${isBound ? theme.fg("accent", bound) : ""}`, width);
+  return clipStyled(`${prefix}${styledName}${theme.fg("warning", legacy)}  ${theme.fg(statusColor(row.status), status)}${isBound ? theme.fg("accent", bound) : ""}`, width);
 }
 
 function buildInfoLines(
@@ -283,8 +267,6 @@ function buildDetailLines(
   row: CharterListRow | undefined,
   snapshot: PickerSnapshot | undefined,
   width: number,
-  _bodyHeight: number,
-  expand: { allExpanded: boolean },
 ): string[] {
   if (width <= 0) return [];
   if (!row) return [theme.bold("No charters yet"), theme.fg("muted", "Create a charter to begin durable work.")];
@@ -300,13 +282,10 @@ function buildDetailLines(
   if (snapshot.references) lines.push("", heading("References"), ...wrapText(snapshot.references, Math.max(1, width - 2)).map((line) => `  ${line}`));
   if (snapshot.scope) lines.push("", heading("Scope"), ...wrapText(snapshot.scope, Math.max(1, width - 2)).map((line) => `  ${line}`));
 
-  if (snapshot.legacy) {
-    lines.push("", heading("charter.md"), ...renderMarkdownLines(theme, snapshot.charterMarkdown, width));
-  } else {
-    lines.push("", `${heading("Phases")} ${theme.fg(doneCountColor(snapshot.header.doneCount, snapshot.header.totalCount), `${snapshot.header.doneCount}/${snapshot.header.totalCount} done`)}`);
-    if (snapshot.phases.length === 0) lines.push(theme.fg("muted", "  No phases recorded."));
-    if (expand.allExpanded) for (const phase of snapshot.phases) lines.push(...phaseLines(theme, phase, width));
-  }
+  // Legacy files predate the Objective layout, so show them whole; other charters
+  // show any remaining authored Markdown (including historical phase text) as notes.
+  if (snapshot.legacy) lines.push("", heading("charter.md"), ...renderMarkdownLines(theme, snapshot.charterMarkdown, width));
+  else if (snapshot.notes) lines.push("", heading("Notes"), ...renderMarkdownLines(theme, snapshot.notes, width));
 
   if (snapshot.ralph?.pausedByGuard) lines.push("", heading("Ralph guard", "warning"), `  ${theme.fg("warning", "Paused before another Ralph activation.")}`, `  ${theme.fg("text", "Resume with /charter resume.")}`);
   else if (snapshot.ralph?.warnedAt !== undefined) lines.push("", heading("Ralph guard", "warning"), theme.fg("warning", "  Activation warning issued."));
@@ -314,16 +293,6 @@ function buildDetailLines(
   if (snapshot.warnings.length > 0) lines.push("", heading("Parser warnings", "warning"), ...snapshot.warnings.flatMap((warning) => wrapText(warning, Math.max(1, width - 2)).map((line) => `  ${theme.fg("warning", line)}`)));
   if (snapshot.report) lines.push("", heading("REPORT.md"), ...renderMarkdownLines(theme, snapshot.report.markdown, width));
   return lines;
-}
-
-function phaseLines(theme: ThemeLike, phase: PickerSnapshot["phases"][number], width: number): string[] {
-  const color: ThemeColorName = phase.status === "done" ? "success" : phase.status === "current" ? "accent" : "dim";
-  const prefix = `  ${padRight(phase.status, 10)}${phase.number}. `;
-  const continuation = " ".repeat(visibleWidth(prefix));
-  const titleLines = wrapText(phase.title, Math.max(1, width - visibleWidth(prefix)));
-  const out = titleLines.map((line, index) => `${index === 0 ? theme.fg(color, prefix) : continuation}${theme.fg(index === 0 || phase.status === "current" ? "text" : "muted", line)}`);
-  if (phase.body) out.push(...wrapText(phase.body, Math.max(8, width - 4)).map((line) => theme.fg(phase.status === "current" ? "text" : "muted", `    ${line}`)));
-  return out;
 }
 
 function renderMarkdownLines(theme: ThemeLike, markdown: string, width: number): string[] {

@@ -1,11 +1,12 @@
+/** Initial charter.md: the full Objective plus optional References and Scope sections. */
 export function renderCharterTemplate(objective: string): string {
   return `# Objective
 
 ${objective.trim()}
 
-<!-- Keep the Objective substantial and explicitly bounded: state the outcome,
-     why it matters, and important constraints. This file is the authored source
-     of truth; lifecycle tools do not edit its content. -->
+<!-- Keep the full authorized Objective: the outcome, why it matters, and
+     important constraints. This file is the authored source of truth;
+     lifecycle tools do not edit its content. -->
 
 ## References
 
@@ -15,9 +16,5 @@ ${objective.trim()}
 ## Scope
 
 <!-- Optional in-scope and out-of-scope boundaries. Delete when unnecessary. -->
-
-## Phases
-
-<!-- Phases are optional. Add them only when they help explain the route. -->
 `;
 }

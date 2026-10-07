@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
-import type { Phase, PhaseStatus } from "../domain/charter-file";
 import type { CharterStatus, RalphGuardState } from "../domain/types";
 import { getCharterStatus } from "../application/service";
 import { charterDir, listCharters, loadCharterState, reportPath } from "../infrastructure/store";
@@ -15,8 +14,6 @@ export interface CharterListRow {
   terminatedAt?: string;
   sessionId?: string;
   objective: string;
-  doneCount: number;
-  totalCount: number;
   legacy: boolean;
 }
 
@@ -25,38 +22,16 @@ export interface PickerSnapshot {
     name: string;
     status: CharterStatus;
     elapsed: string;
-    doneCount: number;
-    totalCount: number;
   };
   objective: string;
   references: string;
   scope: string;
-  phases: Phase[];
-  phaseCounts: Record<PhaseStatus, number>;
+  notes: string;
   legacy: boolean;
   charterMarkdown: string;
   warnings: string[];
   report?: { markdown: string; firstHeading?: string; links: string[] };
   ralph?: RalphGuardState;
-}
-
-export interface CharterPickerRow {
-  charterId: string;
-  name: string;
-  status: CharterStatus;
-  age: string;
-  sessionBound: boolean;
-  currentSession: boolean;
-  phaseCounts: Record<PhaseStatus, number>;
-  phaseCount: number;
-  currentPhase?: Pick<Phase, "number" | "title">;
-  reportExists: boolean;
-  legacy: boolean;
-}
-
-interface PickerSnapshotOptions {
-  sessionId?: string;
-  now?: Date;
 }
 
 export async function listAllCharters(projectDir: string, now = new Date()): Promise<CharterListRow[]> {
@@ -74,8 +49,6 @@ export async function listAllCharters(projectDir: string, now = new Date()): Pro
       terminatedAt: state.terminatedAt,
       sessionId: status.legacy ? undefined : row.sessionId,
       objective: status.objective,
-      doneCount: status.phaseCounts.done,
-      totalCount: status.phases.length,
       legacy: status.legacy,
     };
   }));
@@ -93,14 +66,11 @@ export async function buildPickerSnapshot(projectDir: string, charterId: string,
         name: slugFromId(charterId),
         status: status.status,
         elapsed: formatAge(now.getTime() - Date.parse(state.createdAt)),
-        doneCount: status.phaseCounts.done,
-        totalCount: status.phases.length,
       },
       objective: status.objective,
       references: status.references,
       scope: status.scope,
-      phases: status.phases,
-      phaseCounts: status.phaseCounts,
+      notes: status.notes,
       legacy: status.legacy,
       charterMarkdown: status.charterMarkdown,
       warnings: status.warnings,
@@ -110,34 +80,6 @@ export async function buildPickerSnapshot(projectDir: string, charterId: string,
   } catch {
     return undefined;
   }
-}
-
-export async function buildPickerRows(projectDir: string, options: PickerSnapshotOptions = {}): Promise<CharterPickerRow[]> {
-  const now = options.now ?? new Date();
-  const list = await listAllCharters(projectDir, now);
-  return Promise.all(list.map(async (row) => {
-    const snapshot = await buildPickerSnapshot(projectDir, row.charterId, now);
-    const phases = snapshot?.phases ?? [];
-    return {
-      charterId: row.charterId,
-      name: row.name,
-      status: row.status,
-      age: formatAge(now.getTime() - Date.parse(row.createdAt)),
-      sessionBound: !row.legacy && Boolean(row.sessionId),
-      currentSession: !row.legacy && Boolean(options.sessionId && row.sessionId === options.sessionId),
-      phaseCounts: snapshot?.phaseCounts ?? { upcoming: 0, current: 0, done: 0 },
-      phaseCount: phases.length,
-      currentPhase: phases.find((phase) => phase.status === "current"),
-      reportExists: Boolean(snapshot?.report),
-      legacy: row.legacy,
-    };
-  }));
-}
-
-export function statusSummary(row: Pick<CharterPickerRow, "phaseCounts" | "phaseCount" | "currentPhase" | "legacy">): string {
-  if (row.legacy) return "legacy · read-only";
-  const current = row.currentPhase ? ` current=${row.currentPhase.number}` : "";
-  return `done=${row.phaseCounts.done}/${row.phaseCount}${current}`;
 }
 
 function sortRows(rows: CharterListRow[], now: Date): CharterListRow[] {

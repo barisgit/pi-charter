@@ -8,59 +8,52 @@ Charters are project-local under `.charters/`:
     ├── charter.md
     ├── state.json
     ├── events.jsonl
-    ├── work/
-    └── REPORT.md
+    ├── work/        # optional
+    └── REPORT.md    # optional
 ```
 
 ## `charter.md`
 
-The single authored interface for new charters:
+The single authored interface:
 
 ```md
 # Objective
 
-<authorized outcome, constraints, verification expectations, and report requirements>
+<full authorized outcome, constraints, verification expectations, and requested deliverables>
 
 ## References
 
-<optional durable pointers and their roles>
+<optional durable sources of authority and their roles>
 
 ## Scope
 
 <optional boundaries>
 
-## Phases
+## Notes
 
-1. Explore phases
-2. Implement — current
-   Notes about work and progress.
-3. Verify — upcoming
-   - UI result: [screenshot](work/result.png)
-   - Full flow: [recording](work/flow.mp4)
+<optional ordinary Markdown>
 ```
 
-`# Objective` is required. Nested headings such as `## Constraints` and `### Verification` remain part of its body. Only a new top-level heading or the reserved `## References`, `## Scope`, and `## Phases` sections end that body. Those reserved sections are optional in parsed files. Creation writes exact `1. Explore phases` under `## Phases`.
+`# Objective` is required. Nested headings such as `## Constraints` and `### Verification` remain part of its body; `## References`, `## Scope`, `## Notes`, the historical `## Phases`, or a new top-level heading ends it. Only the Objective, References, and Scope carry meaning. Everything else is ordinary notes with no grammar, status, or gate.
 
-A phase is an ordered Markdown item. Its optional exact suffix is `— upcoming`, `— current`, or `— done`. Indented Markdown belongs to its body. If no phase is explicitly `current`, the initial bare phase or first unfinished unmarked phase is `current` by inference; other unmarked phases are `upcoming`.
-
-There is no phase-count limit, dependency syntax, per-phase evidence field, freshness field, or phase completion gate.
+Creation writes the Objective plus commented, optional References and Scope sections; there is no phase section or scaffold. Existing charters keep their authored text unchanged; a `## Phases` section in them is inert notes, never parsed or rewritten, and never leaks into the Objective.
 
 ## `state.json`
 
-New state has `schemaVersion: "phases"` and retains the lifecycle fields: charter id, lifecycle status, timestamps, and session binding. It may also contain:
+Writable state keeps the historical storage label `schemaVersion: "phases"` for compatibility; the persisted shape is unchanged and the name implies no phase feature. It holds the charter id, lifecycle status, timestamps, and session binding, and may also contain:
 
 - `snapshotHash` for whole-file change journaling;
 - `ralph.activations`, a rolling list of actual send times;
 - `ralph.warnedAt` when recovery began;
 - `ralph.pausedByGuard` when the guard paused the charter.
 
-It contains no criterion snapshots, per-phase state, global tool sequence, or source-change sequence.
+It contains no criterion snapshots, phase state, reminder counters, global tool sequence, or source-change sequence.
 
 A state with `schemaVersion: "file-interface"` is legacy. The store may load it for dashboard display only. Mutation, resume, migration, and write-back are forbidden. Old `.pi/charters/` paths remain outside the current store.
 
 ## `events.jsonl`
 
-The append-only journal records lifecycle transitions and meaningful whole-file charter changes. It is not a second authored phase state.
+The append-only journal of lifecycle transitions and meaningful whole-file charter changes.
 
 ## Internal lock files
 
@@ -68,10 +61,6 @@ The append-only journal records lifecycle transitions and meaningful whole-file 
 
 The store converts legacy lock directories with a dead local PID or a `releasing-*` marker before opening the SQLite file. It leaves empty, malformed, and foreign-host legacy directories untouched because their owner cannot be identified safely.
 
-## `work/`
+## `work/` and `REPORT.md`
 
-The worker saves screenshots, recordings, output, and other artifacts here at verification time. Relevant files may be linked from an indented phase body. The runtime does not require an artifact count.
-
-## `REPORT.md`
-
-The final artifact-rich delivery narrative. Completion generates it when needed without requiring a deliberately failed completion attempt. If the worker has already curated it, completion preserves that content. The Visual Evidence section collects recognized local image and recording links, including terminal `.cast` recordings. Absolute local capture paths are retained as links without reading or copying their contents; prefer `work/` links for a portable report. An omitted completion note is labeled as missing rather than replaced with an invented audit claim.
+Optional conveniences for artifacts and a report the Objective asks for. The runtime never requires, generates, or overwrites them, and existing files are preserved.

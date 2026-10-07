@@ -1,12 +1,12 @@
 import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids";
-import { parseCharterFile, type Phase, type PhaseStatus, type ParsedCharterFile } from "../domain/charter-file";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadCharterText, pathExists, reportPath, writeCharterState, writeTextAtomic, withCharterLock } from "../infrastructure/store";
+import { parseCharterFile } from "../domain/charter-file";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadCharterText, pathExists, reportPath, writeCharterState, withCharterLock } from "../infrastructure/store";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
 import { refreshCharterSnapshot, refreshCharterSnapshotUnlocked } from "./snapshots";
 import type { CharterState, CharterStatus, NextAction } from "../domain/types";
 
-export type { NextAction, Phase, PhaseStatus };
+export type { NextAction };
 
 export interface CharterServiceResult<T = unknown> {
   charterId: string;
@@ -22,13 +22,15 @@ export interface CharterStatusResult {
   objective: string;
   references: string;
   scope: string;
-  phases: Phase[];
-  phaseCounts: Record<PhaseStatus, number>;
+  /** Authored Markdown outside Objective/References/Scope, shown as plain notes. */
+  notes: string;
   createdAt: string;
   warnings: string[];
+  /** Whether an optional REPORT.md exists; Charter never creates one. */
   reportExists: boolean;
   nextActions: NextAction[];
   legacy: boolean;
+  /** The authored charter.md verbatim, including notes the parser ignores. */
   charterMarkdown: string;
   ralph?: CharterState["ralph"];
 }
@@ -47,7 +49,7 @@ export async function createCharter(
     return {
       charterId,
       status: created.state.status,
-      message: `Created charter ${charterId}. Refine the Objective and evolve phases in ${created.charterDir}/charter.md.`,
+      message: `Created charter ${charterId}. Refine the Objective in ${created.charterDir}/charter.md.`,
       data: created.state,
       nextActions: nextActionsFor(created.state, false),
     };
@@ -76,12 +78,6 @@ export async function getCharterStatus(
   const refreshed = state.schemaVersion === "phases"
     ? await refreshCharterSnapshot(projectDir, charterId)
     : { state, parsed: parseCharterFile(charterMarkdown) };
-  const phases = state.schemaVersion === "phases" ? refreshed.parsed.phases : [];
-  const phaseCounts: Record<PhaseStatus, number> = {
-    upcoming: phases.filter((phase) => phase.status === "upcoming").length,
-    current: phases.filter((phase) => phase.status === "current").length,
-    done: phases.filter((phase) => phase.status === "done").length,
-  };
   const legacy = state.schemaVersion === "file-interface";
   return {
     charterId,
@@ -89,8 +85,7 @@ export async function getCharterStatus(
     objective: legacy ? state.objective : refreshed.parsed.objective || state.objective,
     references: legacy ? "" : refreshed.parsed.references,
     scope: legacy ? "" : refreshed.parsed.scope,
-    phases,
-    phaseCounts,
+    notes: legacy ? "" : refreshed.parsed.notes,
     createdAt: state.createdAt,
     warnings: legacy ? [] : refreshed.parsed.warnings,
     reportExists: await pathExists(reportPath(dir)),
@@ -165,23 +160,23 @@ export async function completeCharter(
   input: { charterId?: string; note?: string; sessionId?: string },
 ): Promise<CharterServiceResult<CharterState>> {
   return withCharterLock(chartersRoot(projectDir), async () => {
+    const note = input.note?.trim();
+    if (!note) throw toolError("note is required for action=complete", "complete");
     const { charterId, dir } = await mutableCharter(projectDir, input);
-    const { parsed, state } = await refreshCharterSnapshotUnlocked(projectDir, charterId);
+    const { state } = await refreshCharterSnapshotUnlocked(projectDir, charterId);
     if (state.status !== "active" && state.status !== "paused") throw toolError(`Only active or paused charters can complete (current: ${state.status}).`, "status");
     await dispatchHook("charter:before_complete", {
       type: "charter:before_complete",
       charterId,
       ts: new Date().toISOString(),
-      phaseCount: parsed.phases.length,
-      completionNote: input.note,
+      completionNote: note,
     });
-    const report = reportPath(dir);
-    if (!(await pathExists(report))) await writeTextAtomic(report, renderReport(parsed, input.note));
+    // Any REPORT.md or work/ artifacts belong to the worker and stay untouched.
     state.status = "completed";
     state.completedAt = new Date().toISOString();
-    state.completionNote = input.note;
+    state.completionNote = note;
     await writeCharterState(dir, state);
-    await appendEvent(dir, { type: "charter_completed", ts: state.completedAt, charterId, note: input.note });
+    await appendEvent(dir, { type: "charter_completed", ts: state.completedAt, charterId, note });
     return { charterId, status: state.status, message: `Completed charter ${charterId}.`, data: state, nextActions: [] };
   });
 }
@@ -224,13 +219,13 @@ function nextActionsFor(state: CharterState, legacy: boolean): NextAction[] {
   if (legacy || state.status === "completed" || state.status === "abandoned") return [];
   if (state.status === "paused") return [
     { tool: "charter", action: "resume", hint: state.ralph?.pausedByGuard ? "Use `/charter resume` explicitly to resume after the Ralph guard pause." : "Resume this paused charter." },
-    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report; complete or abandon this charter before opening another." },
+    { tool: "charter", action: "complete", hint: "Complete with a concise note once the Objective is satisfied; complete or abandon this charter before opening another." },
     { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted; complete or abandon this charter before opening another." },
   ];
   return [
-    { tool: "charter", action: "status", hint: "Inspect the Objective and emerging phases." },
+    { tool: "charter", action: "status", hint: "Inspect the Objective and charter notes." },
     { tool: "charter", action: "pause", hint: "Pause if this work should stop temporarily." },
-    { tool: "charter", action: "complete", hint: "Complete when the Objective has been audited and the result is ready to report; complete or abandon this charter before opening another." },
+    { tool: "charter", action: "complete", hint: "Complete with a concise note once the Objective is satisfied; complete or abandon this charter before opening another." },
     { tool: "charter", action: "abandon", hint: "Abandon with a note if the objective is no longer wanted; complete or abandon this charter before opening another." },
   ];
 }
@@ -273,38 +268,6 @@ async function assertSessionAvailable(projectDir: string, sessionId?: string, ch
 
 async function nonTerminalChartersForSession(projectDir: string, sessionId?: string) {
   return (await listCharters(projectDir)).filter((row) => !row.legacy && (row.status === "active" || row.status === "paused") && row.sessionId === sessionId);
-}
-
-function renderReport(parsed: ParsedCharterFile, completionNote?: string): string {
-  const lines = ["# Charter Report", "", "## Objective", "", parsed.objective || "(objective missing)", ""];
-  if (parsed.references) lines.push("## References", "", parsed.references, "");
-  if (parsed.scope) lines.push("## Scope", "", parsed.scope, "");
-  lines.push("## Phases", "");
-  for (const phase of parsed.phases) {
-    lines.push(`${phase.number}. ${phase.title} — ${phase.status}`);
-    if (phase.body) lines.push(indent(phase.body));
-  }
-  lines.push("", "## Completion", "", completionNote?.trim() || "No completion note was supplied.", "");
-  const links = visualEvidenceLinks(parsed);
-  lines.push("## Visual Evidence", "");
-  if (links.length) lines.push(...links.map((link) => `- ${link}`));
-  else lines.push("No user-visible artifacts were linked from phase notes.");
-  lines.push("");
-  return lines.join("\n");
-}
-
-function indent(text: string): string {
-  return text.split("\n").map((line) => `   ${line}`).join("\n");
-}
-
-function visualEvidenceLinks(parsed: ParsedCharterFile): string[] {
-  const out = new Set<string>();
-  for (const phase of parsed.phases) {
-    for (const match of phase.body.matchAll(/\[([^\]]+)\]\(((?:work\/|\/)[^)]+\.(?:png|jpe?g|gif|webp|svg|mp4|mov|webm|cast))\)/gi)) {
-      if (!match[2].split("/").includes("..")) out.add(`[${match[1]}](${match[2]})`);
-    }
-  }
-  return [...out];
 }
 
 function toolError(message: string, action: string): CharterToolError {

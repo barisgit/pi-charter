@@ -167,7 +167,7 @@ describe("Ralph host runtime integration", () => {
       await Bun.sleep(25);
 
       expect(providerCalls).toBe(2);
-      expect(providerContexts[1]).toContain("Charter .charters/");
+      expect(providerContexts[1]).toContain("Continue the charter at .charters/");
     } finally {
       await reopenedRuntime.dispose();
     }

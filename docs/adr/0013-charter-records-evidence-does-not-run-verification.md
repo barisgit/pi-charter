@@ -2,7 +2,7 @@
 
 Status: accepted; amended by ADR-0016; supersedes the command-verifier execution stance of ADR-0011 and ADR-0012, and the "command exit code is best" VAL doctrine in `skills/pi-charter/SKILL.md`.
 
-> **Amended by ADR-0016.** pi-charter still records and never runs verification. New charters have no criterion evidence schema or freshness gate; worker judgment, phase notes, artifacts captured during verification, and REPORT.md carry the evidence story.
+> **Amended by ADR-0016 and ADR-0018.** pi-charter never runs verification. Criterion evidence schemas and freshness gates are gone; ADR-0018 also removes structured phases and mandatory reports. The worker verifies the Objective and supplies a concise completion note. The body below records the earlier decision.
 
 Confirmed scope decisions (from review): charter executes nothing, including
 subagent-verifier dispatch (1); `requireReviewSubagent` is dropped to a

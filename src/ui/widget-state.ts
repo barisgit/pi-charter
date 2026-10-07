@@ -1,6 +1,5 @@
 /** Pure view-model reducer for the compact charter widget. */
 
-import type { Phase } from "../domain/charter-file";
 import type { CharterStatus } from "../domain/types";
 
 export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set([
@@ -15,8 +14,6 @@ export interface CharterWidgetVM {
   isTerminal: boolean;
   elapsedMs: number;
   objective: string;
-  position: { done: number; total: number };
-  currentPhase?: Pick<Phase, "number" | "title" | "body">;
   reportExists: boolean;
   legacy: boolean;
   guardWarning: boolean;
@@ -31,7 +28,6 @@ export interface ReducerInput {
   status: CharterStatus;
   createdAt: string;
   objective?: string;
-  phases: Phase[];
   reportExists?: boolean;
   legacy?: boolean;
   ralph?: { warnedAt?: number; pausedByGuard?: boolean };
@@ -41,7 +37,6 @@ export interface ReducerInput {
 export function buildViewModel(input: ReducerInput): CharterWidgetVM {
   const now = input.now ?? Date.now();
   const createdMs = parseIsoOrFallback(input.createdAt, now);
-  const current = input.phases.find((phase) => phase.status === "current");
 
   return {
     charterId: input.charterId,
@@ -50,13 +45,6 @@ export function buildViewModel(input: ReducerInput): CharterWidgetVM {
     isTerminal: TERMINAL_STATUSES.has(input.status),
     elapsedMs: Math.max(0, now - createdMs),
     objective: input.objective?.trim() ?? "",
-    position: {
-      done: input.phases.filter((phase) => phase.status === "done").length,
-      total: input.phases.length,
-    },
-    currentPhase: current
-      ? { number: current.number, title: current.title, body: current.body }
-      : undefined,
     reportExists: input.reportExists ?? false,
     legacy: input.legacy ?? false,
     guardWarning: input.ralph?.warnedAt !== undefined,
