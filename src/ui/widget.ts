@@ -1,123 +1,71 @@
-/** Compact above-editor projection of a charter's lifecycle and Ralph guard state. */
+/**
+ * One-line above-editor status for the session-bound charter: short name and
+ * lifecycle, plus Ralph guard state or the imminent Ralph countdown when relevant.
+ */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { CharterStatus } from "../domain/types";
 import type { CharterStatusResult } from "../application/service";
-import { buildViewModel, type CharterWidgetVM } from "./widget-state";
-
-export type CharterWidgetStatus = CharterStatusResult;
+import { charterSlugFromId } from "../domain/ids";
+import type { CharterStatus } from "../domain/types";
 
 interface ThemeLike {
   fg(color: string, text: string): string;
 }
 
-const BORDER = {
-  topLeft: "╭",
-  topRight: "╮",
-  bottomLeft: "╰",
-  bottomRight: "╯",
-  horizontal: "─",
-  vertical: "│",
-};
-
-export interface RenderOptions {
-  width: number;
-  theme: ThemeLike;
-  vm: CharterWidgetVM;
+/**
+ * Everything the widget displays, at displayed granularity. Hosts may compare
+ * serialized views to skip republishing an identical line.
+ */
+export interface CharterWidgetView {
+  name: string;
+  status: CharterStatus;
+  guard?: "warning" | "paused";
+  /** Whole seconds until the pending Ralph continuation; set only while active. */
+  countdownSeconds?: number;
 }
 
-export function buildCharterWidgetView(status: CharterWidgetStatus | undefined, now?: number): CharterWidgetVM | undefined {
+const LABEL = "charter ";
+const SEPARATOR = " · ";
+/** Narrowest truncated name, ellipsis included, worth keeping before dropping the name. */
+const MIN_NAME_WIDTH = 4;
+
+/** Project the bound charter status, and the remaining Ralph warning time, into a widget view. */
+export function buildCharterWidgetView(status: CharterStatusResult | undefined, ralphRemainingMs = 0): CharterWidgetView | undefined {
   if (!status) return undefined;
-  return buildViewModel({
-    charterId: status.charterId,
-    name: slugFromId(status.charterId),
-    status: status.status,
-    createdAt: status.createdAt,
-    objective: status.objective,
-    reportExists: status.reportExists,
-    legacy: status.legacy,
-    ralph: status.ralph,
-    now,
-  });
-}
-
-export function renderCharterWidget({ width, theme, vm }: RenderOptions): string[] {
-  if (width <= 0) return [];
-  const lines: string[] = [];
-  const lifecycle = `${statusLabel(vm.status)} · ${formatElapsed(vm.elapsedMs)}`;
-  lines.push(renderHeader(width, vm.displayName, lifecycle, theme, statusColor(vm.status)));
-  if (vm.legacy) {
-    lines.push(renderBodyLine(width, theme.fg("warning", "Legacy charter") + theme.fg("dim", " · read-only"), theme));
-  }
-  if (vm.guardPaused) lines.push(renderBodyLine(width, theme.fg("warning", "↻ Guard paused") + theme.fg("dim", " · resume with /charter resume"), theme));
-  else if (vm.guardWarning) lines.push(renderBodyLine(width, theme.fg("warning", "↻ Ralph guard warning"), theme));
-  const countdownSeconds = ralphCountdownSeconds(vm);
-  if (countdownSeconds !== undefined) {
-    lines.push(renderBodyLine(width, theme.fg("warning", `↻ Ralph continues in ${countdownSeconds}s`), theme));
-  }
-  lines.push(renderFooter(width, theme));
-  return lines.map((line) => truncateToWidth(line, width));
+  const view: CharterWidgetView = { name: charterSlugFromId(status.charterId), status: status.status };
+  if (status.ralph?.pausedByGuard) view.guard = "paused";
+  else if (status.ralph?.warnedAt !== undefined) view.guard = "warning";
+  if (status.status === "active" && ralphRemainingMs > 0) view.countdownSeconds = Math.ceil(ralphRemainingMs / 1_000);
+  return view;
 }
 
 /**
- * Identity of what `renderCharterWidget` would display for `vm` at any width.
- * Time fields are reduced to the granularity the widget shows, so hosts can skip
- * republishing when equal keys would render identical lines.
+ * Render the view as a single line no wider than `width`. When space is short
+ * the name is truncated first, then dropped, so lifecycle and Ralph state stay visible.
  */
-export function charterWidgetDisplayKey(vm: CharterWidgetVM): string {
-  const { elapsedMs: _elapsedMs, ralphRemainingMs: _ralphRemainingMs, ...stable } = vm;
-  return JSON.stringify({ ...stable, elapsed: formatElapsed(vm.elapsedMs), countdownSeconds: ralphCountdownSeconds(vm) });
+export function renderCharterWidget(view: CharterWidgetView, width: number, theme: ThemeLike): string[] {
+  if (width <= 0) return [];
+  const segments = statusSegments(view);
+  const plainTail = segments.map((segment) => SEPARATOR + segment.text).join("");
+  const tail = segments.map((segment) => theme.fg("dim", SEPARATOR) + theme.fg(segment.color, segment.text)).join("");
+  const nameWidth = width - visibleWidth(LABEL) - visibleWidth(plainTail);
+  if (nameWidth < MIN_NAME_WIDTH) {
+    const statusOnly = segments.map((segment) => theme.fg(segment.color, segment.text)).join(theme.fg("dim", SEPARATOR));
+    return [truncateToWidth(statusOnly, width)];
+  }
+  const name = truncateToWidth(view.name, nameWidth, "…");
+  return [theme.fg("dim", LABEL) + theme.fg("text", name) + tail];
 }
 
-function ralphCountdownSeconds(vm: CharterWidgetVM): number | undefined {
-  const remainingMs = vm.ralphRemainingMs ?? 0;
-  if (vm.status !== "active" || remainingMs <= 0) return undefined;
-  return Math.max(1, Math.ceil(remainingMs / 1_000));
+interface Segment {
+  text: string;
+  color: string;
 }
 
-function renderBodyLine(width: number, content: string, theme: ThemeLike): string {
-  if (width === 1) return theme.fg("borderMuted", BORDER.vertical);
-  const innerWidth = Math.max(0, width - 2);
-  const clipped = truncateToWidth(` ${content}`, innerWidth, "");
-  const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-  return `${theme.fg("borderMuted", BORDER.vertical)}${clipped}${padding}${theme.fg("borderMuted", BORDER.vertical)}`;
-}
-
-function renderHeader(width: number, title: string, tail: string, theme: ThemeLike, tailColor: string): string {
-  if (width <= 1) return theme.fg("borderMuted", BORDER.horizontal.repeat(width));
-  const left = ` ${title} `;
-  const right = ` ${tail} `;
-  const available = Math.max(0, width - 2 - visibleWidth(right));
-  const clippedLeft = truncateToWidth(left, available, "");
-  const fill = BORDER.horizontal.repeat(Math.max(0, width - 2 - visibleWidth(clippedLeft) - visibleWidth(right)));
-  return `${theme.fg("borderMuted", BORDER.topLeft)}${theme.fg("borderMuted", clippedLeft + fill)}${theme.fg(tailColor, right)}${theme.fg("borderMuted", BORDER.topRight)}`;
-}
-
-function renderFooter(width: number, theme: ThemeLike): string {
-  if (width <= 1) return theme.fg("borderMuted", BORDER.horizontal.repeat(width));
-  return theme.fg("borderMuted", `${BORDER.bottomLeft}${BORDER.horizontal.repeat(Math.max(0, width - 2))}${BORDER.bottomRight}`);
-}
-
-function statusColor(status: CharterStatus): string {
-  if (status === "completed") return "success";
-  if (status === "abandoned") return "error";
-  if (status === "paused") return "warning";
-  return "accent";
-}
-
-function statusLabel(status: CharterStatus): string {
-  return status;
-}
-
-export function formatElapsed(ms: number): string {
-  const seconds = Math.max(0, Math.floor(ms / 1_000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
-}
-
-function slugFromId(charterId: string): string {
-  const match = /^\d{8}-\d{6}-(.+)$/.exec(charterId);
-  return match?.[1] ?? charterId.slice(0, 8);
+function statusSegments(view: CharterWidgetView): Segment[] {
+  if (view.guard === "paused") return [{ text: "paused by Ralph guard", color: "warning" }, { text: "/charter resume", color: "muted" }];
+  const segments: Segment[] = [{ text: view.status, color: view.status === "active" ? "accent" : "warning" }];
+  if (view.countdownSeconds !== undefined) segments.push({ text: `Ralph continues in ${view.countdownSeconds}s`, color: "warning" });
+  else if (view.guard === "warning") segments.push({ text: "Ralph guard warning", color: "warning" });
+  return segments;
 }

@@ -6,7 +6,7 @@ Implements read-only terminal presentation for charter status: the `/charters` d
 
 ## Design patterns
 
-- **MVVM/projection:** `picker-snapshot.ts` and `widget-service.ts` load status/storage data; `widget-state.ts` is a pure reducer; renderers consume those view models.
+- **MVVM/projection:** `picker-snapshot.ts` loads dashboard data; `widget.ts` projects the bound `CharterStatusResult` into a small widget view; renderers consume those view models.
 - **Adapter:** `charter-picker.ts` adapts rows to `pi-extension-utils.paneOverlay`, Pi Markdown/theme APIs, clipboard commands, and platform directory-open commands.
 - **Module-scoped selection:** `charter-selection.ts` holds selection and its refresh callback.
 - **Centralized layout constants:** `charter-picker-constants.ts` owns pane constraints, row widths, key filtering, and flash duration.
@@ -15,10 +15,9 @@ Implements read-only terminal presentation for charter status: the `/charters` d
 
 1. `/charters` lists active and recent terminal charters, including `file-interface` history, and builds a snapshot for each.
 2. Picker details render Objective, References, Scope, remaining authored notes as Markdown (historical phase text included verbatim), guard state, warnings, any existing REPORT.md, and legacy charters as whole read-only files.
-3. Widget loading combines status with persisted dates and sends lifecycle, legacy state, and Ralph guard state to `buildViewModel()`.
-4. `buildViewModel()` derives display name, terminal state, elapsed time, and guard warning/pause state.
-5. `renderCharterWidget()` emits a compact short-name and lifecycle header plus legacy, guard, and Ralph countdown lines. The Objective and notes stay in the dashboard.
-6. `charterWidgetDisplayKey()` reduces a view model to what the widget shows (elapsed and countdown at displayed granularity); registration republishes or removes the widget only when that key changes, and resets it per session.
+3. `buildCharterWidgetView()` reduces the session-bound status (always active or paused; terminal and legacy charters are never bound) to name, lifecycle, guard warning/pause, and whole countdown seconds.
+4. `renderCharterWidget()` emits one line, such as `charter ship-runtime · active · Ralph continues in 7s`. Narrow widths shorten, then drop, the name before the status. The Objective and notes stay in the dashboard.
+5. Registration republishes only when the serialized view changes, removes the widget when the binding ends, and resets per session.
 
 ## Integration points
 

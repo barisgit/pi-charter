@@ -27,4 +27,4 @@ Coordinates charter lifecycle operations and Pi host orchestration. It turns too
 - Uses `src/domain/charter-file.ts`, `ids.ts`, and `types.ts` for parsing and state contracts.
 - Uses `src/infrastructure/store.ts` for locking, workspace creation, state, journal, report-path, and snapshot I/O.
 - Uses `src/infrastructure/logger.ts` and `subagent-bridge.ts` for diagnostics and idle coordination.
-- Supplies status to `src/ui/widget.ts`, `widget-service.ts`, `picker-snapshot.ts`, and `charter-picker.ts`.
+- Supplies status to `src/ui/widget.ts`, `picker-snapshot.ts`, and `charter-picker.ts`.

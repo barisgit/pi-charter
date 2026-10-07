@@ -76,7 +76,7 @@ Legacy `file-interface` state is decoded only far enough to render a read-only d
 ## UI projections
 
 - Terse status reports lifecycle, Objective, warnings, and legal next actions.
-- The bordered widget presents the short charter slug, lifecycle, and elapsed wall-clock time since creation (including pauses). It shows no progress bar. Ralph countdowns and guard guidance carry the loop icon, as do Ralph message headers.
+- The widget is one line: the short charter slug and lifecycle, then the Ralph guard warning, guard pause with `/charter resume`, or the pending Ralph countdown when one applies. It has no frame, clock, or progress. It updates on agent tool results, turn ends, and lifecycle changes, including slash commands; only a pending countdown repaints on a timer. Ralph message headers carry the loop icon.
 - `/charters` renders the Objective, References, Scope, and remaining authored Markdown as Notes, including old phase lists without interpreting them. Comments are hidden and long content wraps within the scrollable detail pane. Legacy charters show their whole `charter.md` and remain clearly read-only; status also retains the exact authored file in `charterMarkdown`.
 - Custom tool calls and results have one column of horizontal padding, including wrapped lines. Collapsed results show orientation; expanded results preserve the full message or structured status/list details, warnings, and legal next-action hints.
 - Ralph messages use Pi's native collapsed/expanded state: a compact header by default, the complete continuation prompt when expanded. Rendering never changes the model-facing tool result or prompt.

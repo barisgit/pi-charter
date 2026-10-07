@@ -354,30 +354,6 @@ describe("tool registration", () => {
     await delay(10);
     expect(h.sent).toHaveLength(2);
   });
-
-  test("refreshes the widget on its own timer", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-widget-timer-"));
-    await createCharter(project, { objective: "Ticking widget", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
-    const handlers: Record<string, (event: unknown, ctx: any) => Promise<void> | void> = {};
-    let setCount = 0;
-    const ctx = {
-      cwd: project,
-      hasUI: true,
-      sessionManager: { getSessionId: () => "s1" },
-      ui: { setWidget: () => { setCount++; } },
-    };
-    const pi = {
-      events: fakeEvents(),
-      on: (name: string, handler: (event: unknown, context: any) => Promise<void> | void) => { handlers[name] = handler; return () => undefined; },
-    } as any;
-
-    registerCharterWidget(pi, { refreshMs: 10 });
-    await handlers.session_start({}, ctx);
-    await delay(25);
-    handlers.session_shutdown({}, ctx);
-
-    expect(setCount).toBeGreaterThanOrEqual(2);
-  });
 });
 
 test("status text shows lifecycle and Objective without phase or report interpretation", () => {
@@ -810,7 +786,7 @@ describe("widget registration", () => {
     const component = widget({}, { fg: (_color: string, text: string) => text });
     const line = component.render(48)[0];
     expect(line).toContain("widget-charter");
-    expect(visibleWidth(line)).toBe(48);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(48);
   });
 });
 

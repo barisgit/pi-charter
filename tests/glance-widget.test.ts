@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createCharter, completeCharter, abandonCharter, listCharterSummaries, pauseCharter } from "../src/application/service";
-import { RALPH_WIDGET_WARNING_EVENT, registerCharterWidget } from "../src/application/registration";
+import { RALPH_WIDGET_WARNING_EVENT, registerCharterCommands, registerCharterWidget } from "../src/application/registration";
 
 type SetWidgetCall = {
   key: string;
@@ -25,8 +25,13 @@ type FakeCtx = {
 function makeFakePi() {
   const handlers = new Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>();
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
+  const commands = new Map<string, { handler(args: string, ctx: FakeCtx): Promise<void> }>();
   return {
     handlers,
+    commands,
+    registerCommand(name: string, command: { handler(args: string, ctx: FakeCtx): Promise<void> }) {
+      commands.set(name, command);
+    },
     on(event: string, handler: (event: unknown, ctx: FakeCtx) => Promise<void> | void) {
       const list = handlers.get(event) ?? [];
       list.push(handler);
@@ -182,42 +187,51 @@ describe("glance widget cleanup", () => {
       for (const shutdown of shutdowns.splice(0)) await shutdown();
     });
 
-    async function setup(options: { refreshMs?: number } = {}) {
+    async function setup() {
       const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-widget-refresh-"));
       await createCharter(projectDir, { objective: "Refresh fixture", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
       const clock = { now: Date.parse("2026-07-02T11:00:00.000Z") };
       const pi = makeFakePi();
-      registerCharterWidget(pi as never, { refreshMs: options.refreshMs ?? 0, warningRefreshMs: 0, now: () => clock.now });
+      registerCharterCommands(pi as never);
+      registerCharterWidget(pi as never, { warningRefreshMs: 0, now: () => clock.now });
       const mounted = makeMountedCtx(projectDir, "s1");
       await fireEvent(pi, "session_start", mounted.ctx);
       shutdowns.push(() => fireEvent(pi, "session_shutdown", mounted.ctx));
       return { projectDir, clock, pi, ...mounted };
     }
 
-    test("unchanged tool results and timer ticks do not republish", async () => {
-      const { pi, ctx, state } = await setup({ refreshMs: 5 });
-      await fireEvent(pi, "tool_result", ctx);
-      await fireEvent(pi, "tool_result", ctx);
-      await Bun.sleep(30);
-
-      expect(state.publications).toBe(1);
-    });
-
-    test("lifecycle and displayed elapsed changes republish", async () => {
+    test("lifecycle changes republish; unchanged state and passing time do not", async () => {
       const { projectDir, clock, pi, ctx, state, text } = await setup();
+      clock.now += 3_600_000;
+      await fireEvent(pi, "tool_result", ctx);
+      expect(state.publications).toBe(1);
+
       await pauseCharter(projectDir, { sessionId: "s1", note: "Paused for review." });
       await fireEvent(pi, "tool_result", ctx);
       expect(state.publications).toBe(2);
-      expect(text()).toContain("paused · 1h 00m");
+      expect(text()).toBe("charter refresh-fixture · paused");
+    });
 
-      clock.now += 59_000;
-      await fireEvent(pi, "tool_result", ctx);
-      expect(state.publications).toBe(2);
+    test("slash lifecycle commands update the widget without waiting for a turn, also after a session restart", async () => {
+      const { pi, ctx, text } = await setup();
+      const charter = pi.commands.get("charter")!;
+      // Lifecycle listeners refresh asynchronously; wait for the visible state,
+      // not a fixed delay that depends on filesystem speed and test-runner load.
+      const expectWidget = async (expected: string): Promise<void> => {
+        const deadline = Date.now() + 2_000;
+        while (text() !== expected && Date.now() < deadline) await Bun.sleep(5);
+        expect(text()).toBe(expected);
+      };
+      await charter.handler("pause", ctx);
+      await expectWidget("charter refresh-fixture · paused");
 
-      clock.now += 1_000;
-      await fireEvent(pi, "tool_result", ctx);
-      expect(state.publications).toBe(3);
-      expect(text()).toContain("paused · 1h 01m");
+      await fireEvent(pi, "session_shutdown", ctx);
+      await fireEvent(pi, "session_start", ctx);
+      await charter.handler("resume", ctx);
+      await expectWidget("charter refresh-fixture · active");
+
+      await charter.handler("complete Done.", ctx);
+      await expectWidget("");
     });
 
     test("Ralph warning countdown republishes once per displayed second", async () => {

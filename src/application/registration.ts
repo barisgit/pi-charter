@@ -11,8 +11,7 @@ import { attemptRalphActivation, renderRalphPrompt, RALPH_GUARD_PAUSE_NOTE } fro
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
 import { logger } from "../infrastructure/logger";
 import type { NextAction } from "../domain/types";
-import { buildCharterWidgetView, charterWidgetDisplayKey, renderCharterWidget } from "../ui/widget";
-import { loadCharterWidgetStatus } from "../ui/widget-service";
+import { buildCharterWidgetView, renderCharterWidget } from "../ui/widget";
 import { createCharterPickerOverlay } from "../ui/charter-picker";
 import { buildPickerSnapshot, listAllCharters } from "../ui/picker-snapshot";
 import { charterDir } from "../infrastructure/store";
@@ -609,21 +608,26 @@ export function registerCharterRalphMessageRenderer(pi: ExtensionAPI): void {
 }
 
 export interface RegisterCharterWidgetOptions {
-  refreshMs?: number;
+  /** Countdown repaint interval while a Ralph warning is pending; 0 disables the interval. */
   warningRefreshMs?: number;
   now?: () => number;
 }
 
+/**
+ * Publish the one-line charter widget for the session binding. It refreshes on
+ * session start, agent tool results and turn ends, every lifecycle change
+ * (including slash commands and the Ralph guard pause), and once per second only
+ * while a Ralph warning countdown is pending; nothing it shows changes with time otherwise.
+ */
 export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharterWidgetOptions = {}): void {
   let client: UtilsClient | undefined;
   let lastCtx: ExtensionContext | undefined;
   let warningDeadlineAt: number | undefined;
-  let refreshTimer: ReturnType<typeof setInterval> | undefined;
   let warningRefreshTimer: ReturnType<typeof setInterval> | undefined;
-  // Display key of the last successful publication: undefined until the current
+  let unsubscribe: Array<() => void> = [];
+  // Serialized view of the last successful publication: undefined until the current
   // session publishes, NO_WIDGET after removal. Equal keys skip the widget host.
   let publishedKey: string | undefined;
-  const refreshMs = options.refreshMs ?? 10_000;
   const warningRefreshMs = options.warningRefreshMs ?? 1_000;
   const now = options.now ?? (() => Date.now());
 
@@ -645,23 +649,21 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
 
   const refresh = async (ctx: ExtensionContext): Promise<void> => {
     if (!ctx.hasUI) return;
-    const sessionId = ctx.sessionManager.getSessionId?.();
-    const status = await loadCharterWidgetStatus(ctx.cwd, { sessionId });
-    const vm = buildCharterWidgetView(status, now());
-    if (!vm) {
-      clear(ctx);
-      return;
-    }
+    const status = await getBoundCharterStatus(ctx.cwd, ctx.sessionManager.getSessionId?.());
     const remainingMs = warningDeadlineAt === undefined ? 0 : Math.max(0, warningDeadlineAt - now());
     if (warningDeadlineAt !== undefined && remainingMs === 0) {
       warningDeadlineAt = undefined;
       stopWarningRefresh();
     }
-    vm.ralphRemainingMs = remainingMs > 0 ? remainingMs : undefined;
-    const key = charterWidgetDisplayKey(vm);
+    const view = buildCharterWidgetView(status, remainingMs);
+    if (!view) {
+      clear(ctx);
+      return;
+    }
+    const key = JSON.stringify(view);
     if (key === publishedKey) return;
     const factory: Parameters<UtilsClient["widgets"]["set"]>[2] = (_tui, theme) => ({
-      render: (width: number) => renderCharterWidget({ width, theme, vm }),
+      render: (width: number) => renderCharterWidget(view, width, theme),
       invalidate: () => {},
     });
     getClient(ctx).widgets.set("aboveEditor", WIDGET_KEY, factory, { order: 80 });
@@ -678,6 +680,10 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     }
   };
 
+  const refreshLast = (): void => {
+    if (lastCtx) void safeRefresh(lastCtx);
+  };
+
   const matchesLastSession = (sessionId: string | undefined): boolean => {
     if (!lastCtx) return false;
     try {
@@ -688,15 +694,33 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     }
   };
 
+  // Bus subscriptions live for one session: shutdown drops them and the next start renews them.
+  const subscribe = (): void => {
+    if (unsubscribe.length > 0) return;
+    unsubscribe = [
+      pi.events.on(LIFECYCLE_EVENT, refreshLast),
+      pi.events.on(RALPH_WIDGET_WARNING_EVENT, (raw: unknown) => {
+        const payload = raw as { sessionId?: string; deadlineAt?: number };
+        if (!matchesLastSession(payload.sessionId)) return;
+        warningDeadlineAt = payload.deadlineAt;
+        refreshLast();
+        stopWarningRefresh();
+        if (warningRefreshMs > 0) warningRefreshTimer = setInterval(refreshLast, warningRefreshMs);
+      }),
+      pi.events.on(RALPH_WIDGET_WARNING_CLEAR_EVENT, (raw: unknown) => {
+        if (!matchesLastSession((raw as { sessionId?: string }).sessionId)) return;
+        warningDeadlineAt = undefined;
+        stopWarningRefresh();
+        refreshLast();
+      }),
+    ];
+  };
+
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx;
     publishedKey = undefined;
+    subscribe();
     await safeRefresh(ctx);
-    if (!refreshTimer && refreshMs > 0) {
-      refreshTimer = setInterval(() => {
-        if (lastCtx) void safeRefresh(lastCtx);
-      }, refreshMs);
-    }
   });
   pi.on("tool_result", async (_event, ctx) => {
     lastCtx = ctx;
@@ -704,36 +728,15 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   });
   pi.on("turn_end", async (_event, ctx) => {
     lastCtx = ctx;
-    await refresh(ctx);
-  });
-  const stopWarning = pi.events.on(RALPH_WIDGET_WARNING_EVENT, (raw: unknown) => {
-    const payload = raw as { sessionId?: string; deadlineAt?: number };
-    if (!matchesLastSession(payload.sessionId)) return;
-    warningDeadlineAt = payload.deadlineAt;
-    if (lastCtx) void safeRefresh(lastCtx);
-    stopWarningRefresh();
-    if (warningRefreshMs > 0) {
-      warningRefreshTimer = setInterval(() => {
-        if (lastCtx) void safeRefresh(lastCtx);
-      }, warningRefreshMs);
-    }
-  });
-  const stopWarningClear = pi.events.on(RALPH_WIDGET_WARNING_CLEAR_EVENT, (raw: unknown) => {
-    const payload = raw as { sessionId?: string };
-    if (!matchesLastSession(payload.sessionId)) return;
-    warningDeadlineAt = undefined;
-    stopWarningRefresh();
-    if (lastCtx) void safeRefresh(lastCtx);
+    await safeRefresh(ctx);
   });
   pi.on("session_shutdown", () => {
-    if (refreshTimer) clearInterval(refreshTimer);
-    refreshTimer = undefined;
     stopWarningRefresh();
+    for (const stop of unsubscribe) stop();
+    unsubscribe = [];
     lastCtx = undefined;
     warningDeadlineAt = undefined;
     publishedKey = undefined;
-    stopWarning?.();
-    stopWarningClear?.();
     client?.dispose();
     client = undefined;
   });
