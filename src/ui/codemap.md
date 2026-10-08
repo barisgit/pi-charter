@@ -17,7 +17,7 @@ Implements read-only terminal presentation for charter status: the `/charters` d
 2. Picker details render Objective, References, Scope, remaining authored notes as Markdown (historical phase text included verbatim), guard state, warnings, any existing REPORT.md, and legacy charters as whole read-only files.
 3. `buildCharterWidgetView()` reduces the session-bound status (always active or paused; terminal and legacy charters are never bound) to name, lifecycle, guard warning/pause, and whole countdown seconds.
 4. `renderCharterWidget()` emits one line, such as `charter ship-runtime · active · Ralph continues in 7s`. Narrow widths shorten, then drop, the name before the status. The Objective and notes stay in the dashboard.
-5. Registration republishes only when the serialized view changes, removes the widget when the binding ends, and resets per session.
+5. Registration caches the binding on session start, lifecycle changes and Ralph warnings, republishes only when the serialized view changes, ticks the countdown from the cache, removes the widget when the binding ends, and resets per session.
 
 ## Integration points
 

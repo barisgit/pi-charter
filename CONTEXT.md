@@ -87,7 +87,7 @@ An optional report file, written only when the Objective asks for one. pi-charte
 _Avoid_: Completion gate, mandatory report
 
 **Journal**
-The append-only history of lifecycle transitions and meaningful whole-file changes.
+The append-only history of lifecycle transitions and Ralph activations. Older journals may also hold `charter_file_changed` entries; nothing writes them now.
 
 **Legacy charter**
 A charter from the file-interface schema: visible in the dashboard as read-only history, never resumed or migrated.
@@ -101,7 +101,7 @@ _Avoid_: Phase, charter task
 
 - One session binds to at most one active or paused Charter.
 - The Objective is the completion contract; notes, artifacts, and reports serve it but never replace it.
-- The worker chooses how to act and verify. pi-charter persists lifecycle, journals file changes, and supplies guarded Ralph continuation.
+- The worker chooses how to act and verify. pi-charter persists lifecycle, reads the current `charter.md` on demand, and supplies guarded Ralph continuation.
 - Older writable charters keep their authored text unchanged; their phase lists read as notes.
 - Legacy charters are read-only history; continued work starts in a new charter.
 

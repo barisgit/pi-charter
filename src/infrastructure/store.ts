@@ -51,7 +51,7 @@ export function reportPath(dir: string): string {
 }
 
 // Application mutations pass chartersRoot(projectDir), so lifecycle checks and
-// snapshot writes share one project-wide lock. Not reentrant: awaiting another
+// state writes share one project-wide lock. Reads never take it. Not reentrant: awaiting another
 // mutation (including from a hook) deadlocks the local queue before file timeout.
 export async function withCharterLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const key = resolve(dir);
@@ -81,7 +81,6 @@ export async function createCharterWorkspace(
     createdAt: input.now,
     updatedAt: input.now,
     sessionId: input.sessionId,
-    snapshotHash: hashText(text),
   };
 
   await mkdir(dir, { recursive: true });
@@ -182,10 +181,6 @@ export async function writeJsonAtomic(path: string, value: unknown): Promise<voi
 
 export async function writeTextAtomic(path: string, value: string): Promise<void> {
   await withPathLock(path, () => writeTextAtomicUnsafe(path, value));
-}
-
-export function hashText(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
 }
 
 async function withPathLock<T>(path: string, fn: () => Promise<T>): Promise<T> {
@@ -344,7 +339,6 @@ function normalizeCharterState(value: unknown): CharterState {
     terminatedAt: typeof raw.terminatedAt === "string" ? raw.terminatedAt : undefined,
     completionNote: typeof raw.completionNote === "string" ? raw.completionNote : undefined,
     abandonReason: typeof raw.abandonReason === "string" ? raw.abandonReason : undefined,
-    snapshotHash: typeof raw.snapshotHash === "string" ? raw.snapshotHash : undefined,
     ralph: normalizeRalph(raw.ralph),
   };
 }

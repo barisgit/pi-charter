@@ -42,18 +42,17 @@ Creation writes the Objective plus commented, optional References and Scope sect
 
 Writable state keeps the historical storage label `schemaVersion: "phases"` for compatibility; the persisted shape is unchanged and the name implies no phase feature. It holds the charter id, lifecycle status, timestamps, and session binding, and may also contain:
 
-- `snapshotHash` for whole-file change journaling;
 - `ralph.activations`, a rolling list of actual send times;
 - `ralph.warnedAt` when recovery began;
 - `ralph.pausedByGuard` when the guard paused the charter.
 
-It contains no criterion snapshots, phase state, reminder counters, global tool sequence, or source-change sequence.
+It contains no criterion snapshots, file hash (a `snapshotHash` in older files is ignored and dropped by the next lifecycle write), phase state, reminder counters, global tool sequence, or source-change sequence.
 
 A state with `schemaVersion: "file-interface"` is legacy. The store may load it for dashboard display only. Mutation, resume, migration, and write-back are forbidden. Old `.pi/charters/` paths remain outside the current store.
 
 ## `events.jsonl`
 
-The append-only journal of lifecycle transitions and meaningful whole-file charter changes.
+The append-only journal of lifecycle transitions and Ralph activations. Older journals may contain `charter_file_changed` entries from the removed edit journal; they are history and are never rewritten.
 
 ## Internal lock files
 

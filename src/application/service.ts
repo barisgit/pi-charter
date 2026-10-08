@@ -1,9 +1,8 @@
 import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids";
 import { parseCharterFile } from "../domain/charter-file";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadCharterText, pathExists, reportPath, writeCharterState, withCharterLock } from "../infrastructure/store";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharterIds, listCharters, loadCharterState, loadCharterText, pathExists, reportPath, writeCharterState, withCharterLock } from "../infrastructure/store";
 import { CharterToolError } from "./errors";
 import { dispatchHook } from "./hooks";
-import { refreshCharterSnapshot, refreshCharterSnapshotUnlocked } from "./snapshots";
 import type { CharterState, CharterStatus, NextAction } from "../domain/types";
 
 export type { NextAction };
@@ -67,6 +66,11 @@ export async function listCharterSummaries(projectDir: string): Promise<CharterS
   };
 }
 
+/**
+ * Read the charter as it is on disk now: lifecycle from state.json and the
+ * Objective, References, Scope and notes parsed from the current charter.md.
+ * Pure read: takes no lock and writes nothing, so it never waits for a mutation.
+ */
 export async function getCharterStatus(
   projectDir: string,
   input: { charterId?: string; sessionId?: string } = {},
@@ -75,19 +79,17 @@ export async function getCharterStatus(
   const dir = charterDir(projectDir, charterId);
   const state = await loadCharterState(dir);
   const charterMarkdown = await loadCharterText(dir);
-  const refreshed = state.schemaVersion === "phases"
-    ? await refreshCharterSnapshot(projectDir, charterId)
-    : { state, parsed: parseCharterFile(charterMarkdown) };
+  const parsed = parseCharterFile(charterMarkdown);
   const legacy = state.schemaVersion === "file-interface";
   return {
     charterId,
     status: state.status,
-    objective: legacy ? state.objective : refreshed.parsed.objective || state.objective,
-    references: legacy ? "" : refreshed.parsed.references,
-    scope: legacy ? "" : refreshed.parsed.scope,
-    notes: legacy ? "" : refreshed.parsed.notes,
+    objective: legacy ? state.objective : parsed.objective || state.objective,
+    references: legacy ? "" : parsed.references,
+    scope: legacy ? "" : parsed.scope,
+    notes: legacy ? "" : parsed.notes,
     createdAt: state.createdAt,
-    warnings: legacy ? [] : refreshed.parsed.warnings,
+    warnings: legacy ? [] : parsed.warnings,
     reportExists: await pathExists(reportPath(dir)),
     nextActions: nextActionsFor(state, legacy),
     legacy,
@@ -96,10 +98,22 @@ export async function getCharterStatus(
   };
 }
 
-export async function getBoundCharterStatus(projectDir: string, sessionId?: string): Promise<CharterStatusResult | undefined> {
+/**
+ * The writable charter bound to the session, read from state.json only (no
+ * charter.md, no lock). The cheap lookup for callers that need lifecycle and
+ * Ralph guard state, such as the widget.
+ */
+export async function findBoundCharterState(projectDir: string, sessionId?: string): Promise<CharterState | undefined> {
   if (!sessionId) return undefined;
-  const rows = (await listCharters(projectDir)).filter((row) => !row.legacy && row.sessionId === sessionId);
-  const bound = rows.find((row) => row.status === "active" || row.status === "paused");
+  for (const id of await listCharterIds(projectDir)) {
+    const state = await loadCharterState(projectDir, id).catch(() => undefined);
+    if (state && state.schemaVersion === "phases" && state.sessionId === sessionId && (state.status === "active" || state.status === "paused")) return state;
+  }
+  return undefined;
+}
+
+export async function getBoundCharterStatus(projectDir: string, sessionId?: string): Promise<CharterStatusResult | undefined> {
+  const bound = await findBoundCharterState(projectDir, sessionId);
   return bound ? getCharterStatus(projectDir, { charterId: bound.charterId }) : undefined;
 }
 
@@ -162,8 +176,7 @@ export async function completeCharter(
   return withCharterLock(chartersRoot(projectDir), async () => {
     const note = input.note?.trim();
     if (!note) throw toolError("note is required for action=complete", "complete");
-    const { charterId, dir } = await mutableCharter(projectDir, input);
-    const { state } = await refreshCharterSnapshotUnlocked(projectDir, charterId);
+    const { charterId, dir, state } = await mutableCharter(projectDir, input);
     if (state.status !== "active" && state.status !== "paused") throw toolError(`Only active or paused charters can complete (current: ${state.status}).`, "status");
     await dispatchHook("charter:before_complete", {
       type: "charter:before_complete",

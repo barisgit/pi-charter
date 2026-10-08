@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createCharter, getCharterStatus, pauseCharter } from "../src/application/service";
-import { RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterFileHooks, registerCharterRalphLoop, registerCharterRalphMessageRenderer, registerCharterTools, registerCharterWidget } from "../src/application/registration";
+import { RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterRalphLoop, registerCharterRalphMessageRenderer, registerCharterTools, registerCharterWidget } from "../src/application/registration";
 import type { CharterStatusResult } from "../src/application/service";
 import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
@@ -790,22 +790,3 @@ describe("widget registration", () => {
   });
 });
 
-
-test("read, search, artifact and source tool results do not rewrite charter state", async () => {
-  const project = await mkdtemp(join(tmpdir(), "pi-charter-observation-"));
-  const created = await createCharter(project, { objective: "Keep verified work while implementing", sessionId: "s1" });
-  const dir = charterDir(project, created.charterId);
-  const beforeState = await readFile(join(dir, "state.json"), "utf8");
-  const beforeEvents = await readFile(join(dir, "events.jsonl"), "utf8");
-  const handlers: Record<string, (event: any, ctx: any) => Promise<void>> = {};
-  registerCharterFileHooks({ on: (event: string, handler: any) => { handlers[event] = handler; } } as any);
-  const ctx = { cwd: project, sessionManager: { getSessionId: () => "s1" } };
-  for (const toolName of ["read", "ls", "ast_grep", "run", "bash", "write"]) {
-    await handlers.tool_result({ toolName, input: { path: "src/application.ts", command: "cat docs/plan.md" }, details: { artifacts: ["work/screen.png"] } }, ctx);
-  }
-  expect(await readFile(join(dir, "state.json"), "utf8")).toBe(beforeState);
-  expect(await readFile(join(dir, "events.jsonl"), "utf8")).toBe(beforeEvents);
-  const status = await getCharterStatus(project, { charterId: created.charterId });
-  expect(status).not.toHaveProperty("criteria");
-  expect(status).not.toHaveProperty("blockers");
-});

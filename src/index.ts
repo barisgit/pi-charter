@@ -3,7 +3,6 @@ import {
   registerCharterCommands,
   registerCharterRalphLoop,
   registerCharterRalphMessageRenderer,
-  registerCharterFileHooks,
   registerCharterTools,
   registerCharterWidget,
 } from "./application/registration";
@@ -16,7 +15,6 @@ export * from "./domain/ids";
 export default function charterExtension(pi: ExtensionAPI): void {
   registerCharterTools(pi);
   registerCharterCommands(pi);
-  registerCharterFileHooks(pi);
   registerCharterWidget(pi);
   registerCharterRalphLoop(pi);
   registerCharterRalphMessageRenderer(pi);

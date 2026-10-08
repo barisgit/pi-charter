@@ -24,7 +24,8 @@ export interface CharterState {
    * Storage discriminator. `"phases"` is a historical label for every writable
    * charter (ADR-0018 removed the phase feature but kept the persisted shape, so
    * existing charters resume without migration). `"file-interface"` marks
-   * read-only legacy history.
+   * read-only legacy history. A `snapshotHash` left in older state.json files is
+   * ignored on read and dropped by the next lifecycle write.
    */
   schemaVersion: "phases" | "file-interface";
   objective: string;
@@ -37,7 +38,6 @@ export interface CharterState {
   terminatedAt?: string;
   completionNote?: string;
   abandonReason?: string;
-  snapshotHash?: string;
   ralph?: RalphGuardState;
 }
 

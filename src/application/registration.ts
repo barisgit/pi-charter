@@ -4,9 +4,8 @@ import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { connect, type UtilsClient } from "pi-extension-utils";
 import { Type } from "typebox";
-import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
+import { abandonCharter, completeCharter, createCharter, findBoundCharterState, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
 import { CharterToolError } from "./errors";
-import { refreshSessionSnapshots } from "./snapshots";
 import { attemptRalphActivation, renderRalphPrompt, RALPH_GUARD_PAUSE_NOTE } from "./ralph";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
 import { logger } from "../infrastructure/logger";
@@ -294,15 +293,6 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
   });
 }
 
-export function registerCharterFileHooks(pi: ExtensionAPI): void {
-  pi.on("tool_result", async (_event, ctx) => {
-    await refreshSessionSnapshots(ctx.cwd, ctx.sessionManager.getSessionId?.());
-  });
-  pi.on("turn_end", async (_event, ctx) => {
-    await refreshSessionSnapshots(ctx.cwd, ctx.sessionManager.getSessionId?.());
-  });
-}
-
 export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
   const runningSubagents = new Set<string>();
   const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
@@ -568,6 +558,8 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         pi.events.emit(LIFECYCLE_EVENT, { action: "pause" });
       } else if (result !== "skipped") {
         lastSentAt = at;
+        // The recovery send records the guard warning; let the widget show it.
+        if (result === "recovery") pi.events.emit(LIFECYCLE_EVENT, { action: "ralph-recovery" });
       }
       logger.debug("ralph: activation handled", { component: RALPH_LOG_COMPONENT, trigger: input.trigger, charterId: status.charterId, result });
     } catch (error) {
@@ -614,14 +606,18 @@ export interface RegisterCharterWidgetOptions {
 }
 
 /**
- * Publish the one-line charter widget for the session binding. It refreshes on
- * session start, agent tool results and turn ends, every lifecycle change
- * (including slash commands and the Ralph guard pause), and once per second only
- * while a Ralph warning countdown is pending; nothing it shows changes with time otherwise.
+ * Publish the one-line charter widget for the session binding.
+ *
+ * The binding is read from disk only on events that can change it: session
+ * start, a lifecycle change (tool, slash command, Ralph guard pause or
+ * recovery) and a Ralph warning. The result is cached as a tiny view. The
+ * countdown ticks and the warning clear render from that cache with no
+ * filesystem access, and ordinary tool results and turn boundaries do nothing.
  */
 export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharterWidgetOptions = {}): void {
   let client: UtilsClient | undefined;
   let lastCtx: ExtensionContext | undefined;
+  let bound: Pick<CharterStatusResult, "charterId" | "status" | "ralph"> | undefined;
   let warningDeadlineAt: number | undefined;
   let warningRefreshTimer: ReturnType<typeof setInterval> | undefined;
   let unsubscribe: Array<() => void> = [];
@@ -647,15 +643,18 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     publishedKey = NO_WIDGET;
   };
 
-  const refresh = async (ctx: ExtensionContext): Promise<void> => {
+  /** Render the cached binding and the remaining countdown; performs no filesystem access. */
+  const publish = (ctx: ExtensionContext): void => {
     if (!ctx.hasUI) return;
-    const status = await getBoundCharterStatus(ctx.cwd, ctx.sessionManager.getSessionId?.());
-    const remainingMs = warningDeadlineAt === undefined ? 0 : Math.max(0, warningDeadlineAt - now());
-    if (warningDeadlineAt !== undefined && remainingMs === 0) {
-      warningDeadlineAt = undefined;
-      stopWarningRefresh();
+    let remainingMs = 0;
+    if (warningDeadlineAt !== undefined) {
+      remainingMs = bound?.status === "active" ? Math.max(0, warningDeadlineAt - now()) : 0;
+      if (remainingMs === 0) {
+        warningDeadlineAt = undefined;
+        stopWarningRefresh();
+      }
     }
-    const view = buildCharterWidgetView(status, remainingMs);
+    const view = buildCharterWidgetView(bound, remainingMs);
     if (!view) {
       clear(ctx);
       return;
@@ -670,9 +669,9 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     publishedKey = key;
   };
 
-  const safeRefresh = async (ctx: ExtensionContext): Promise<void> => {
+  const guarded = async (ctx: ExtensionContext, action: () => void | Promise<void>): Promise<void> => {
     try {
-      await refresh(ctx);
+      await action();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("stale after session replacement")) lastCtx = undefined;
@@ -680,8 +679,22 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     }
   };
 
-  const refreshLast = (): void => {
-    if (lastCtx) void safeRefresh(lastCtx);
+  /** Re-read the session binding from state.json, then publish. */
+  const reload = (ctx: ExtensionContext): Promise<void> => guarded(ctx, async () => {
+    if (!ctx.hasUI) return;
+    const state = await findBoundCharterState(ctx.cwd, ctx.sessionManager.getSessionId?.());
+    // A shutdown or newer session may have replaced this context while reading.
+    if (lastCtx !== ctx) return;
+    bound = state && { charterId: state.charterId, status: state.status, ralph: state.ralph };
+    publish(ctx);
+  });
+
+  const reloadLast = (): void => {
+    if (lastCtx) void reload(lastCtx);
+  };
+
+  const publishLast = (): void => {
+    if (lastCtx) void guarded(lastCtx, () => publish(lastCtx!));
   };
 
   const matchesLastSession = (sessionId: string | undefined): boolean => {
@@ -698,43 +711,38 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   const subscribe = (): void => {
     if (unsubscribe.length > 0) return;
     unsubscribe = [
-      pi.events.on(LIFECYCLE_EVENT, refreshLast),
+      pi.events.on(LIFECYCLE_EVENT, reloadLast),
       pi.events.on(RALPH_WIDGET_WARNING_EVENT, (raw: unknown) => {
         const payload = raw as { sessionId?: string; deadlineAt?: number };
         if (!matchesLastSession(payload.sessionId)) return;
         warningDeadlineAt = payload.deadlineAt;
-        refreshLast();
+        reloadLast();
         stopWarningRefresh();
-        if (warningRefreshMs > 0) warningRefreshTimer = setInterval(refreshLast, warningRefreshMs);
+        if (warningRefreshMs > 0) warningRefreshTimer = setInterval(publishLast, warningRefreshMs);
       }),
       pi.events.on(RALPH_WIDGET_WARNING_CLEAR_EVENT, (raw: unknown) => {
-        if (!matchesLastSession((raw as { sessionId?: string }).sessionId)) return;
+        // Ralph emits this on every streamed token and tool call; only a pending countdown needs work.
+        if (warningDeadlineAt === undefined || !matchesLastSession((raw as { sessionId?: string }).sessionId)) return;
         warningDeadlineAt = undefined;
         stopWarningRefresh();
-        refreshLast();
+        publishLast();
       }),
     ];
   };
 
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx;
+    bound = undefined;
     publishedKey = undefined;
     subscribe();
-    await safeRefresh(ctx);
-  });
-  pi.on("tool_result", async (_event, ctx) => {
-    lastCtx = ctx;
-    await safeRefresh(ctx);
-  });
-  pi.on("turn_end", async (_event, ctx) => {
-    lastCtx = ctx;
-    await safeRefresh(ctx);
+    await reload(ctx);
   });
   pi.on("session_shutdown", () => {
     stopWarningRefresh();
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
     lastCtx = undefined;
+    bound = undefined;
     warningDeadlineAt = undefined;
     publishedKey = undefined;
     client?.dispose();

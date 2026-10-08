@@ -236,27 +236,6 @@ test("concurrent session binding revalidates the one-active invariant", async ()
   }
 }, 20000);
 
-test("snapshot writers cannot overwrite concurrent lifecycle mutations", async () => {
-  const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
-  try {
-    const { createCharter, pauseCharter } = await import("../src/application/service");
-    const { refreshSessionSnapshots } = await import("../src/application/snapshots");
-    const { charterDir, loadCharterState } = await import("../src/infrastructure/store");
-    const created = await createCharter(project, { objective: "Snapshots", sessionId: "shared" });
-    await Promise.all([
-      ...Array.from({ length: 20 }, () => refreshSessionSnapshots(project, "shared")),
-      pauseCharter(project, { charterId: created.charterId }),
-    ]);
-    const dir = charterDir(project, created.charterId);
-    const state = await loadCharterState(dir);
-    expect(state.status).toBe("paused");
-    const events = (await readEvents(dir)).filter((event) => event.type === "charter_file_changed");
-    expect(events).toHaveLength(0);
-  } finally {
-    await rm(project, { recursive: true, force: true });
-  }
-}, 20000);
-
 test("concurrent completion and abandonment commit only one terminal transition", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
@@ -322,9 +301,9 @@ test("mutation and journal locks unlock after exceptions", async () => {
 }, 20000);
 
 test("background entry points leave a missing charter root untouched", async () => {
-  const { refreshSessionSnapshots } = await import("../src/application/snapshots");
+  const { getBoundCharterStatus } = await import("../src/application/service");
   const { readdir } = await import("node:fs/promises");
-  for (const run of [(project: string) => refreshSessionSnapshots(project)]) {
+  for (const run of [(project: string) => getBoundCharterStatus(project, "s1")]) {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
     try {
       await run(project);

@@ -30,7 +30,7 @@ const SEPARATOR = " · ";
 const MIN_NAME_WIDTH = 4;
 
 /** Project the bound charter status, and the remaining Ralph warning time, into a widget view. */
-export function buildCharterWidgetView(status: CharterStatusResult | undefined, ralphRemainingMs = 0): CharterWidgetView | undefined {
+export function buildCharterWidgetView(status: Pick<CharterStatusResult, "charterId" | "status" | "ralph"> | undefined, ralphRemainingMs = 0): CharterWidgetView | undefined {
   if (!status) return undefined;
   const view: CharterWidgetView = { name: charterSlugFromId(status.charterId), status: status.status };
   if (status.ralph?.pausedByGuard) view.guard = "paused";

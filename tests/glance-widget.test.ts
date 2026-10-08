@@ -1,10 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createCharter, completeCharter, abandonCharter, listCharterSummaries, pauseCharter } from "../src/application/service";
-import { RALPH_WIDGET_WARNING_EVENT, registerCharterCommands, registerCharterWidget } from "../src/application/registration";
+import { RALPH_WIDGET_WARNING_CLEAR_EVENT, RALPH_WIDGET_WARNING_EVENT, registerCharterCommands, registerCharterRalphLoop, registerCharterWidget } from "../src/application/registration";
+import * as store from "../src/infrastructure/store";
+
+const LIFECYCLE_EVENT = "pi-charter:lifecycle-changed";
+
+/** Wait for an asynchronous widget update by its visible effect, not a fixed delay. */
+async function until(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) await Bun.sleep(2);
+  expect(condition()).toBe(true);
+}
 
 type SetWidgetCall = {
   key: string;
@@ -26,9 +36,14 @@ function makeFakePi() {
   const handlers = new Map<string, Array<(event: unknown, ctx: FakeCtx) => Promise<void> | void>>();
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
   const commands = new Map<string, { handler(args: string, ctx: FakeCtx): Promise<void> }>();
+  const sent: string[] = [];
   return {
     handlers,
     commands,
+    sendMessage(message: { content: string }) {
+      sent.push(message.content);
+    },
+    sent,
     registerCommand(name: string, command: { handler(args: string, ctx: FakeCtx): Promise<void> }) {
       commands.set(name, command);
     },
@@ -128,8 +143,8 @@ describe("glance widget cleanup", () => {
       await fireEvent(pi, "session_start", ctx);
       expect(typeof calls.at(-1)?.content).toBe("function");
       await close(projectDir, { sessionId: "s1", note: "Demo closed." });
-      await fireEvent(pi, "turn_end", ctx);
-      expect(calls.at(-1)?.content).toBeUndefined();
+      pi.events.emit(LIFECYCLE_EVENT, { action: "complete" });
+      await until(() => calls.at(-1)?.content === undefined);
       expect(JSON.stringify(await listCharterSummaries(projectDir))).toContain(created.charterId);
     }
   });
@@ -148,7 +163,7 @@ describe("glance widget cleanup", () => {
     const { ctx, calls } = makeCtx(projectDir, sessionId);
     await fireEvent(pi, "session_start", ctx);
     ctx.sessionManager.getSessionId = () => "other-session";
-    await fireEvent(pi, "turn_end", ctx);
+    await fireEvent(pi, "session_start", ctx);
 
     expect(calls).toHaveLength(2);
     expect(calls[1]).toEqual({ key: 'pi-extension-utils-fallback:["pi-charter","aboveEditor","charter-detail"]', content: undefined, options: { placement: "aboveEditor" } });
@@ -187,6 +202,18 @@ describe("glance widget cleanup", () => {
       for (const shutdown of shutdowns.splice(0)) await shutdown();
     });
 
+    async function setupWithTicks() {
+      const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-widget-ticks-"));
+      await createCharter(projectDir, { objective: "Refresh fixture", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+      const clock = { now: Date.parse("2026-07-02T11:00:00.000Z") };
+      const pi = makeFakePi();
+      registerCharterWidget(pi as never, { warningRefreshMs: 5, now: () => clock.now });
+      const mounted = makeMountedCtx(projectDir, "s1");
+      await fireEvent(pi, "session_start", mounted.ctx);
+      shutdowns.push(() => fireEvent(pi, "session_shutdown", mounted.ctx));
+      return { projectDir, clock, pi, ...mounted };
+    }
+
     async function setup() {
       const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-widget-refresh-"));
       await createCharter(projectDir, { objective: "Refresh fixture", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
@@ -200,16 +227,23 @@ describe("glance widget cleanup", () => {
       return { projectDir, clock, pi, ...mounted };
     }
 
-    test("lifecycle changes republish; unchanged state and passing time do not", async () => {
+    test("lifecycle changes republish; ordinary tool results, turn ends and passing time do not read or publish", async () => {
       const { projectDir, clock, pi, ctx, state, text } = await setup();
-      clock.now += 3_600_000;
-      await fireEvent(pi, "tool_result", ctx);
-      expect(state.publications).toBe(1);
-
       await pauseCharter(projectDir, { sessionId: "s1", note: "Paused for review." });
-      await fireEvent(pi, "tool_result", ctx);
-      expect(state.publications).toBe(2);
-      expect(text()).toBe("charter refresh-fixture · paused");
+      const reads = [spyOn(store, "loadCharterState"), spyOn(store, "listCharterIds"), spyOn(store, "loadCharterText")];
+      try {
+        clock.now += 3_600_000;
+        for (const event of ["tool_result", "turn_end", "tool_result"]) await fireEvent(pi, event, ctx);
+        await Bun.sleep(20);
+        expect(state.publications).toBe(1);
+        expect(reads.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0]);
+
+        pi.events.emit(LIFECYCLE_EVENT, { action: "pause" });
+        await until(() => state.publications === 2);
+        expect(text()).toBe("charter refresh-fixture · paused");
+      } finally {
+        for (const spy of reads) spy.mockRestore();
+      }
     });
 
     test("slash lifecycle commands update the widget without waiting for a turn, also after a session restart", async () => {
@@ -234,32 +268,84 @@ describe("glance widget cleanup", () => {
       await expectWidget("");
     });
 
-    test("Ralph warning countdown republishes once per displayed second", async () => {
-      const { clock, pi, ctx, state, text } = await setup();
+    test("Ralph countdown ticks render from the cached view without filesystem access and stop when cleared", async () => {
+      const projectDir = await mkdtemp(join(tmpdir(), "pi-charter-widget-countdown-"));
+      await createCharter(projectDir, { objective: "Refresh fixture", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+      const clock = { now: Date.parse("2026-07-02T11:00:00.000Z") };
+      const pi = makeFakePi();
+      registerCharterWidget(pi as never, { warningRefreshMs: 5, now: () => clock.now });
+      const { ctx, state, text } = makeMountedCtx(projectDir, "s1");
+      await fireEvent(pi, "session_start", ctx);
+      shutdowns.push(() => fireEvent(pi, "session_shutdown", ctx));
+
       pi.events.emit(RALPH_WIDGET_WARNING_EVENT, { sessionId: "s1", deadlineAt: clock.now + 5_000 });
-      await Bun.sleep(50); // the warning listener refreshes without awaiting
-      expect(state.publications).toBe(2);
-      expect(text()).toContain("continues in 5s");
+      await until(() => text().includes("continues in 5s"));
 
-      clock.now += 400;
-      await fireEvent(pi, "tool_result", ctx);
-      expect(state.publications).toBe(2);
+      const reads = [spyOn(store, "loadCharterState"), spyOn(store, "listCharterIds"), spyOn(store, "loadCharterText"), spyOn(store, "withCharterLock")];
+      try {
+        clock.now += 1_000;
+        await until(() => text().includes("continues in 4s"));
+        clock.now += 1_000;
+        await until(() => text().includes("continues in 3s"));
+        const beforeClear = state.publications;
 
-      clock.now += 1_000;
-      await fireEvent(pi, "tool_result", ctx);
-      expect(state.publications).toBe(3);
-      expect(text()).toContain("continues in 4s");
+        pi.events.emit(RALPH_WIDGET_WARNING_CLEAR_EVENT, { sessionId: "s1" });
+        await until(() => text() === "charter refresh-fixture · active");
+        const afterClear = state.publications;
+        expect(afterClear).toBe(beforeClear + 1);
+        clock.now += 10_000;
+        await Bun.sleep(40);
+        expect(state.publications).toBe(afterClear);
+        expect(reads.map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0, 0]);
+      } finally {
+        for (const spy of reads) spy.mockRestore();
+      }
     });
 
-    test("removal is not repeated and a new session republishes unchanged state", async () => {
+    test("an expired countdown drops itself and stops ticking", async () => {
+      const { clock, pi, state, text } = await setupWithTicks();
+      pi.events.emit(RALPH_WIDGET_WARNING_EVENT, { sessionId: "s1", deadlineAt: clock.now + 2_000 });
+      await until(() => text().includes("continues in 2s"));
+      clock.now += 2_000;
+      await until(() => text() === "charter refresh-fixture · active");
+      const settled = state.publications;
+      clock.now += 5_000;
+      await Bun.sleep(40);
+      expect(state.publications).toBe(settled);
+    });
+
+    test("Ralph recovery and guard pause reach the widget through the real Ralph loop", async () => {
+      const { projectDir, clock, pi, ctx, text } = await setupWithTicks();
+      const [charterId] = await store.listCharterIds(projectDir);
+      const journaled: unknown[] = [];
+      const poll = setInterval(() => void store.readEvents(store.charterDir(projectDir, charterId!)).then((events) => {
+        journaled.splice(0, journaled.length, ...events.filter((event) => event.type === "ralph_activated"));
+      }), 5);
+      shutdowns.push(async () => clearInterval(poll));
+      registerCharterRalphLoop(pi as never, { debounceMs: 0, warningLeadMs: 0, minIntervalMs: 0, now: () => clock.now });
+      const loop = Object.assign(ctx, { isIdle: () => true, hasPendingMessages: () => false });
+      await fireEvent(pi, "session_start", loop);
+      for (let sent = 1; sent <= 5; sent += 1) {
+        await fireEvent(pi, "agent_end", loop);
+        await until(() => pi.sent.length === sent);
+        await until(() => journaled.length === sent); // the guard write ends the send; the next event would be skipped before it
+        clock.now += 1_000;
+      }
+      await until(() => text() === "charter refresh-fixture · active · Ralph guard warning");
+      await fireEvent(pi, "agent_end", loop);
+      await until(() => text() === "charter refresh-fixture · paused by Ralph guard · /charter resume");
+      expect(pi.sent).toHaveLength(5);
+    });
+
+    test("a new session start republishes unchanged state and removal is not repeated", async () => {
       const { pi, ctx, state, text } = await setup();
       ctx.sessionManager.getSessionId = () => "unbound";
-      await fireEvent(pi, "tool_result", ctx);
-      await fireEvent(pi, "tool_result", ctx);
+      await fireEvent(pi, "session_start", ctx);
+      await fireEvent(pi, "session_start", ctx);
       expect(state).toMatchObject({ publications: 1, removals: 1 });
 
       ctx.sessionManager.getSessionId = () => "s1";
-      await fireEvent(pi, "tool_result", ctx);
+      await fireEvent(pi, "session_start", ctx);
       expect(state.publications).toBe(2);
 
       await fireEvent(pi, "session_shutdown", ctx);

@@ -15,10 +15,10 @@ Defines framework-independent charter language and pure rules: Objective parsing
 
 1. `renderCharterTemplate()` writes the full Objective plus optional References and Scope sections.
 2. `parseCharterFile()` strips HTML comments, extracts the three sections, returns the rest as notes, and reports warnings without blocking work. The Objective runs until a level-1 heading or a `## References`, `## Scope`, `## Notes`, or historical `## Phases` heading, so other Objective subheadings stay intact.
-3. `types.ts` supplies the four lifecycle states, `schemaVersion: "phases" | "file-interface"` (the first is a historical label for writable charters), optional whole-file snapshot hash, optional Ralph guard state, events, and next actions.
+3. `types.ts` supplies the four lifecycle states, `schemaVersion: "phases" | "file-interface"` (the first is a historical label for writable charters), optional Ralph guard state, events, and next actions.
 
 ## Integration points
 
-- `src/application/service.ts`, `snapshots.ts`, and `ralph.ts` consume the parser and state types.
+- `src/application/service.ts` and `ralph.ts` consume the parser and state types.
 - `src/infrastructure/store.ts` creates the template and normalizes persisted state.
 - `src/ui/` consumes lifecycle and guard types for read-only projections.
