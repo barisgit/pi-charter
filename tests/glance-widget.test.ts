@@ -337,6 +337,71 @@ describe("glance widget cleanup", () => {
       expect(pi.sent).toHaveLength(5);
     });
 
+    /**
+     * Hold the next call of a store read after it has computed its real result, so a test can
+     * start a newer lookup before this older one resolves (or fails).
+     */
+    function holdNextRead(name: "loadCharterState" | "listCharterIds") {
+      const original: (...args: never[]) => Promise<unknown> = store[name];
+      let settle!: (failure?: Error) => void;
+      const gate = new Promise<void>((resolve, reject) => { settle = (failure) => (failure ? reject(failure) : resolve()); });
+      const spy = spyOn(store, name).mockImplementationOnce((async (...args: never[]) => {
+        const result = await original(...args);
+        await gate;
+        return result;
+      }) as never);
+      shutdowns.push(async () => spy.mockRestore());
+      return { release: () => settle(), fail: (failure: Error) => settle(failure), started: () => spy.mock.calls.length > 0 };
+    }
+
+    test("an older binding read that resolves after a newer removal cannot bring the widget back", async () => {
+      const { projectDir, pi, state, text } = await setup();
+      const older = holdNextRead("loadCharterState");
+      pi.events.emit(LIFECYCLE_EVENT, { action: "resume" });
+      await until(older.started);
+
+      await completeCharter(projectDir, { sessionId: "s1", note: "Done." });
+      pi.events.emit(LIFECYCLE_EVENT, { action: "complete" });
+      await until(() => state.removals === 1);
+
+      older.release();
+      await Bun.sleep(30);
+      expect(text()).toBe("");
+      expect(state).toMatchObject({ publications: 1, removals: 1 });
+    });
+
+    test("a binding read pending across a session restart is discarded, even for a reused context", async () => {
+      const { pi, ctx, state, text } = await setup();
+      const older = holdNextRead("loadCharterState");
+      pi.events.emit(LIFECYCLE_EVENT, { action: "resume" });
+      await until(older.started);
+
+      await fireEvent(pi, "session_shutdown", ctx);
+      ctx.sessionManager.getSessionId = () => "unbound";
+      await fireEvent(pi, "session_start", ctx);
+      expect(state.removals).toBe(1);
+
+      older.release();
+      await Bun.sleep(30);
+      expect(text()).toBe("");
+      expect(state).toMatchObject({ publications: 1, removals: 1 });
+    });
+
+    test("a superseded read that fails late does not detach the current context", async () => {
+      const { projectDir, pi, ctx, text } = await setup();
+      const older = holdNextRead("listCharterIds");
+      pi.events.emit(LIFECYCLE_EVENT, { action: "resume" });
+      await until(older.started);
+
+      await fireEvent(pi, "session_start", ctx);
+      older.fail(new Error("stale after session replacement"));
+      await Bun.sleep(30);
+
+      await pauseCharter(projectDir, { sessionId: "s1" });
+      pi.events.emit(LIFECYCLE_EVENT, { action: "pause" });
+      await until(() => text() === "charter refresh-fixture · paused");
+    });
+
     test("a new session start republishes unchanged state and removal is not repeated", async () => {
       const { pi, ctx, state, text } = await setup();
       ctx.sessionManager.getSessionId = () => "unbound";

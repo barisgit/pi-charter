@@ -624,6 +624,10 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   // Serialized view of the last successful publication: undefined until the current
   // session publishes, NO_WIDGET after removal. Equal keys skip the widget host.
   let publishedKey: string | undefined;
+  // Bumped by every binding read, session start and shutdown. A read applies its result
+  // only while it is still the latest, so an older read resolving late cannot overwrite
+  // a newer removal or a restarted session, whatever context object it carries.
+  let generation = 0;
   const warningRefreshMs = options.warningRefreshMs ?? 1_000;
   const now = options.now ?? (() => Date.now());
 
@@ -669,10 +673,11 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     publishedKey = key;
   };
 
-  const guarded = async (action: () => void | Promise<void>): Promise<void> => {
+  const guarded = async (action: () => void | Promise<void>, isCurrent: () => boolean = () => true): Promise<void> => {
     try {
       await action();
     } catch (error) {
+      if (!isCurrent()) return;
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("stale after session replacement")) lastCtx = undefined;
       logger.debug("widget: refresh skipped", { component: "charter-widget", error: message });
@@ -680,14 +685,17 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   };
 
   /** Re-read the session binding from state.json, then publish. */
-  const reload = (ctx: ExtensionContext): Promise<void> => guarded(async () => {
-    if (!ctx.hasUI) return;
-    const state = await findBoundCharterState(ctx.cwd, ctx.sessionManager.getSessionId?.());
-    // A shutdown or newer session may have replaced this context while reading.
-    if (lastCtx !== ctx) return;
-    bound = state && { charterId: state.charterId, status: state.status, ralph: state.ralph };
-    publish(ctx);
-  });
+  const reload = (ctx: ExtensionContext): Promise<void> => {
+    const mine = ++generation;
+    const isCurrent = () => generation === mine;
+    return guarded(async () => {
+      if (!ctx.hasUI) return;
+      const state = await findBoundCharterState(ctx.cwd, ctx.sessionManager.getSessionId?.());
+      if (!isCurrent()) return;
+      bound = state && { charterId: state.charterId, status: state.status, ralph: state.ralph };
+      publish(ctx);
+    }, isCurrent);
+  };
 
   const reloadLast = (): void => {
     if (lastCtx) void reload(lastCtx);
@@ -732,6 +740,7 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   };
 
   pi.on("session_start", async (_event, ctx) => {
+    generation += 1;
     lastCtx = ctx;
     bound = undefined;
     publishedKey = undefined;
@@ -739,6 +748,7 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     await reload(ctx);
   });
   pi.on("session_shutdown", () => {
+    generation += 1;
     stopWarningRefresh();
     for (const stop of unsubscribe) stop();
     unsubscribe = [];
