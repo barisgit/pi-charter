@@ -239,7 +239,7 @@ test("concurrent session binding revalidates the one-active invariant", async ()
 test("concurrent completion and abandonment commit only one terminal transition", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
-    const { createCharter, completeCharter } = await import("../src/application/service");
+    const { createCharter } = await import("../src/application/service");
     const { charterDir, loadCharterState, writeTextAtomic } = await import("../src/infrastructure/store");
     const created = await createCharter(project, { objective: "Finish", sessionId: "shared" });
     const dir = charterDir(project, created.charterId);

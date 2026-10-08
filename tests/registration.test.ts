@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
@@ -19,6 +19,12 @@ function fakeEvents() {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wait for an asynchronous effect by its observable condition, bounded so a real failure still fails. */
+async function until(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) await delay(2);
 }
 
 const renderTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
@@ -644,7 +650,7 @@ describe("Ralph loop registration", () => {
     h.emit(SUBAGENT_ASYNC_STARTED_EVENT, { runId: "child-1" });
     h.emit(SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, { runId: "child-1" });
     h.emit(SUBAGENT_ALL_IDLE_EVENT, { ts: Date.now() });
-    await delay(10);
+    await until(() => h.sent.length > 0);
 
     expect(h.sent).toHaveLength(1);
   });
@@ -789,4 +795,3 @@ describe("widget registration", () => {
     expect(visibleWidth(line)).toBeLessThanOrEqual(48);
   });
 });
-

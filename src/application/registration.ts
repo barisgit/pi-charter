@@ -669,7 +669,7 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
     publishedKey = key;
   };
 
-  const guarded = async (ctx: ExtensionContext, action: () => void | Promise<void>): Promise<void> => {
+  const guarded = async (action: () => void | Promise<void>): Promise<void> => {
     try {
       await action();
     } catch (error) {
@@ -680,7 +680,7 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   };
 
   /** Re-read the session binding from state.json, then publish. */
-  const reload = (ctx: ExtensionContext): Promise<void> => guarded(ctx, async () => {
+  const reload = (ctx: ExtensionContext): Promise<void> => guarded(async () => {
     if (!ctx.hasUI) return;
     const state = await findBoundCharterState(ctx.cwd, ctx.sessionManager.getSessionId?.());
     // A shutdown or newer session may have replaced this context while reading.
@@ -694,7 +694,8 @@ export function registerCharterWidget(pi: ExtensionAPI, options: RegisterCharter
   };
 
   const publishLast = (): void => {
-    if (lastCtx) void guarded(lastCtx, () => publish(lastCtx!));
+    const ctx = lastCtx;
+    if (ctx) void guarded(() => publish(ctx));
   };
 
   const matchesLastSession = (sessionId: string | undefined): boolean => {

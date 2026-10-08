@@ -51,8 +51,9 @@ export function reportPath(dir: string): string {
 }
 
 // Application mutations pass chartersRoot(projectDir), so lifecycle checks and
-// state writes share one project-wide lock. Reads never take it. Not reentrant: awaiting another
-// mutation (including from a hook) deadlocks the local queue before file timeout.
+// state writes share one project-wide lock; reads never take it. Not reentrant:
+// awaiting another mutation (including from a hook) deadlocks the local queue
+// before file timeout.
 export async function withCharterLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const key = resolve(dir);
   const prev = charterQueues.get(key) ?? Promise.resolve();
