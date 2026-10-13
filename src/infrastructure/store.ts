@@ -4,9 +4,9 @@ import { hostname } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout } from "node:timers/promises";
 import { dirname, join, resolve } from "node:path";
-import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file";
-import { renderCharterTemplate } from "../domain/template";
-import type { CharterEvent, CharterState } from "../domain/types";
+import { parseCharterFile, type ParsedCharterFile } from "../domain/charter-file.ts";
+import { renderCharterTemplate } from "../domain/template.ts";
+import type { CharterEvent, CharterState } from "../domain/types.ts";
 
 export interface CreateCharterWorkspaceInput {
   charterId: string;

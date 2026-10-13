@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { abandonCharter, createCharter } from "../src/application/service";
-import { buildPickerSnapshot, listAllCharters } from "../src/ui/picker-snapshot";
-import { charterDir, charterFilePath, reportPath } from "../src/infrastructure/store";
+import { abandonCharter, createCharter } from "../src/application/service.ts";
+import { buildPickerSnapshot, listAllCharters } from "../src/ui/picker-snapshot.ts";
+import { charterDir, charterFilePath, reportPath } from "../src/infrastructure/store.ts";
 
 const AUTHORED = `# Objective\n\nShip the picker.\n\n## References\n\ndocs/spec.md\n\n## Scope\n\nPicker only.\n\n## Phases\n\n1. Explore — done\n   Mapped the UI.\n\n2. Build — current\n   Implement dashboard. [capture](work/dashboard.png)\n`;
 

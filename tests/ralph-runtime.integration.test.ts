@@ -18,8 +18,8 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { registerCharterRalphLoop } from "../src/application/registration";
-import { createCharter, pauseCharter } from "../src/application/service";
+import { registerCharterRalphLoop } from "../src/application/registration.ts";
+import { createCharter, pauseCharter } from "../src/application/service.ts";
 
 const MODEL: Model<string> = {
   id: "ralph-runtime-test",

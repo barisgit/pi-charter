@@ -3,10 +3,10 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import charterExtension from "../src/index";
-import { createCharter, getBoundCharterStatus, getCharterStatus, pauseCharter } from "../src/application/service";
-import * as store from "../src/infrastructure/store";
-import { charterDir, chartersRoot, readEvents, withCharterLock } from "../src/infrastructure/store";
+import charterExtension from "../src/index.ts";
+import { createCharter, getBoundCharterStatus, getCharterStatus, pauseCharter } from "../src/application/service.ts";
+import * as store from "../src/infrastructure/store.ts";
+import { charterDir, chartersRoot, readEvents, withCharterLock } from "../src/infrastructure/store.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 

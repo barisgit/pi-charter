@@ -3,10 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { registerCharterCommands } from "../src/application/registration";
-import type { CharterStatus } from "../src/domain/types";
-import { createCharterPickerOverlay } from "../src/ui/charter-picker";
-import type { CharterListRow, PickerSnapshot } from "../src/ui/picker-snapshot";
+import { registerCharterCommands } from "../src/application/registration.ts";
+import type { CharterStatus } from "../src/domain/types.ts";
+import { createCharterPickerOverlay } from "../src/ui/charter-picker.ts";
+import type { CharterListRow, PickerSnapshot } from "../src/ui/picker-snapshot.ts";
 
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 const fakeTui = (rows: number) => ({ terminal: { rows }, requestRender() {} });

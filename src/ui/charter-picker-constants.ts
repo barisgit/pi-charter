@@ -1,4 +1,4 @@
-import type { CharterStatus } from "../domain/types";
+import type { CharterStatus } from "../domain/types.ts";
 
 export const TERMINAL_STATUSES: ReadonlySet<CharterStatus> = new Set<CharterStatus>([
   "completed",

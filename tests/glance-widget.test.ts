@@ -3,9 +3,9 @@ import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createCharter, completeCharter, abandonCharter, listCharterSummaries, pauseCharter } from "../src/application/service";
-import { RALPH_WIDGET_WARNING_CLEAR_EVENT, RALPH_WIDGET_WARNING_EVENT, registerCharterCommands, registerCharterRalphLoop, registerCharterWidget } from "../src/application/registration";
-import * as store from "../src/infrastructure/store";
+import { createCharter, completeCharter, abandonCharter, listCharterSummaries, pauseCharter } from "../src/application/service.ts";
+import { RALPH_WIDGET_WARNING_CLEAR_EVENT, RALPH_WIDGET_WARNING_EVENT, registerCharterCommands, registerCharterRalphLoop, registerCharterWidget } from "../src/application/registration.ts";
+import * as store from "../src/infrastructure/store.ts";
 
 const LIFECYCLE_EVENT = "pi-charter:lifecycle-changed";
 

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { generateCharterId, resolveCharterId, slugFromObjective } from "../src/domain/ids";
+import { generateCharterId, resolveCharterId, slugFromObjective } from "../src/domain/ids.ts";
 
 async function tempRoot(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pi-charter-ids-"));

@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 
-import { listAllCharters, buildPickerSnapshot, type PickerSnapshot } from "../src/ui/picker-snapshot";
-import { CharterPickerComponent } from "../src/ui/charter-picker";
-import { logger } from "../src/infrastructure/logger";
+import { listAllCharters, buildPickerSnapshot, type PickerSnapshot } from "../src/ui/picker-snapshot.ts";
+import { CharterPickerComponent } from "../src/ui/charter-picker.ts";
+import { logger } from "../src/infrastructure/logger.ts";
 
 const cwd = process.cwd();
 const charters = await listAllCharters(cwd);

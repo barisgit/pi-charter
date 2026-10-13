@@ -2,7 +2,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, writeCharterState, writeTextAtomic } from "../src/infrastructure/store";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharters, loadCharterState, loadParsedCharter, pathExists, readEvents, writeCharterState, writeTextAtomic } from "../src/infrastructure/store.ts";
 
 async function tempProject(): Promise<string> {
   return mkdtemp(join(tmpdir(), "pi-charter-store-"));

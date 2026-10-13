@@ -1,9 +1,9 @@
-import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids";
-import { parseCharterFile } from "../domain/charter-file";
-import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharterIds, listCharters, loadCharterState, loadCharterText, pathExists, reportPath, writeCharterState, withCharterLock } from "../infrastructure/store";
-import { CharterToolError } from "./errors";
-import { dispatchHook } from "./hooks";
-import type { CharterState, CharterStatus, NextAction } from "../domain/types";
+import { generateCharterId, resolveCharterId as resolveIdFromRoot } from "../domain/ids.ts";
+import { parseCharterFile } from "../domain/charter-file.ts";
+import { appendEvent, charterDir, chartersRoot, createCharterWorkspace, listCharterIds, listCharters, loadCharterState, loadCharterText, pathExists, reportPath, writeCharterState, withCharterLock } from "../infrastructure/store.ts";
+import { CharterToolError } from "./errors.ts";
+import { dispatchHook } from "./hooks.ts";
+import type { CharterState, CharterStatus, NextAction } from "../domain/types.ts";
 
 export type { NextAction };
 

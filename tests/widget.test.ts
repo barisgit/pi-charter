@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import type { CharterStatusResult } from "../src/application/service";
-import { buildCharterWidgetView, renderCharterWidget } from "../src/ui/widget";
+import type { CharterStatusResult } from "../src/application/service.ts";
+import { buildCharterWidgetView, renderCharterWidget } from "../src/ui/widget.ts";
 
 const STATUS: CharterStatusResult = {
   charterId: "20260702-120000-ship-runtime",

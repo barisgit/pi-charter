@@ -11,7 +11,7 @@ import {
   type PaneOverlayOptions,
   type PaneOverlayPrimaryRow,
 } from "pi-extension-utils/pi";
-import type { CharterStatus } from "../domain/types";
+import type { CharterStatus } from "../domain/types.ts";
 import {
   BANNED_PRINTABLE,
   DEFAULT_LEFT_FRACTION,
@@ -21,8 +21,8 @@ import {
   MIN_RIGHT_PANE,
   SPLIT_STEP_COLS,
   TERMINAL_STATUSES,
-} from "./charter-picker-constants";
-import type { CharterListRow, PickerSnapshot } from "./picker-snapshot";
+} from "./charter-picker-constants.ts";
+import type { CharterListRow, PickerSnapshot } from "./picker-snapshot.ts";
 
 interface ThemeLike {
   fg(color: string, text: string): string;

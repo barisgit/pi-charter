@@ -4,9 +4,9 @@
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import type { CharterStatusResult } from "../application/service";
-import { charterSlugFromId } from "../domain/ids";
-import type { CharterStatus } from "../domain/types";
+import type { CharterStatusResult } from "../application/service.ts";
+import { charterSlugFromId } from "../domain/ids.ts";
+import type { CharterStatus } from "../domain/types.ts";
 
 interface ThemeLike {
   fg(color: string, text: string): string;

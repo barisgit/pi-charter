@@ -4,16 +4,16 @@ import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { connect, type UtilsClient } from "pi-extension-utils/pi";
 import { Type } from "typebox";
-import { abandonCharter, completeCharter, createCharter, findBoundCharterState, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
-import { CharterToolError } from "./errors";
-import { attemptRalphActivation, renderRalphPrompt, RALPH_GUARD_PAUSE_NOTE } from "./ralph";
-import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge";
-import { logger } from "../infrastructure/logger";
-import type { NextAction } from "../domain/types";
-import { buildCharterWidgetView, renderCharterWidget } from "../ui/widget";
-import { createCharterPickerOverlay } from "../ui/charter-picker";
-import { buildPickerSnapshot, listAllCharters } from "../ui/picker-snapshot";
-import { charterDir } from "../infrastructure/store";
+import { abandonCharter, completeCharter, createCharter, findBoundCharterState, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service.ts";
+import { CharterToolError } from "./errors.ts";
+import { attemptRalphActivation, renderRalphPrompt, RALPH_GUARD_PAUSE_NOTE } from "./ralph.ts";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge.ts";
+import { logger } from "../infrastructure/logger.ts";
+import type { NextAction } from "../domain/types.ts";
+import { buildCharterWidgetView, renderCharterWidget } from "../ui/widget.ts";
+import { createCharterPickerOverlay } from "../ui/charter-picker.ts";
+import { buildPickerSnapshot, listAllCharters } from "../ui/picker-snapshot.ts";
+import { charterDir } from "../infrastructure/store.ts";
 
 const CharterParams = Type.Object({
   action: StringEnum(["create", "list", "status", "pause", "resume", "complete", "abandon"] as const),

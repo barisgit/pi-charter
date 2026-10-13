@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { createCharter, getCharterStatus, pauseCharter } from "../src/application/service";
-import { RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterRalphLoop, registerCharterRalphMessageRenderer, registerCharterTools, registerCharterWidget } from "../src/application/registration";
-import type { CharterStatusResult } from "../src/application/service";
-import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store";
-import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge";
+import { createCharter, getCharterStatus, pauseCharter } from "../src/application/service.ts";
+import { RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterRalphLoop, registerCharterRalphMessageRenderer, registerCharterTools, registerCharterWidget } from "../src/application/registration.ts";
+import type { CharterStatusResult } from "../src/application/service.ts";
+import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store.ts";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge.ts";
 
 function fakeEvents() {
   return {

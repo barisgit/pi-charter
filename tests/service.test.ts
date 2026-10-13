@@ -2,11 +2,11 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
-import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, pauseCharter, resumeCharter } from "../src/application/service";
-import { subscribeHook } from "../src/application/hooks";
-import { renderRalphPrompt } from "../src/application/ralph";
-import { loadCharterState, writeCharterState } from "../src/infrastructure/store";
-import { charterDir, pathExists, reportPath, writeTextAtomic } from "../src/infrastructure/store";
+import { abandonCharter, completeCharter, createCharter, getBoundCharterStatus, getCharterStatus, pauseCharter, resumeCharter } from "../src/application/service.ts";
+import { subscribeHook } from "../src/application/hooks.ts";
+import { renderRalphPrompt } from "../src/application/ralph.ts";
+import { loadCharterState, writeCharterState } from "../src/infrastructure/store.ts";
+import { charterDir, pathExists, reportPath, writeTextAtomic } from "../src/infrastructure/store.ts";
 
 async function tempProject(): Promise<string> { return mkdtemp(join(tmpdir(), "pi-charter-service-")); }
 

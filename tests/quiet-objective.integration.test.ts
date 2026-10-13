@@ -6,9 +6,9 @@ import { createAgentSessionFromServices, createAgentSessionServices, ModelRuntim
 import { createAssistantMessageEventStream, type AssistantMessage, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import utilsExtension from "../node_modules/pi-extension-utils/dist/index.js";
-import charterExtension from "../src/index";
-import * as registration from "../src/application/registration";
-import { createCharter } from "../src/application/service";
+import charterExtension from "../src/index.ts";
+import * as registration from "../src/application/registration.ts";
+import { createCharter } from "../src/application/service.ts";
 
 const model: Model<string> = {
   id: "quiet-test", name: "Quiet test", api: "quiet-test", provider: "quiet-test",

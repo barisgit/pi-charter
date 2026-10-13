@@ -3,7 +3,7 @@ import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test } from "bun:test";
-import { listCharters, readEvents, withCharterLock } from "../src/infrastructure/store";
+import { listCharters, readEvents, withCharterLock } from "../src/infrastructure/store.ts";
 
 const store = resolve(import.meta.dir, "../src/infrastructure/store.ts");
 const service = resolve(import.meta.dir, "../src/application/service.ts");
@@ -177,8 +177,8 @@ test("independent same-session creation allows one active charter", async () => 
 test("independent mutations leave a permitted lifecycle history", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
-    const { createCharter } = await import("../src/application/service");
-    const { charterDir, loadCharterState } = await import("../src/infrastructure/store");
+    const { createCharter } = await import("../src/application/service.ts");
+    const { charterDir, loadCharterState } = await import("../src/infrastructure/store.ts");
     const created = await createCharter(project, { objective: "Transitions", sessionId: "shared" });
     const results = await runWriters(project, Array.from({ length: 20 }, (_, writer) => `
       import { pauseCharter, abandonCharter } from ${JSON.stringify(service)};
@@ -209,7 +209,7 @@ test("independent mutations leave a permitted lifecycle history", async () => {
 test("concurrent session binding revalidates the one-active invariant", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
-    const { createCharter, pauseCharter } = await import("../src/application/service");
+    const { createCharter, pauseCharter } = await import("../src/application/service.ts");
     const paused = await createCharter(project, { objective: "Resume", sessionId: "old" });
     await pauseCharter(project, { charterId: paused.charterId });
     const active = await createCharter(project, { objective: "Bind", sessionId: "other" });
@@ -239,8 +239,8 @@ test("concurrent session binding revalidates the one-active invariant", async ()
 test("concurrent completion and abandonment commit only one terminal transition", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
-    const { createCharter } = await import("../src/application/service");
-    const { charterDir, loadCharterState, writeTextAtomic } = await import("../src/infrastructure/store");
+    const { createCharter } = await import("../src/application/service.ts");
+    const { charterDir, loadCharterState, writeTextAtomic } = await import("../src/infrastructure/store.ts");
     const created = await createCharter(project, { objective: "Finish", sessionId: "shared" });
     const dir = charterDir(project, created.charterId);
     await writeTextAtomic(join(dir, "charter.md"), "## Objective\nFinish\n\n### C1. Works\nStatus: pass — checked\n");
@@ -301,7 +301,7 @@ test("mutation and journal locks unlock after exceptions", async () => {
 }, 20000);
 
 test("background entry points leave a missing charter root untouched", async () => {
-  const { getBoundCharterStatus } = await import("../src/application/service");
+  const { getBoundCharterStatus } = await import("../src/application/service.ts");
   const { readdir } = await import("node:fs/promises");
   for (const run of [(project: string) => getBoundCharterStatus(project, "s1")]) {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
@@ -407,7 +407,7 @@ test("unknown and foreign lock ownership fails promptly without deletion", async
 test("internal mutation lock is excluded from charter ids", async () => {
   const project = await mkdtemp(join(tmpdir(), "pi-charter-concurrency-"));
   try {
-    const { withCharterLock, chartersRoot, listCharterIds } = await import("../src/infrastructure/store");
+    const { withCharterLock, chartersRoot, listCharterIds } = await import("../src/infrastructure/store.ts");
     await withCharterLock(chartersRoot(project), async () => {
       expect(await listCharterIds(project)).toEqual([]);
     });

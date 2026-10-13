@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createCharterWorkspace, loadCharterState, readEvents, charterDir } from "../src/infrastructure/store";
-import { attemptRalphActivation } from "../src/application/ralph";
+import { createCharterWorkspace, loadCharterState, readEvents, charterDir } from "../src/infrastructure/store.ts";
+import { attemptRalphActivation } from "../src/application/ralph.ts";
 
 const projects: string[] = [];
 afterEach(async () => { await Promise.all(projects.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });

@@ -21,12 +21,12 @@
  * Exits 0 on success, non-zero on error.
  */
 
-import { listActiveCharters } from "../src/application/service";
-import { loadCharterSnapshot } from "../src/ui/widget-service";
-import { buildMultiCharterViewModel } from "../src/ui/widget-state";
-import { renderMultiCharterWidget } from "../src/ui/multi-charter-widget";
-import { renderCharterWidget } from "../src/ui/widget";
-import { logger } from "../src/infrastructure/logger";
+import { listActiveCharters } from "../src/application/service.ts";
+import { loadCharterSnapshot } from "../src/ui/widget-service.ts";
+import { buildMultiCharterViewModel } from "../src/ui/widget-state.ts";
+import { renderMultiCharterWidget } from "../src/ui/multi-charter-widget.ts";
+import { renderCharterWidget } from "../src/ui/widget.ts";
+import { logger } from "../src/infrastructure/logger.ts";
 
 const DEFAULT_DOGFOOD_CHARTER_ID = "dad4fe3a-6cc8-4911-a747-4f39f12c51fb";
 const RENDER_WIDTH = 80;

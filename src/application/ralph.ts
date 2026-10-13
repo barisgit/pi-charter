@@ -1,6 +1,6 @@
-import type { CharterStatusResult } from "./service";
-import type { RalphGuardState } from "../domain/types";
-import { appendEvent, charterDir, chartersRoot, loadCharterState, withCharterLock, writeCharterState } from "../infrastructure/store";
+import type { CharterStatusResult } from "./service.ts";
+import type { RalphGuardState } from "../domain/types.ts";
+import { appendEvent, charterDir, chartersRoot, loadCharterState, withCharterLock, writeCharterState } from "../infrastructure/store.ts";
 
 const WINDOW_MS = 15 * 60_000;
 const RECOVERY_WINDOW_MS = 5 * 60_000;

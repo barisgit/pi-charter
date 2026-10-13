@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { parseCharterFile } from "../src/domain/charter-file";
-import { renderCharterTemplate } from "../src/domain/template";
+import { parseCharterFile } from "../src/domain/charter-file.ts";
+import { renderCharterTemplate } from "../src/domain/template.ts";
 
 describe("charter.md Objective parser", () => {
   test("Objective subheadings preserve constraints until a recognized charter section", () => {

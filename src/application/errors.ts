@@ -1,4 +1,4 @@
-import type { NextAction } from "../domain/types";
+import type { NextAction } from "../domain/types.ts";
 
 export class CharterToolError extends Error {
   readonly nextActions: NextAction[];

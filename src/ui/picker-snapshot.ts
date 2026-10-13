@@ -1,8 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
-import type { CharterStatus, RalphGuardState } from "../domain/types";
-import { getCharterStatus } from "../application/service";
-import { charterDir, listCharters, loadCharterState, reportPath } from "../infrastructure/store";
+import type { CharterStatus, RalphGuardState } from "../domain/types.ts";
+import { getCharterStatus } from "../application/service.ts";
+import { charterDir, listCharters, loadCharterState, reportPath } from "../infrastructure/store.ts";
 
 export interface CharterListRow {
   charterId: string;

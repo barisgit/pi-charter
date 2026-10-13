@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { nextRalphActivation, renderRalphPrompt } from "../src/application/ralph";
+import { nextRalphActivation, renderRalphPrompt } from "../src/application/ralph.ts";
 
 const minute = 60_000;
 
