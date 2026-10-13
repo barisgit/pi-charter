@@ -19,7 +19,7 @@ It does not plan tasks, track progress, run verification, enforce evidence, gene
 
 Writable charters keep the storage label `schemaVersion: "phases"`; the name is historical and implies no phase feature. Status, the dashboard, and each Ralph continuation read and parse the current `charter.md`; there is no cache, hash, or edit journal. Ordinary tool results and turn ends perform no Charter I/O.
 
-When the root worker and async subagents are idle, Ralph may send a continuation. Registration owns the rolling activation guard shared by normal and recovery sends. It never starts a worker and never kills unrelated jobs. Nothing else sends model-facing prompts while work is underway.
+When the root worker and async subagents are idle, Ralph may send a continuation. The release signal is `subagent:all-idle` when pi-subagents is loaded, or `agent_settled` otherwise; `agent_end`, turn boundaries and child completion delivery are not idle boundaries. Blocking dialogs and overlays cancel pending warnings and sends, then start a fresh quiet window when the last prompt closes. Starting async work cancels any visible countdown. Initially idle sessions still allow slash-command create/resume to arm Ralph. Registration owns the rolling activation guard shared by normal and recovery sends. It never starts a worker and never kills unrelated jobs. Nothing else sends model-facing prompts while work is underway.
 
 On completion, the worker supplies a concise note; the service invokes `charter:before_complete` and completes if the hook allows. It neither reads nor writes `REPORT.md`.
 
