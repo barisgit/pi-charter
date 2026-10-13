@@ -345,10 +345,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     stopLifecycle = pi.events.on(LIFECYCLE_EVENT, (raw: unknown) => {
       const action = (raw as { action?: string }).action;
       if (action === "pause" || action === "complete" || action === "abandon") {
-        if (timer) clearTimeout(timer);
-        if (warningTimer) clearTimeout(warningTimer);
-        timer = undefined;
-        warningTimer = undefined;
+        cancelRalphTimers();
         if (lastCtx) clearWidgetWarning(lastCtx);
       } else if (action === "resume" || action === "create") {
         scheduleRalph(`charter-${action}`);
@@ -359,6 +356,8 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       const id = payload?.runId ?? payload?.id;
       if (id) runningSubagents.add(id);
       settled = false;
+      cancelRalphTimers();
+      if (lastCtx) clearWidgetWarning(lastCtx);
       logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
     });
     stopAsyncRunComplete = pi.events.on(SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, (raw: unknown) => {
@@ -407,10 +406,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
   pi.on("agent_start", (event, ctx) => {
     settled = false;
-    if (timer) clearTimeout(timer);
-    if (warningTimer) clearTimeout(warningTimer);
-    timer = undefined;
-    warningTimer = undefined;
+    cancelRalphTimers();
     rememberCtx(event, ctx);
     clearWidgetWarning(ctx);
     observeInterruption(ctx);
@@ -446,10 +442,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   pi.on("ui_prompt_start", (event, ctx) => {
     rememberCtx(event, ctx);
     openPrompts++;
-    if (timer) clearTimeout(timer);
-    if (warningTimer) clearTimeout(warningTimer);
-    timer = undefined;
-    warningTimer = undefined;
+    cancelRalphTimers();
     clearWidgetWarning(ctx);
   });
   pi.on("ui_prompt_end", (event, ctx) => {
@@ -467,10 +460,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
   pi.on("session_shutdown", () => {
     disposed = true;
-    if (timer) clearTimeout(timer);
-    if (warningTimer) clearTimeout(warningTimer);
-    timer = undefined;
-    warningTimer = undefined;
+    cancelRalphTimers();
     lastCtx = undefined;
     runningSubagents.clear();
     stopAsyncStarted?.();
@@ -486,6 +476,13 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     stopAsyncComplete = undefined;
     stopAllIdle = undefined;
   });
+
+  function cancelRalphTimers(): void {
+    if (timer) clearTimeout(timer);
+    if (warningTimer) clearTimeout(warningTimer);
+    timer = undefined;
+    warningTimer = undefined;
+  }
 
   function scheduleRalph(trigger: string): void {
     if (disposed || !settled || openPrompts > 0) return;
@@ -596,10 +593,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         },
       });
       if (result === "pause") {
-        if (timer) clearTimeout(timer);
-        if (warningTimer) clearTimeout(warningTimer);
-        timer = undefined;
-        warningTimer = undefined;
+        cancelRalphTimers();
         clearWidgetWarning(ctx);
         ctx.ui.notify(RALPH_GUARD_PAUSE_NOTE, "warning");
         pi.events.emit(LIFECYCLE_EVENT, { action: "pause" });

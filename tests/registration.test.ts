@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createCharter, getCharterStatus, pauseCharter } from "../src/application/service.ts";
-import { RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterRalphLoop, registerCharterRalphMessageRenderer, registerCharterTools, registerCharterWidget } from "../src/application/registration.ts";
+import { RALPH_WIDGET_WARNING_CLEAR_EVENT, RALPH_WIDGET_WARNING_EVENT, formatCharterStatusText, registerCharterCommands, registerCharterRalphLoop, registerCharterRalphMessageRenderer, registerCharterTools, registerCharterWidget } from "../src/application/registration.ts";
 import type { CharterStatusResult } from "../src/application/service.ts";
 import { charterDir, loadCharterState, writeCharterState } from "../src/infrastructure/store.ts";
 import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../src/infrastructure/subagent-bridge.ts";
@@ -549,6 +549,23 @@ describe("Ralph loop registration", () => {
     h.emit(SUBAGENT_ALL_IDLE_EVENT);
     await until(() => h.sent.length === 1);
     expect(h.sent).toHaveLength(1);
+    h.fire("session_shutdown");
+  });
+
+  test("starting an async child cancels an already visible Ralph countdown", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-warning-child-"));
+    await createCharter(project, { objective: "Wait for the child", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    let clears = 0;
+    h.pi.events.on(RALPH_WIDGET_WARNING_CLEAR_EVENT, () => clears++);
+    registerCharterRalphLoop(h.pi, { debounceMs: 80, warningLeadMs: 60, minIntervalMs: 0 });
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT);
+    await until(() => h.widgetWarnings.length === 1);
+    h.emit(SUBAGENT_ASYNC_STARTED_EVENT, { runId: "child" });
+    expect(clears).toBe(1);
+    await delay(90);
+    expect(h.sent).toHaveLength(0);
     h.fire("session_shutdown");
   });
 
