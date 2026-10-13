@@ -540,6 +540,27 @@ describe("Ralph loop registration", () => {
     h.fire("session_shutdown");
   });
 
+  test("nested UI prompts cancel warnings and sends until the last prompt closes", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-ui-prompt-"));
+    await createCharter(project, { objective: "Respect the dialog", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 30, warningLeadMs: 20, minIntervalMs: 0 });
+    h.fire("session_start");
+    h.emit(SUBAGENT_ALL_IDLE_EVENT);
+    h.fire("ui_prompt_start");
+    h.fire("ui_prompt_start");
+    await delay(50);
+    expect(h.sent).toHaveLength(0);
+    expect(h.widgetWarnings).toHaveLength(0);
+    h.fire("ui_prompt_end");
+    await delay(50);
+    expect(h.sent).toHaveLength(0);
+    h.fire("ui_prompt_end");
+    await until(() => h.sent.length === 1);
+    expect(h.sent).toHaveLength(1);
+    h.fire("session_shutdown");
+  });
+
   test("an interrupted turn gets a longer quiet window", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-interrupted-"));
     await createCharter(project, { objective: "Respect interruption", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });

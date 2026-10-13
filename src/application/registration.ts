@@ -308,6 +308,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   let sending = false;
   let disposed = false;
   let settled = false;
+  let openPrompts = 0;
   let subagentsLoaded = false;
   let stopSubagentApi: (() => void) | undefined;
   const observedSignals = new WeakSet<AbortSignal>();
@@ -390,6 +391,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     interruptedUntil = 0;
     sending = false;
     settled = false;
+    openPrompts = 0;
     subagentsLoaded = false;
     rememberCtx(event, ctx);
     subscribeToSubagentEvents();
@@ -434,6 +436,21 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     if (interrupted) interruptedUntil = now() + interruptDelayMs;
     // agent_end precedes queued-message delivery and is not an idle boundary.
   });
+  pi.on("ui_prompt_start", (event, ctx) => {
+    rememberCtx(event, ctx);
+    openPrompts++;
+    if (timer) clearTimeout(timer);
+    if (warningTimer) clearTimeout(warningTimer);
+    timer = undefined;
+    warningTimer = undefined;
+    clearWidgetWarning(ctx);
+  });
+  pi.on("ui_prompt_end", (event, ctx) => {
+    rememberCtx(event, ctx);
+    openPrompts = Math.max(0, openPrompts - 1);
+    // Give the user a fresh quiet window after the last dialog/overlay closes.
+    if (openPrompts === 0) scheduleRalph("ui-prompt-end");
+  });
   pi.on("agent_settled", (event, ctx) => {
     rememberCtx(event, ctx);
     if (!subagentsLoaded) {
@@ -464,7 +481,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
 
   function scheduleRalph(trigger: string): void {
-    if (disposed || !settled) return;
+    if (disposed || !settled || openPrompts > 0) return;
     if (timer) clearTimeout(timer);
     if (warningTimer) clearTimeout(warningTimer);
     const delayMs = Math.max(debounceMs, interruptedUntil - now());
@@ -488,7 +505,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   }
 
   async function warnBeforeRalph(remainingMs: number): Promise<void> {
-    if (disposed || !settled) return;
+    if (disposed || !settled || openPrompts > 0) return;
     const ctx = lastCtx;
     if (!ctx || runningSubagents.size > 0) return;
     try {
@@ -496,7 +513,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return;
       const sessionId = ctx.sessionManager.getSessionId?.();
       const status = await getBoundCharterStatus(ctx.cwd, sessionId).catch(() => undefined);
-      if (!status || status.status !== "active") return;
+      if (disposed || !settled || openPrompts > 0 || !status || status.status !== "active") return;
       pi.events.emit(RALPH_WIDGET_WARNING_EVENT, {
         sessionId,
         charterId: status.charterId,
@@ -510,7 +527,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   }
 
   async function maybeSendRalph(input: { trigger?: string; fromDebounce?: boolean } = {}): Promise<void> {
-    if (disposed || !settled) return;
+    if (disposed || !settled || openPrompts > 0) return;
     if (sending) {
       logger.debug("ralph: skipped while send in progress", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
       return;
@@ -559,7 +576,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         charterId: status.charterId,
         sessionId: ctx.sessionManager.getSessionId?.(),
         at,
-        isEligible: () => !disposed && settled && lastCtx === ctx && runningSubagents.size === 0
+        isEligible: () => !disposed && settled && openPrompts === 0 && lastCtx === ctx && runningSubagents.size === 0
           && ctx.isIdle() && !ctx.hasPendingMessages(),
         send: (kind) => {
           clearWidgetWarning(ctx);
