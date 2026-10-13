@@ -307,6 +307,9 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   let warningTimer: ReturnType<typeof setTimeout> | undefined;
   let sending = false;
   let disposed = false;
+  let settled = false;
+  let subagentsLoaded = false;
+  let stopSubagentApi: (() => void) | undefined;
   const observedSignals = new WeakSet<AbortSignal>();
 
   const rememberCtx = (_event: unknown, ctx: ExtensionContext) => {
@@ -353,6 +356,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       const payload = raw as { runId?: string; id?: string } | undefined;
       const id = payload?.runId ?? payload?.id;
       if (id) runningSubagents.add(id);
+      settled = false;
       logger.debug("ralph: subagent started", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
     });
     stopAsyncRunComplete = pi.events.on(SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, (raw: unknown) => {
@@ -366,9 +370,15 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       const id = payload?.runId ?? payload?.id;
       if (id) runningSubagents.delete(id);
       logger.debug("ralph: subagent complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
-      scheduleRalph("subagent-complete");
+      // Completion delivery can start another root turn; all-idle owns release.
     });
+    stopSubagentApi = pi.events.on("subagent:expose-api", (raw: unknown) => {
+      if (raw && typeof (raw as { hasActiveAsyncRuns?: unknown }).hasActiveAsyncRuns === "function") subagentsLoaded = true;
+    });
+    // Request also covers reloads where pi-subagents exposed its API before us.
+    pi.events.emit("subagent:request-api", undefined);
     stopAllIdle = pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
+      settled = true;
       scheduleRalph("subagent-all-idle");
     });
   };
@@ -379,10 +389,14 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     lastSentAt = 0;
     interruptedUntil = 0;
     sending = false;
+    settled = false;
+    subagentsLoaded = false;
     rememberCtx(event, ctx);
     subscribeToSubagentEvents();
+    pi.events.emit("subagent:request-api", undefined);
   });
   pi.on("agent_start", (event, ctx) => {
+    settled = false;
     if (timer) clearTimeout(timer);
     if (warningTimer) clearTimeout(warningTimer);
     timer = undefined;
@@ -411,14 +425,21 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   pi.on("turn_end", (event, ctx) => {
     rememberCtx(event, ctx);
     observeInterruption(ctx);
-    scheduleRalph("turn_end");
+
   });
   pi.on("agent_end", (event, ctx) => {
     rememberCtx(event, ctx);
     const messages = (event as { messages?: Array<{ role?: string; stopReason?: string }> }).messages ?? [];
     const interrupted = messages.some((message) => message.role === "assistant" && message.stopReason === "aborted");
     if (interrupted) interruptedUntil = now() + interruptDelayMs;
-    scheduleRalph(interrupted ? "agent-end-interrupted" : "agent_end");
+    // agent_end precedes queued-message delivery and is not an idle boundary.
+  });
+  pi.on("agent_settled", (event, ctx) => {
+    rememberCtx(event, ctx);
+    if (!subagentsLoaded) {
+      settled = true;
+      scheduleRalph("agent-settled");
+    }
   });
   pi.on("session_shutdown", () => {
     disposed = true;
@@ -432,6 +453,8 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     stopAsyncRunComplete?.();
     stopAsyncComplete?.();
     stopAllIdle?.();
+    stopSubagentApi?.();
+    stopSubagentApi = undefined;
     stopLifecycle?.();
     stopLifecycle = undefined;
     stopAsyncStarted = undefined;
@@ -441,7 +464,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
 
   function scheduleRalph(trigger: string): void {
-    if (disposed) return;
+    if (disposed || !settled) return;
     if (timer) clearTimeout(timer);
     if (warningTimer) clearTimeout(warningTimer);
     const delayMs = Math.max(debounceMs, interruptedUntil - now());
@@ -465,7 +488,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   }
 
   async function warnBeforeRalph(remainingMs: number): Promise<void> {
-    if (disposed) return;
+    if (disposed || !settled) return;
     const ctx = lastCtx;
     if (!ctx || runningSubagents.size > 0) return;
     try {
@@ -487,7 +510,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   }
 
   async function maybeSendRalph(input: { trigger?: string; fromDebounce?: boolean } = {}): Promise<void> {
-    if (disposed) return;
+    if (disposed || !settled) return;
     if (sending) {
       logger.debug("ralph: skipped while send in progress", { component: RALPH_LOG_COMPONENT, trigger: input.trigger });
       return;
@@ -536,7 +559,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
         charterId: status.charterId,
         sessionId: ctx.sessionManager.getSessionId?.(),
         at,
-        isEligible: () => !disposed && lastCtx === ctx && runningSubagents.size === 0
+        isEligible: () => !disposed && settled && lastCtx === ctx && runningSubagents.size === 0
           && ctx.isIdle() && !ctx.hasPendingMessages(),
         send: (kind) => {
           clearWidgetWarning(ctx);

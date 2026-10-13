@@ -346,17 +346,18 @@ describe("tool registration", () => {
     h.fire("session_start", { reason: "startup" });
     h.fire("session_shutdown", { reason: "quit" });
     h.fire("session_start", { reason: "resume" });
-    h.fire("agent_end");
+    h.fire("agent_settled");
     await delay(10);
 
     expect(h.sent).toHaveLength(1);
 
     h.emit(SUBAGENT_ASYNC_STARTED_EVENT, { runId: "child-after-reopen" });
-    h.fire("agent_end");
+    h.fire("agent_settled");
     await delay(10);
     expect(h.sent).toHaveLength(1);
 
     h.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "child-after-reopen" });
+    h.emit(SUBAGENT_ALL_IDLE_EVENT);
     await delay(10);
     expect(h.sent).toHaveLength(2);
   });
@@ -391,7 +392,7 @@ describe("Ralph loop registration", () => {
     registerCharterCommands(h.pi);
     registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0, now: () => clock });
     h.fire("session_start");
-    h.fire("agent_end");
+    h.fire("agent_settled");
     await delay(60);
     expect(h.sent).toHaveLength(1);
     expect(h.sent[0].message.details.kind).toBe("recovery");
@@ -401,7 +402,7 @@ describe("Ralph loop registration", () => {
     h.fire("session_shutdown");
     h.fire("session_start");
     clock += 1;
-    h.fire("agent_end");
+    h.fire("agent_settled");
     await delay(60);
     expect(h.sent).toHaveLength(1);
     expect((await loadCharterState(project, created.charterId)).status).toBe("paused");
@@ -425,7 +426,7 @@ describe("Ralph loop registration", () => {
     registerCharterTools(h.pi);
     registerCharterRalphLoop(h.pi, { debounceMs: 100, warningLeadMs: 0, minIntervalMs: 0 });
     h.fire("session_start");
-    h.fire("agent_end");
+    h.fire("agent_settled");
     const paused = await tools[0].execute("pause", { action: "pause", note: "User requested a pause" }, undefined, undefined, h.ctx);
     expect(paused.isError).toBe(false);
     await delay(130);
@@ -509,16 +510,34 @@ describe("Ralph loop registration", () => {
     h.fire("session_shutdown");
   });
 
-  test("agent_end also schedules a steer for subagent-free sessions", async () => {
-    const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-agent-end-"));
-    await createCharter(project, { objective: "Plain loop", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
+  test("agent_end is not idle; agent_settled is the fallback without pi-subagents", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-settled-"));
+    await createCharter(project, { objective: "Wait for settlement", sessionId: "s1" });
     const h = createRalphHarness(project);
     registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
-
     h.fire("agent_end");
-    await delay(10);
-
+    await delay(20);
+    expect(h.sent).toHaveLength(0);
+    h.fire("agent_settled");
+    await until(() => h.sent.length === 1);
     expect(h.sent).toHaveLength(1);
+    h.fire("session_shutdown");
+  });
+
+  test("with pi-subagents loaded only all-idle releases continuation", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-bus-idle-"));
+    await createCharter(project, { objective: "Wait for all lanes", sessionId: "s1" });
+    const h = createRalphHarness(project);
+    h.pi.events.on("subagent:request-api", () => h.emit("subagent:expose-api", { hasActiveAsyncRuns: () => false }));
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+    h.fire("agent_end");
+    h.fire("agent_settled");
+    await delay(20);
+    expect(h.sent).toHaveLength(0);
+    h.emit(SUBAGENT_ALL_IDLE_EVENT);
+    await until(() => h.sent.length === 1);
+    expect(h.sent).toHaveLength(1);
+    h.fire("session_shutdown");
   });
 
   test("an interrupted turn gets a longer quiet window", async () => {
@@ -531,7 +550,7 @@ describe("Ralph loop registration", () => {
       isError: true,
       content: [{ type: "text", text: "Command aborted" }],
     });
-    h.fire("agent_end", { messages: [] });
+    h.fire("agent_settled", { messages: [] });
     await delay(10);
     expect(h.sent).toHaveLength(0);
 
@@ -631,11 +650,12 @@ describe("Ralph loop registration", () => {
 
     h.fire("session_start");
     h.emit(SUBAGENT_ASYNC_STARTED_EVENT, { runId: "child-1" });
-    h.fire("agent_end");
+    h.fire("agent_settled");
     await delay(10);
     expect(h.sent).toHaveLength(0);
 
     h.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, { runId: "child-1" });
+    h.emit(SUBAGENT_ALL_IDLE_EVENT);
     await delay(10);
     expect(h.sent).toHaveLength(1);
   });
@@ -675,7 +695,7 @@ describe("Ralph loop registration", () => {
     await delay(10);
     expect(h.sent).toHaveLength(0);
 
-    h.fire("turn_end");
+    h.fire("agent_settled");
     await delay(10);
     expect(h.sent).toHaveLength(1);
   });

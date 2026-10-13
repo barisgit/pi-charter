@@ -326,13 +326,13 @@ describe("glance widget cleanup", () => {
       const loop = Object.assign(ctx, { isIdle: () => true, hasPendingMessages: () => false });
       await fireEvent(pi, "session_start", loop);
       for (let sent = 1; sent <= 5; sent += 1) {
-        await fireEvent(pi, "agent_end", loop);
+        await fireEvent(pi, "agent_settled", loop);
         await until(() => pi.sent.length === sent);
         await until(() => journaled.length === sent); // the guard write ends the send; the next event would be skipped before it
         clock.now += 1_000;
       }
       await until(() => text() === "charter refresh-fixture · active · Ralph guard warning");
-      await fireEvent(pi, "agent_end", loop);
+      await fireEvent(pi, "agent_settled", loop);
       await until(() => text() === "charter refresh-fixture · paused by Ralph guard · /charter resume");
       expect(pi.sent).toHaveLength(5);
     });
