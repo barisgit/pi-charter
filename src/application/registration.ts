@@ -309,7 +309,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   let disposed = false;
   let settled = false;
   let openPrompts = 0;
-  let subagentsLoaded = false;
+  let subagentApi: { hasActiveAsyncRuns(): boolean } | undefined;
   let stopSubagentApi: (() => void) | undefined;
   const observedSignals = new WeakSet<AbortSignal>();
 
@@ -374,7 +374,9 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       // Completion delivery can start another root turn; all-idle owns release.
     });
     stopSubagentApi = pi.events.on("subagent:expose-api", (raw: unknown) => {
-      if (raw && typeof (raw as { hasActiveAsyncRuns?: unknown }).hasActiveAsyncRuns === "function") subagentsLoaded = true;
+      if (raw && typeof (raw as { hasActiveAsyncRuns?: unknown }).hasActiveAsyncRuns === "function") {
+        subagentApi = raw as { hasActiveAsyncRuns(): boolean };
+      }
     });
     // Request also covers reloads where pi-subagents exposed its API before us.
     pi.events.emit("subagent:request-api", undefined);
@@ -392,10 +394,15 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     sending = false;
     settled = false;
     openPrompts = 0;
-    subagentsLoaded = false;
     rememberCtx(event, ctx);
     subscribeToSubagentEvents();
     pi.events.emit("subagent:request-api", undefined);
+    // Before any root run, an idle session may create/resume via slash command.
+    try {
+      settled = ctx.isIdle() && !ctx.hasPendingMessages() && !subagentApi?.hasActiveAsyncRuns();
+    } catch (error) {
+      logger.debug("ralph: initial idle lookup skipped", { component: RALPH_LOG_COMPONENT, error: error instanceof Error ? error.message : String(error) });
+    }
   });
   pi.on("agent_start", (event, ctx) => {
     settled = false;
@@ -453,7 +460,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   });
   pi.on("agent_settled", (event, ctx) => {
     rememberCtx(event, ctx);
-    if (!subagentsLoaded) {
+    if (!subagentApi) {
       settled = true;
       scheduleRalph("agent-settled");
     }

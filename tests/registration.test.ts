@@ -510,6 +510,18 @@ describe("Ralph loop registration", () => {
     h.fire("session_shutdown");
   });
 
+  test("slash creation in an initially idle session still arms Ralph", async () => {
+    const project = await mkdtemp(join(tmpdir(), "pi-charter-initial-idle-"));
+    const h = createRalphHarness(project);
+    registerCharterRalphLoop(h.pi, { debounceMs: 1, minIntervalMs: 0 });
+    h.fire("session_start");
+    await createCharter(project, { objective: "Start from the slash command", sessionId: "s1" });
+    h.emit("pi-charter:lifecycle-changed", { action: "create" });
+    await until(() => h.sent.length === 1, 100);
+    expect(h.sent).toHaveLength(1);
+    h.fire("session_shutdown");
+  });
+
   test("agent_end is not idle; agent_settled is the fallback without pi-subagents", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-settled-"));
     await createCharter(project, { objective: "Wait for settlement", sessionId: "s1" });
