@@ -50,3 +50,11 @@ bun test
 ```
 
 Do not claim known baseline failures passed without checking them.
+
+## Architecture and persistence
+
+- Domain rules have no Pi dependency; application orchestrates them, infrastructure owns persistence/host adapters, and UI projects read-only service results.
+- Lifecycle and Ralph guard writes share a project mutation lock; lower-level file writes use same-directory temporary files and atomic rename. Status reads take no lock. Events are append-only.
+- Unknown Markdown is inert. Objective subheadings remain inside the Objective until a top-level heading or a recognized References, Scope, Notes, or historical Phases section. HTML comments are stripped by parsing, not by rewriting the file.
+- Storage is only `.charters/`, never the historical `.pi/charters/` root. Identifier collisions receive numeric suffixes.
+- Subagent bus constants are redeclared locally rather than importing pi-subagents. Ralph releases on `subagent:all-idle`; only when pi-subagents is absent does `agent_settled` release it. Never treat `agent_end` or child completion delivery as idle. Blocking UI prompts cancel the timers; the last close starts a fresh debounce.

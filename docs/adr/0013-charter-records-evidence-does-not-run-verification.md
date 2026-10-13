@@ -87,8 +87,8 @@ exists to protect.
 8. **Zero bundled personas (ratified).** ADR-0012 already removed bundled
    personas and made trust gates name-agnostic; this ADR confirms the rule as
    permanent and removes the remaining stale references that still name
-   `charter-verifier` / `charter-reviewer` (`codemap.md:75`,
-   `docs/implementation/evaluator-and-verifiers.md`,
+   `charter-verifier` / `charter-reviewer`
+   (`docs/implementation/evaluator-and-verifiers.md`,
    `docs/implementation/filesystem-layout.md`).
 
 ## Rationale
