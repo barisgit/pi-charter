@@ -591,7 +591,7 @@ describe("Ralph loop registration", () => {
     expect(h.sent).toHaveLength(1);
   });
 
-  test("debounce waits past agent_end all-idle emitted before ctx reports idle", async () => {
+  test("all-idle debounce waits for the context to report idle", async () => {
     const project = await mkdtemp(join(tmpdir(), "pi-charter-ralph-agent-end-idle-"));
     await createCharter(project, { objective: "Settle after agent_end", now: "2026-07-02T10:00:00.000Z", sessionId: "s1" });
     let idle = false;

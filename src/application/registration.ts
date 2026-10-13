@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { abandonCharter, completeCharter, createCharter, findBoundCharterState, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service.ts";
 import { CharterToolError } from "./errors.ts";
 import { attemptRalphActivation, renderRalphPrompt, RALPH_GUARD_PAUSE_NOTE } from "./ralph.ts";
-import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT } from "../infrastructure/subagent-bridge.ts";
+import { SUBAGENT_ALL_IDLE_EVENT, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_RUN_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_EXPOSE_API_EVENT, SUBAGENT_REQUEST_API_EVENT } from "../infrastructure/subagent-bridge.ts";
 import { logger } from "../infrastructure/logger.ts";
 import type { NextAction } from "../domain/types.ts";
 import { buildCharterWidgetView, renderCharterWidget } from "../ui/widget.ts";
@@ -293,6 +293,7 @@ export function registerCharterCommands(pi: ExtensionAPI): void {
   });
 }
 
+/** Release guarded continuation only at idle boundaries, outside blocking UI prompts. */
 export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterCharterRalphLoopOptions = {}): void {
   const runningSubagents = new Set<string>();
   const debounceMs = options.debounceMs ?? RALPH_DEBOUNCE_MS;
@@ -373,13 +374,13 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
       logger.debug("ralph: subagent complete", { component: RALPH_LOG_COMPONENT, runId: id, runningSubagents: runningSubagents.size });
       // Completion delivery can start another root turn; all-idle owns release.
     });
-    stopSubagentApi = pi.events.on("subagent:expose-api", (raw: unknown) => {
+    stopSubagentApi = pi.events.on(SUBAGENT_EXPOSE_API_EVENT, (raw: unknown) => {
       if (raw && typeof (raw as { hasActiveAsyncRuns?: unknown }).hasActiveAsyncRuns === "function") {
         subagentApi = raw as { hasActiveAsyncRuns(): boolean };
       }
     });
     // Request also covers reloads where pi-subagents exposed its API before us.
-    pi.events.emit("subagent:request-api", undefined);
+    pi.events.emit(SUBAGENT_REQUEST_API_EVENT, undefined);
     stopAllIdle = pi.events.on(SUBAGENT_ALL_IDLE_EVENT, () => {
       settled = true;
       scheduleRalph("subagent-all-idle");
@@ -396,7 +397,7 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
     openPrompts = 0;
     rememberCtx(event, ctx);
     subscribeToSubagentEvents();
-    pi.events.emit("subagent:request-api", undefined);
+    pi.events.emit(SUBAGENT_REQUEST_API_EVENT, undefined);
     // Before any root run, an idle session may create/resume via slash command.
     try {
       settled = ctx.isIdle() && !ctx.hasPendingMessages() && !subagentApi?.hasActiveAsyncRuns();
@@ -434,7 +435,6 @@ export function registerCharterRalphLoop(pi: ExtensionAPI, options: RegisterChar
   pi.on("turn_end", (event, ctx) => {
     rememberCtx(event, ctx);
     observeInterruption(ctx);
-
   });
   pi.on("agent_end", (event, ctx) => {
     rememberCtx(event, ctx);
