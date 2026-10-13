@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Markdown, visibleWidth } from "@earendil-works/pi-tui";
 import {
   clipStyled,
@@ -119,7 +119,7 @@ export function createCharterPickerOverlay(opts: CharterPickerOptions): Fullscre
       }
       try {
         if (host?.copyText) await host.copyText(row.charterId);
-        else await defaultCopyText(row.charterId);
+        else await copyToClipboard(row.charterId);
         setFlash(`Copied id → ${row.charterId}`, "info");
         host?.notify?.(`Copied charterId ${row.charterId.slice(0, 8)}…`, "info");
       } catch (err) {
@@ -323,17 +323,6 @@ function defaultOpenPath(path: string): void {
     /* swallow — host notify? was already called by caller path */
   });
   child.unref();
-}
-
-function defaultCopyText(text: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const cmd = process.platform === "darwin" ? "pbcopy" : process.platform === "win32" ? "clip" : "xclip";
-    const args = process.platform === "linux" ? ["-selection", "clipboard"] : [];
-    const child = spawn(cmd, args, { stdio: ["pipe", "ignore", "ignore"] });
-    child.on("error", reject);
-    child.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exit ${code}`))));
-    child.stdin?.end(text);
-  });
 }
 
 function wrapText(text: string, width: number): string[] {
