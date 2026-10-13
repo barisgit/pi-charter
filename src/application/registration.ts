@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { connect, type UtilsClient } from "pi-extension-utils";
+import { connect, type UtilsClient } from "pi-extension-utils/pi";
 import { Type } from "typebox";
 import { abandonCharter, completeCharter, createCharter, findBoundCharterState, getBoundCharterStatus, getCharterStatus, listCharterSummaries, pauseCharter, resumeCharter, type CharterServiceResult, type CharterStatusResult } from "./service";
 import { CharterToolError } from "./errors";

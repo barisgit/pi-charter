@@ -10,7 +10,7 @@ import {
   type PaneOverlayContext,
   type PaneOverlayOptions,
   type PaneOverlayPrimaryRow,
-} from "pi-extension-utils";
+} from "pi-extension-utils/pi";
 import type { CharterStatus } from "../domain/types";
 import {
   BANNED_PRINTABLE,

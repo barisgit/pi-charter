@@ -9,7 +9,7 @@
  */
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { createLogger } from "pi-extension-utils";
+import { createLogger } from "pi-extension-utils/pi";
 import { dirname, join } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
